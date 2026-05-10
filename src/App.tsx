@@ -1,16 +1,24 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Extension } from '@tiptap/core'
 import { EditorContent, useEditor } from '@tiptap/react'
+import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
+import Highlight from '@tiptap/extension-highlight'
 import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
 import { TextStyle } from '@tiptap/extension-text-style'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowLeft,
   Brain,
+  Calendar,
   ChartNoAxesColumn,
+  ChevronDown,
   Code2,
   Columns3,
   Download,
@@ -183,6 +191,7 @@ type UserSettings = {
   }
   aiLastError?: string
   aiLastRequestAt?: string
+  highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
   createdAt: string
@@ -207,25 +216,37 @@ type SearchHit =
 type EditorPanel = 'format' | 'more'
 
 type AITaskType =
+  | 'ai_atomise'
   | 'edit_selection'
   | 'generate_insert'
   | 'answer_with_context'
   | 'summarize_note'
+  | 'mark_writing'
+  | 'update_project_instructions'
   | 'app_help'
   | 'atom_task'
   | 'general'
+
+type AICommandId = 'rewrite' | 'continue' | 'summarise' | 'atomise' | 'mark' | 'custom'
+
+type EditorRange = { from: number; to: number }
 
 type AIResult = {
   prompt: string
   taskType: AITaskType
   response: string
   insertableResponse: string
+  draftText: string
   actionLabel: string
   canReplaceSelection: boolean
   canInsert: boolean
   canCreateAtoms: boolean
   provider: AIProviderId
   selection?: { from: number; to: number }
+  /** Plain text of the selection when `edit_selection` ran; used for before/after review. */
+  selectionOriginalText?: string
+  projectInstructionDraft?: string
+  canUpdateProjectInstructions?: boolean
 }
 
 type ProviderMeta = {
@@ -309,15 +330,19 @@ const AI_SYSTEM_INSTRUCTION = [
   'Help the user complete writing and knowledge-management tasks inside the app.',
   'Use provided note, project, and editor context whenever possible.',
   'Keep a neutral tone and prefer precise edits and concise output.',
+  'Use plain editor text. Do not use Markdown heading markers, bold markers, code fences, or table syntax.',
   'Do not include greetings, sign-offs, "hope this helps", or meta commentary.',
   'Do not invent facts outside the provided context.',
 ].join('\n')
 
 const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
+  ai_atomise: 'Task: ai_atomise. Return atom candidates as one per line in the format "Phrase - definition". Prefer durable concepts, key terms, named methods, and definitions that help future review.',
   edit_selection: 'Task: edit_selection. Return only the replacement text for the selected passage. Preserve meaning unless the user explicitly asks to change it.',
   generate_insert: 'Task: generate_insert. Return only clean document text that can be inserted at the cursor.',
   answer_with_context: 'Task: answer_with_context. Answer briefly using note/project context. Mention the context used in plain language when useful. Do not format as insertable prose by default.',
-  summarize_note: 'Task: summarize_note. Return clean headings and bullets suitable for insertion into the note.',
+  summarize_note: 'Task: summarize_note. Return plain text with short section headings and dash bullets. Do not use Markdown syntax.',
+  mark_writing: 'Task: mark_writing. Mark the writing against the supplied marking criteria. Return concise plain-text sections: Overall, Strengths, Improvements, Suggested edit. If no clear criteria are supplied, use the default criteria from context and say that default criteria were used. Do not use Markdown syntax.',
+  update_project_instructions: 'Task: update_project_instructions. Draft a concise replacement project description with exactly these plain-text section labels: Summary, Instructions, Writing style, Marking criteria. Use current project memory as the base, integrate reusable guidance from the latest AI draft, and avoid copying note-specific content.',
   app_help: 'Task: app_help. Answer as product guidance for Loci Notes. Do not write document text unless asked.',
   atom_task: 'Task: atom_task. Return atom candidates as one per line in the format "Phrase — definition". Keep definitions short and clear.',
   general: 'Task: general. Answer briefly. Ask for missing context only when necessary.',
@@ -325,6 +350,89 @@ const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
 
 const DEFAULT_AI_TIMEOUT_MS = 60000
 const CLAUDE_REQUIRED_MAX_TOKENS = 4096
+const HIGHLIGHTER_COLORS = ['#fff1a8', '#dff4cc', '#d9ecff', '#ffe3d2', '#eadfff'] as const
+const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0]
+const DEFAULT_MARKING_CRITERIA = [
+  'Clarity: the writing is easy to follow and uses precise language.',
+  'Structure: ideas are ordered logically with clear transitions.',
+  'Evidence: claims are supported by relevant examples, facts, or reasoning.',
+  'Depth: the writing explains significance rather than only listing points.',
+  'Tone: the writing fits the project context and intended reader.',
+].join('\n')
+
+type ProjectMemorySections = {
+  summary: string
+  instructions: string
+  writingStyle: string
+  markingCriteria: string
+}
+
+const PROJECT_MEMORY_HEADINGS: Array<{ key: keyof ProjectMemorySections; label: string }> = [
+  { key: 'summary', label: 'Summary' },
+  { key: 'instructions', label: 'Instructions' },
+  { key: 'writingStyle', label: 'Writing style' },
+  { key: 'markingCriteria', label: 'Marking criteria' },
+]
+
+const PROJECT_MEMORY_FIELD_META: Record<
+  keyof ProjectMemorySections,
+  { hint: string; placeholder: string; ariaLabel: string }
+> = {
+  summary: {
+    hint: 'Project purpose, topic, audience, and context.',
+    placeholder: 'What is this project about?',
+    ariaLabel: 'Project summary',
+  },
+  instructions: {
+    hint: 'General AI behavior for this project.',
+    placeholder: 'How should AI work in this project?',
+    ariaLabel: 'Project instructions',
+  },
+  writingStyle: {
+    hint: 'Tone, structure, and phrasing preferences.',
+    placeholder: 'What should the writing sound like?',
+    ariaLabel: 'Project writing style',
+  },
+  markingCriteria: {
+    hint: 'Rubric used only by Mark writing.',
+    placeholder: 'How should writing be assessed?',
+    ariaLabel: 'Project marking criteria',
+  },
+}
+
+const aiSelectionHighlightKey = new PluginKey<EditorRange | null>('aiSelectionHighlight')
+
+const AISelectionHighlight = Extension.create({
+  name: 'aiSelectionHighlight',
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<EditorRange | null>({
+        key: aiSelectionHighlightKey,
+        state: {
+          init: () => null,
+          apply(transaction, previous) {
+            const meta = transaction.getMeta(aiSelectionHighlightKey) as { range: EditorRange | null } | undefined
+            if (meta) return meta.range
+            if (!previous || !transaction.docChanged) return previous
+            const from = transaction.mapping.map(previous.from, -1)
+            const to = transaction.mapping.map(previous.to, 1)
+            return from < to ? { from, to } : null
+          },
+        },
+        props: {
+          decorations(state) {
+            const range = aiSelectionHighlightKey.getState(state)
+            if (!range || range.from >= range.to) return null
+            return DecorationSet.create(state.doc, [
+              Decoration.inline(range.from, range.to, { class: 'ai-selection-highlight' }),
+            ])
+          },
+        },
+      }),
+    ]
+  },
+})
 
 function defaultUserSettings(): UserSettings {
   const now = nowIso()
@@ -343,6 +451,7 @@ function defaultUserSettings(): UserSettings {
     aiIncludeNoteTitle: true,
     aiIncludeSelectedText: true,
     aiIncludeNoteExcerpt: true,
+    highlighterColor: DEFAULT_HIGHLIGHTER_COLOR,
     reduceMotion: false,
     compactMode: false,
     createdAt: now,
@@ -374,6 +483,25 @@ function sanitizeAIInsertText(text: string) {
   return text
     .replace(/^\s*(sure|certainly|of course|absolutely|here(?:'|’)s|here is)[,.!:\-\s]+/i, '')
     .replace(/\n{0,2}\s*(hope this helps|i hope this helps|let me know if you need anything else|happy to help)[.!]*\s*$/i, '')
+    .trim()
+}
+
+function cleanAIDraftFormatting(text: string) {
+  return text
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-zA-Z0-9_-]*\n?/g, '').replace(/```/g, ''))
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}#{1,6}\s+/, '')
+        .replace(/^\s{0,3}[-*+]\s+/, '- ')
+        .replace(/^\s{0,3}\d+[.)]\s+/, (match) => `${match.trim().replace(/[.)]$/, '.')} `)
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/__([^_]+)__/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .trimEnd(),
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -420,14 +548,52 @@ function extractUsage(data: {
   }
 }
 
-function routeAITask(prompt: string, hasSelection: boolean): AITaskType {
-  const q = prompt.toLowerCase()
-  if (/\b(atomi[sz]e|atom|define|definition|key terms?|terms?)\b/.test(q)) return 'atom_task'
+function taskFromAICommand(command: AICommandId, hasSelection: boolean): AITaskType | undefined {
+  switch (command) {
+    case 'rewrite':
+      return hasSelection ? 'edit_selection' : 'generate_insert'
+    case 'continue':
+      return 'generate_insert'
+    case 'summarise':
+      return 'summarize_note'
+    case 'atomise':
+      return 'ai_atomise'
+    case 'mark':
+      return 'mark_writing'
+    case 'custom':
+      return undefined
+  }
+}
+
+function defaultPromptForCommand(command: AICommandId, hasSelection: boolean) {
+  switch (command) {
+    case 'rewrite':
+      return hasSelection ? 'Improve the selected writing.' : 'Draft a clearer version for the current note.'
+    case 'continue':
+      return 'Continue the current note in the same style.'
+    case 'summarise':
+      return hasSelection ? 'Summarise the selected writing.' : 'Summarise this note.'
+    case 'atomise':
+      return hasSelection ? 'Atomise the selected writing.' : 'Find atom candidates in this note.'
+    case 'mark':
+      return hasSelection ? 'Mark the selected writing.' : 'Mark this note.'
+    case 'custom':
+      return ''
+  }
+}
+
+function routeAITask(prompt: string, hasSelection: boolean, command?: AICommandId): AITaskType {
+  const explicitTask = command ? taskFromAICommand(command, hasSelection) : undefined
+  if (explicitTask) return explicitTask
+
+  const q = prompt.toLowerCase().trim()
+  if (/\b(atomi[sz]e|make atoms?|create atoms?|extract atoms?|key terms?|define terms?|glossary|concept cards?)\b/.test(q)) return 'ai_atomise'
+  if (/\b(mark|grade|rubric|criteria|assess|evaluate|feedback|review my writing|score|critique)\b/.test(q)) return 'mark_writing'
   if (/\b(how do i|how to|where is|settings?|export|pdf|docx|create|delete|shortcut|sidebar|project|note history)\b/.test(q)) return 'app_help'
-  if (/\b(summar(?:y|ize|ise)|outline|flashcards?|study guide|key points?|explain this note|what is this note saying)\b/.test(q)) return 'summarize_note'
-  if (hasSelection && /\b(rewrite|fix|clean up|sharpen|make sharper|concise|shorten|expand|improve|polish|edit|grammar|tone)\b/.test(q)) return 'edit_selection'
-  if (/\b(write|draft|compose|add|insert|continue|intro|introduction|paragraph|section)\b/.test(q)) return 'generate_insert'
-  if (/\b(what|why|how|explain|compare|does|is this|means?)\b/.test(q)) return 'answer_with_context'
+  if (/\b(summar(?:y|ize|ise)|recap|outline|flashcards?|study guide|key points?|explain this note|what is this note saying|tl;?dr)\b/.test(q)) return 'summarize_note'
+  if (hasSelection && /\b(rewrite|revise|fix|clean up|sharpen|make sharper|concise|shorten|expand|improve|polish|edit|grammar|tone|clarify|simplify|make academic|make formal|make casual)\b/.test(q)) return 'edit_selection'
+  if (/\b(write|draft|compose|add|insert|continue|extend|intro|introduction|paragraph|section|conclusion|next part|turn this into)\b/.test(q)) return 'generate_insert'
+  if (/\b(what|why|how|explain|compare|does|is this|means?|meaning|difference between|relationship between)\b/.test(q)) return 'answer_with_context'
   return hasSelection ? 'edit_selection' : 'general'
 }
 
@@ -436,15 +602,93 @@ function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
     actionLabel:
       taskType === 'edit_selection'
         ? 'Replace selection'
-        : taskType === 'atom_task'
+        : taskType === 'atom_task' || taskType === 'ai_atomise'
           ? 'Create atoms'
+          : taskType === 'mark_writing'
+            ? 'Copy feedback'
           : taskType === 'answer_with_context' || taskType === 'app_help'
             ? 'Copy'
             : 'Insert',
     canReplaceSelection: taskType === 'edit_selection' && hasSelection,
     canInsert: taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general',
-    canCreateAtoms: taskType === 'atom_task',
+    canCreateAtoms: taskType === 'atom_task' || taskType === 'ai_atomise',
   }
+}
+
+function aiResultTitle(result: AIResult) {
+  const promptTitle = result.prompt.trim()
+  if (promptTitle) return promptTitle
+  if (result.taskType === 'mark_writing') return 'Marked writing'
+  if (result.taskType === 'ai_atomise' || result.taskType === 'atom_task') return 'Atomise'
+  return 'AI draft'
+}
+
+function aiPrimaryActionLabel(result: AIResult) {
+  if (result.canReplaceSelection) return 'Apply rewrite'
+  if (result.canCreateAtoms) return 'Create atoms'
+  if (result.taskType === 'mark_writing') return 'Add feedback to note'
+  return 'Insert draft'
+}
+
+function aiDraftLabel(taskType: AITaskType) {
+  if (taskType === 'mark_writing') return 'Editable feedback'
+  if (taskType === 'ai_atomise' || taskType === 'atom_task') return 'Editable atom candidates'
+  if (taskType === 'update_project_instructions') return 'Editable project instructions'
+  return 'Editable draft'
+}
+
+function canResultUpdateProjectInstructions(taskType: AITaskType) {
+  return taskType === 'mark_writing' || taskType === 'summarize_note' || taskType === 'generate_insert' || taskType === 'edit_selection'
+}
+
+function parseProjectMemory(description = ''): ProjectMemorySections {
+  const sections: ProjectMemorySections = {
+    summary: '',
+    instructions: '',
+    writingStyle: '',
+    markingCriteria: '',
+  }
+  const headingByLabel = new Map(PROJECT_MEMORY_HEADINGS.map((item) => [item.label.toLowerCase(), item.key]))
+  let current: keyof ProjectMemorySections | null = null
+  const unsectioned: string[] = []
+
+  for (const line of description.replace(/\r\n?/g, '\n').split('\n')) {
+    const key = headingByLabel.get(line.trim().replace(/:$/, '').toLowerCase())
+    if (key) {
+      current = key
+      continue
+    }
+    if (current) {
+      sections[current] = `${sections[current]}${sections[current] ? '\n' : ''}${line}`.trimEnd()
+    } else if (line.trim()) {
+      unsectioned.push(line)
+    }
+  }
+
+  if (!Object.values(sections).some((value) => value.trim()) && unsectioned.length) {
+    sections.summary = unsectioned.join('\n').trim()
+  } else if (unsectioned.length && !sections.summary.trim()) {
+    sections.summary = unsectioned.join('\n').trim()
+  }
+
+  return sections
+}
+
+function serializeProjectMemory(sections: ProjectMemorySections) {
+  return PROJECT_MEMORY_HEADINGS
+    .map(({ key, label }) => `${label}\n${sections[key].trim()}`)
+    .join('\n\n')
+    .trim()
+}
+
+function updateProjectMemorySection(description: string | undefined, key: keyof ProjectMemorySections, value: string) {
+  const sections = parseProjectMemory(description ?? '')
+  sections[key] = value
+  return serializeProjectMemory(sections)
+}
+
+function taskUsesWritingStyle(taskType: AITaskType) {
+  return taskType === 'edit_selection' || taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general'
 }
 
 function parseAtomCandidates(text: string) {
@@ -456,6 +700,207 @@ function parseAtomCandidates(text: string) {
       return { phrase: phrase?.trim() ?? '', definition: definitionParts.join(' - ').trim() }
     })
     .filter((item) => item.phrase && item.definition)
+}
+
+function paragraphNode(text: string): JSONContent {
+  return { type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }
+}
+
+function textToEditorContent(text: string): JSONContent {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  const content: JSONContent[] = []
+  let listItems: JSONContent[] = []
+  let listType: 'bulletList' | 'orderedList' | null = null
+
+  const flushList = () => {
+    if (!listType || !listItems.length) return
+    content.push({ type: listType, content: listItems })
+    listItems = []
+    listType = null
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd()
+    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/)
+    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/)
+
+    if (bulletMatch || orderedMatch) {
+      const nextType = bulletMatch ? 'bulletList' : 'orderedList'
+      if (listType && listType !== nextType) flushList()
+      listType = nextType
+      listItems.push({
+        type: 'listItem',
+        content: [paragraphNode((bulletMatch?.[1] ?? orderedMatch?.[1] ?? '').trim())],
+      })
+      continue
+    }
+
+    flushList()
+    content.push(paragraphNode(line.trim()))
+  }
+
+  flushList()
+  return { type: 'doc', content: content.length ? content : [paragraphNode('')] }
+}
+
+function insertDraftText(editor: NonNullable<ReturnType<typeof useEditor>>, text: string) {
+  editor.chain().focus().insertContent(textToEditorContent(text).content ?? []).run()
+}
+
+const MARK_WRITING_FEEDBACK_SECTIONS = [
+  { key: 'overall', label: 'Overall' },
+  { key: 'strengths', label: 'Strengths' },
+  { key: 'improvements', label: 'Improvements' },
+  { key: 'suggestedEdit', label: 'Suggested edit' },
+] as const
+
+type MarkWritingFeedbackKey = (typeof MARK_WRITING_FEEDBACK_SECTIONS)[number]['key']
+
+type MarkWritingFeedbackSections = Record<MarkWritingFeedbackKey, string>
+
+function markWritingSectionHeadingKey(line: string): MarkWritingFeedbackKey | null {
+  const normalized = line.trim().replace(/:+\s*$/, '').toLowerCase()
+  for (const { key, label } of MARK_WRITING_FEEDBACK_SECTIONS) {
+    if (normalized === label.toLowerCase()) return key
+  }
+  return null
+}
+
+function parseMarkWritingFeedback(text: string): MarkWritingFeedbackSections {
+  const empty: MarkWritingFeedbackSections = {
+    overall: '',
+    strengths: '',
+    improvements: '',
+    suggestedEdit: '',
+  }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  let hasHeading = false
+  for (const line of lines) {
+    if (markWritingSectionHeadingKey(line)) {
+      hasHeading = true
+      break
+    }
+  }
+  if (!hasHeading) {
+    return { ...empty, overall: text.trim() }
+  }
+
+  let current: MarkWritingFeedbackKey | null = null
+  const buckets: Record<MarkWritingFeedbackKey, string[]> = {
+    overall: [],
+    strengths: [],
+    improvements: [],
+    suggestedEdit: [],
+  }
+
+  for (const line of lines) {
+    const heading = markWritingSectionHeadingKey(line)
+    if (heading) {
+      current = heading
+      continue
+    }
+    if (current) buckets[current].push(line)
+    else buckets.overall.push(line)
+  }
+
+  for (const { key } of MARK_WRITING_FEEDBACK_SECTIONS) {
+    empty[key] = buckets[key].join('\n').trim()
+  }
+  return empty
+}
+
+function serializeMarkWritingFeedback(sections: MarkWritingFeedbackSections) {
+  return MARK_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => ({ label, body: sections[key].trim() }))
+    .filter(({ body }) => body.length > 0)
+    .map(({ label, body }) => `${label}\n${body}`)
+    .join('\n\n')
+    .trim()
+}
+
+function MarkWritingFeedbackFields({
+  draftText,
+  onChange,
+}: {
+  draftText: string
+  onChange: (next: string) => void
+}) {
+  const sections = parseMarkWritingFeedback(draftText)
+  const patch = (key: MarkWritingFeedbackKey, value: string) => {
+    onChange(serializeMarkWritingFeedback({ ...sections, [key]: value }))
+  }
+
+  return (
+    <div className="ai-mark-feedback-cards" role="group" aria-label="Editable feedback sections">
+      {MARK_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => (
+        <div key={key} className="ai-mark-feedback-card">
+          <span className="ai-mark-feedback-card-title">{label}</span>
+          <textarea
+            className="ai-mark-feedback-card-input"
+            value={sections[key]}
+            onChange={(event) => patch(key, event.target.value)}
+            aria-label={label}
+            rows={key === 'suggestedEdit' ? 5 : 4}
+            autoFocus={key === 'overall'}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function AiDraftFormattedPreview({ text }: { text: string }) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  const nodes: ReactNode[] = []
+  let listItems: string[] = []
+  let listKind: 'bullet' | 'ordered' | null = null
+
+  const flushList = () => {
+    if (!listKind || !listItems.length) return
+    const items = listItems.map((item, index) => (
+      <li key={`${nodes.length}-${index}`}>{item}</li>
+    ))
+    nodes.push(
+      listKind === 'bullet' ? (
+        <ul key={`list-${nodes.length}`} className="ai-draft-preview-list">
+          {items}
+        </ul>
+      ) : (
+        <ol key={`list-${nodes.length}`} className="ai-draft-preview-list ai-draft-preview-list--ordered">
+          {items}
+        </ol>
+      ),
+    )
+    listItems = []
+    listKind = null
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd()
+    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/)
+    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/)
+    if (bulletMatch || orderedMatch) {
+      const nextKind = bulletMatch ? 'bullet' : 'ordered'
+      if (listKind && listKind !== nextKind) flushList()
+      listKind = nextKind
+      listItems.push((bulletMatch?.[1] ?? orderedMatch?.[1] ?? '').trim())
+      continue
+    }
+    flushList()
+    const trimmed = line.trim()
+    if (trimmed.length) {
+      nodes.push(
+        <p key={`p-${nodes.length}`} className="ai-draft-preview-p">
+          {trimmed}
+        </p>,
+      )
+    }
+  }
+  flushList()
+
+  if (!nodes.length) {
+    return <p className="ai-draft-preview-empty">Nothing to preview yet.</p>
+  }
+  return <div className="ai-draft-preview-doc">{nodes}</div>
 }
 
 function hitKey(hit: SearchHit): string {
@@ -572,6 +1017,13 @@ const noteTemplates: NoteTemplate[] = [
 
 function getNoteTemplate(id: NoteTemplateId = 'blank') {
   return noteTemplates.find((template) => template.id === id) ?? noteTemplates[0]
+}
+
+const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
+  blank: FileText,
+  report: ChartNoAxesColumn,
+  planner: Calendar,
+  slideshow: Columns3,
 }
 
 function cloneTemplateValue<T>(value: T): T {
@@ -711,6 +1163,7 @@ function selectionContainsAtom(editor: NonNullable<ReturnType<typeof useEditor>>
 const UNASSIGNED_PROJECT_ID = '__unassigned__'
 
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
+const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
 
 const DEFAULT_PROFILE_COLOR = '#4c4439'
 
@@ -751,8 +1204,9 @@ function App() {
   const [flippedAtomIds, setFlippedAtomIds] = useState<string[]>([])
   const [atomSelectionMode, setAtomSelectionMode] = useState(false)
   const [selectedAtomIds, setSelectedAtomIds] = useState<string[]>([])
-  const [draggedNoteId, setDraggedNoteId] = useState('')
+  const [draggedNoteIds, setDraggedNoteIds] = useState<string[]>([])
   const [dragOverProjectId, setDragOverProjectId] = useState('')
+  const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
   const [atomSearchQuery, setAtomSearchQuery] = useState('')
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
   const [saving, setSaving] = useState(false)
@@ -768,13 +1222,25 @@ function App() {
   const [templateProjectId, setTemplateProjectId] = useState<string | null>(null)
   const [activeEditorPanel, setActiveEditorPanel] = useState<EditorPanel | null>(null)
   const [aiPrompt, setAiPrompt] = useState('')
+  const [aiPromptFocused, setAiPromptFocused] = useState(false)
+  const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
+  const [highlighterArmed, setHighlighterArmed] = useState(false)
+  const [activeAICommand, setActiveAICommand] = useState<AICommandId>('custom')
+  const [aiMarkingCriteria] = useState(DEFAULT_MARKING_CRITERIA)
+  const [editorHasSelection, setEditorHasSelection] = useState(false)
   const [aiRunning, setAiRunning] = useState(false)
+  const [aiInstructionUpdating, setAiInstructionUpdating] = useState(false)
   const [aiResult, setAiResult] = useState<AIResult | null>(null)
   const [showSaveState, setShowSaveState] = useState(true)
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
   const selectedNoteIdRef = useRef('')
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const aiPromptInputRef = useRef<HTMLInputElement>(null)
+  const aiSelectionRangeRef = useRef<EditorRange | null>(null)
+  const highlighterArmedRef = useRef(false)
+  const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
+  const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
   const formatDialogRef = useRef<HTMLElement | null>(null)
@@ -800,6 +1266,12 @@ function App() {
         : [],
     [activeProjectForQuickNav, notes],
   )
+  const unassignedNotes = useMemo(() => {
+    const projectIds = new Set(projects.map((project) => project.id))
+    return notes
+      .filter((note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId))
+      .sort(sortByUpdated)
+  }, [notes, projects])
 
   useEffect(() => {
     notesRef.current = notes
@@ -907,18 +1379,36 @@ function App() {
     event.dataTransfer.dropEffect = 'move'
   }, [])
 
-  const handleNoteDragStart = useCallback((event: React.DragEvent<HTMLElement>, noteId: string) => {
-    event.dataTransfer.setData(NOTE_DRAG_MIME, noteId)
-    event.dataTransfer.effectAllowed = 'move'
-    const note = notesRef.current.find((item) => item.id === noteId)
-    const preview = createNoteDragPreview(note?.title ?? 'Untitled Note')
-    event.dataTransfer.setDragImage(preview, 18, 18)
-    requestAnimationFrame(() => preview.remove())
-    setDraggedNoteId(noteId)
+  const persistNotesProject = useCallback(async (noteIds: string[], targetProjectId: string) => {
+    const noteIdSet = new Set(noteIds)
+    const updatedNotes = notesRef.current
+      .filter((note) => noteIdSet.has(note.id) && note.projectId !== targetProjectId)
+      .map((note) => ({ ...note, projectId: targetProjectId, updatedAt: nowIso() }))
+    if (!updatedNotes.length) return
+
+    const updatedById = new Map(updatedNotes.map((note) => [note.id, note]))
+    const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
+    notesRef.current = nextNotes
+    setNotes(nextNotes)
+    await db.notes.bulkPut(updatedNotes)
   }, [])
 
+  const handleNoteDragStart = useCallback((event: React.DragEvent<HTMLElement>, noteId: string) => {
+    const selectedSet = new Set(selectedNoteIds)
+    const noteIds = selectedSet.has(noteId) ? selectedNoteIds.filter((id) => notesRef.current.some((note) => note.id === id)) : [noteId]
+    event.dataTransfer.setData(NOTE_DRAG_MIME, noteId)
+    event.dataTransfer.setData(NOTE_MULTI_DRAG_MIME, JSON.stringify(noteIds))
+    event.dataTransfer.effectAllowed = 'move'
+    const note = notesRef.current.find((item) => item.id === noteId)
+    const previewTitle = noteIds.length > 1 ? `${noteIds.length} notes` : note?.title ?? 'Untitled Note'
+    const preview = createNoteDragPreview(previewTitle)
+    event.dataTransfer.setDragImage(preview, 18, 18)
+    requestAnimationFrame(() => preview.remove())
+    setDraggedNoteIds(noteIds)
+  }, [selectedNoteIds])
+
   const handleNoteDragEnd = useCallback(() => {
-    setDraggedNoteId('')
+    setDraggedNoteIds([])
     setDragOverProjectId('')
   }, [])
 
@@ -926,25 +1416,30 @@ function App() {
     (event: React.DragEvent<HTMLElement>, targetProjectId: string) => {
       event.preventDefault()
       event.stopPropagation()
-      const noteId = event.dataTransfer.getData(NOTE_DRAG_MIME)
-      if (!noteId) return
+      const noteIdsPayload = event.dataTransfer.getData(NOTE_MULTI_DRAG_MIME)
+      const noteIds = noteIdsPayload ? JSON.parse(noteIdsPayload) as string[] : [event.dataTransfer.getData(NOTE_DRAG_MIME)]
+      const validNoteIds = Array.from(new Set(noteIds.filter(Boolean)))
+      if (!validNoteIds.length) return
       suppressProjectNavUntilRef.current = Date.now() + 400
-      setDraggedNoteId('')
+      setDraggedNoteIds([])
       setDragOverProjectId('')
-      void persistNote({ projectId: targetProjectId }, noteId)
+      setSelectedNoteIds((current) => current.filter((id) => !validNoteIds.includes(id)))
+      void persistNotesProject(validNoteIds, targetProjectId)
     },
-    [persistNote],
+    [persistNotesProject],
   )
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ link: false }),
       TextStyle,
+      Highlight.configure({ multicolor: true }),
       Link.configure({ openOnClick: false }),
       Image.configure({ inline: false, allowBase64: true }),
       TaskList,
       TaskItem.configure({ nested: true }),
       AtomMark,
+      AISelectionHighlight,
     ],
     content: primaryTemplateContent(selectedNote),
     editorProps: { attributes: { class: 'note-editor' } },
@@ -955,7 +1450,7 @@ function App() {
       const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
       void persistNote({ templateData, content: templateDataToContent(templateData) }, id)
     },
-  })
+  }, [selectedNoteId])
 
   useEffect(() => {
     if (!editor || !selectedNote) return
@@ -965,7 +1460,46 @@ function App() {
 
   useEffect(() => {
     setActiveEditorPanel(null)
+    setHighlighterArmed(false)
+    lastPaintedHighlightRangeRef.current = ''
   }, [selectedNoteId])
+
+  useEffect(() => {
+    highlighterArmedRef.current = highlighterArmed
+  }, [highlighterArmed])
+
+  useEffect(() => {
+    highlighterColorRef.current = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR
+  }, [userSettings.highlighterColor])
+
+  useEffect(() => {
+    if (!editor) return
+    const syncSelectionState = () => {
+      const { from, to, empty } = editor.state.selection
+      setEditorHasSelection(!empty)
+      if (!empty) aiSelectionRangeRef.current = { from, to }
+      if (!empty && highlighterArmedRef.current) {
+        const rangeKey = `${from}:${to}:${highlighterColorRef.current}`
+        if (lastPaintedHighlightRangeRef.current !== rangeKey) {
+          lastPaintedHighlightRangeRef.current = rangeKey
+          editor.chain().focus().setHighlight({ color: highlighterColorRef.current }).run()
+        }
+      }
+    }
+    syncSelectionState()
+    editor.on('selectionUpdate', syncSelectionState)
+    editor.on('transaction', syncSelectionState)
+    return () => {
+      editor.off('selectionUpdate', syncSelectionState)
+      editor.off('transaction', syncSelectionState)
+    }
+  }, [editor])
+
+  useEffect(() => {
+    if (!editor) return
+    const range = aiPromptFocused ? aiSelectionRangeRef.current : aiResult?.selection ?? null
+    editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+  }, [aiPromptFocused, aiResult?.selection, editor])
 
   useEffect(() => {
     if (!activeEditorPanel) return
@@ -1076,14 +1610,39 @@ function App() {
     })
   }, [atomCards, atomProjectFilter, atomSearchQuery])
 
-  const unassignedNotes = useMemo(() => {
-    const projectIds = new Set(projects.map((project) => project.id))
-    return notes
-      .filter(
-        (note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId),
-      )
-      .sort(sortByUpdated)
-  }, [notes, projects])
+  const aiCommands = useMemo(
+    () => {
+      const base: Array<{ id: AICommandId; label: string; description: string; contextual?: boolean }> = editorHasSelection
+        ? [
+        { id: 'custom', label: 'Custom', description: 'Run a custom instruction' },
+        { id: 'rewrite', label: 'Rewrite', description: 'Improve the selected text', contextual: true },
+        { id: 'atomise', label: 'Atomise', description: 'Find durable concepts', contextual: true },
+        { id: 'mark', label: 'Mark writing', description: 'Assess against criteria', contextual: true },
+        { id: 'summarise', label: 'Summarise', description: 'Condense the selection' },
+      ]
+    : [
+        { id: 'custom', label: 'Custom', description: 'Run a custom instruction' },
+        { id: 'continue', label: 'Continue', description: 'Keep writing in context', contextual: true },
+        { id: 'summarise', label: 'Summarise', description: 'Condense this note' },
+        { id: 'atomise', label: 'Atomise', description: 'Find note concepts' },
+        { id: 'mark', label: 'Mark writing', description: 'Assess against criteria' },
+      ]
+      return base
+    },
+    [editorHasSelection],
+  )
+
+  useEffect(() => {
+    if (aiCommands.some((command) => command.id === activeAICommand)) return
+    setActiveAICommand(aiCommands[0]?.id ?? 'custom')
+  }, [activeAICommand, aiCommands])
+
+  const cycleAICommand = (direction: 1 | -1 = 1) => {
+    if (!aiCommands.length) return
+    const currentIndex = Math.max(0, aiCommands.findIndex((command) => command.id === activeAICommand))
+    const nextIndex = (currentIndex + direction + aiCommands.length) % aiCommands.length
+    setActiveAICommand(aiCommands[nextIndex].id)
+  }
 
   const dashboardStats = useMemo(() => {
     const recentNote = [...notes].sort(sortByUpdated)[0]
@@ -1248,12 +1807,123 @@ function App() {
     void saveUserSettings({ ...userSettings, aiProviders: nextProviders })
   }
 
+  const requestAIText = async (taskInstruction: string, userContent: string, signal: AbortSignal) => {
+    const providerId = userSettings.defaultAIProvider
+    const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
+    const provider = userSettings.aiProviders[providerId]
+    const apiKey = provider.apiKey.trim()
+    if (!provider.enabled || !apiKey) throw new Error(`Missing ${providerMeta.name} API key.`)
+
+    let responseText = ''
+    let usage: UserSettings['aiLastUsage']
+    if (providerId === 'gemini') {
+      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
+      const response = await fetch(`${baseUrl}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: taskInstruction }] },
+          contents: [{ role: 'user', parts: [{ text: userContent }] }],
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
+      responseText = data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? '').join('').trim()
+      usage = extractUsage(data)
+    } else if (providerId === 'openai') {
+      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal,
+        body: JSON.stringify({
+          model: provider.model,
+          instructions: taskInstruction,
+          input: userContent,
+          prompt_cache_key: selectedNote?.id ?? 'loci-notes-local',
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
+      responseText = extractOpenAIText(data)
+      usage = extractUsage(data)
+    } else {
+      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      }
+      const body: Record<string, unknown> = {
+        model: provider.model,
+        messages: [
+          { role: 'system', content: taskInstruction },
+          { role: 'user', content: userContent },
+        ],
+      }
+      let url = `${baseUrl}/chat/completions`
+      if (providerId === 'claude') {
+        url = `${baseUrl}/messages`
+        headers['x-api-key'] = apiKey
+        headers['anthropic-version'] = '2023-06-01'
+        delete headers.Authorization
+        body.max_tokens = CLAUDE_REQUIRED_MAX_TOKENS
+        body.system = taskInstruction
+        body.messages = [{ role: 'user', content: userContent }]
+      }
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal,
+        body: JSON.stringify(body),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
+      responseText =
+        providerId === 'claude'
+          ? data?.content?.map((part: { text?: string }) => part.text ?? '').join('').trim()
+          : data?.choices?.[0]?.message?.content?.trim()
+      usage = extractUsage(data)
+    }
+
+    if (!responseText) throw new Error(`${providerMeta.name} returned an empty response.`)
+    return { providerId, providerMeta, responseText, usage }
+  }
+
   const buildAIContext = (taskType: AITaskType) => {
     const appParts = [`Current view: ${activeView}`]
     if (selectedNote) appParts.push(`Note title: ${selectedNote.title}`)
     if (selectedProject) appParts.push(`Project: ${selectedProject.name}`)
     if (selectedNote) appParts.push(`Template: ${selectedNote.templateId}`)
     const parts: string[] = [`App context:\n${appParts.join('\n')}`]
+    const projectMemory = parseProjectMemory(selectedProject?.description ?? '')
+    if (projectMemory.summary.trim()) {
+      parts.push(`Project summary:\n${projectMemory.summary.trim()}`)
+    }
+    if (projectMemory.instructions.trim()) {
+      parts.push(`Project instructions:\n${projectMemory.instructions.trim()}`)
+    }
+    if (taskUsesWritingStyle(taskType) && projectMemory.writingStyle.trim()) {
+      parts.push(`Project writing style:\n${projectMemory.writingStyle.trim()}`)
+    }
+    if (taskType === 'mark_writing') {
+      const criteria = projectMemory.markingCriteria.trim() || aiMarkingCriteria.trim() || DEFAULT_MARKING_CRITERIA
+      parts.push(`${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}`)
+    }
+    if (selectedProject) {
+      const styleSamples = notes
+        .filter((note) => note.projectId === selectedProject.id && note.id !== selectedNote?.id)
+        .sort(sortByUpdated)
+        .slice(0, 3)
+        .map((note) => `${note.title}: ${collectNotePreviewLines(note.content, 3).join(' ') || collectText(note.content).slice(0, 260)}`)
+        .filter((sample) => sample.trim().length > 0)
+      if (styleSamples.length) {
+        parts.push(`Writing style signals from this project:\n${styleSamples.join('\n')}`)
+      }
+    }
     if (editor) {
       const { from, to, empty } = editor.state.selection
       const selectedText = empty ? '' : editor.state.doc.textBetween(from, to, ' ').trim()
@@ -1266,14 +1936,14 @@ function App() {
     if (selectedNote) {
       const outline = collectNotePreviewLines(selectedNote.content, 8).join('\n')
       if (outline) parts.push(`Compact note outline:\n${outline}`)
-      const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' ? 4200 : 1600
+      const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' || taskType === 'ai_atomise' || taskType === 'mark_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
       const excerpt = collectText(selectedNote.content).slice(0, excerptLimit)
       if (excerpt) parts.push(`${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}`)
     }
     return parts.join('\n\n')
   }
 
-  const requestAICompletion = async (prompt: string) => {
+  const requestAICompletion = async (prompt: string, command: AICommandId = activeAICommand) => {
     const providerId = userSettings.defaultAIProvider
     const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
     const provider = userSettings.aiProviders[providerId]
@@ -1295,9 +1965,13 @@ function App() {
       editor && !editor.state.selection.empty
         ? { from: editor.state.selection.from, to: editor.state.selection.to }
         : undefined
-    const taskType = routeAITask(prompt, !!selection)
+    const taskType = routeAITask(prompt, !!selection, command)
+    const selectionOriginalText =
+      selection && editor && taskType === 'edit_selection'
+        ? editor.state.doc.textBetween(selection.from, selection.to, '\n')
+        : undefined
     const actionConfig = aiActionConfig(taskType, !!selection)
-    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\n${AI_TASK_CONTRACTS[taskType]}`
+    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Marking criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
     const context = buildAIContext(taskType)
     const userContent = `${context ? `Context:\n${context}\n\n` : ''}User request:\n${prompt.trim()}`
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
@@ -1382,14 +2056,17 @@ function App() {
       }
 
       if (!responseText) throw new Error(`${providerMeta.name} returned an empty response.`)
-      const insertableResponse = sanitizeAIInsertText(responseText)
+      const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
       setAiResult({
         prompt,
         taskType,
         response: responseText,
         insertableResponse,
+        draftText: insertableResponse || responseText,
         provider: providerId,
         selection,
+        selectionOriginalText,
+        canUpdateProjectInstructions: !!selectedProject && canResultUpdateProjectInstructions(taskType),
         ...actionConfig,
       })
       void saveUserSettings({
@@ -1401,6 +2078,7 @@ function App() {
         aiLastRequestAt: nowIso(),
       })
       setAiPrompt('')
+      setAiPromptFocused(false)
     } catch (error) {
       const timedOut = error instanceof DOMException && error.name === 'AbortError'
       const message = timedOut
@@ -1424,15 +2102,16 @@ function App() {
     }
   }
 
-  const submitAIPrompt = () => {
-    const prompt = aiPrompt.trim()
+  const submitAIPrompt = (command: AICommandId = activeAICommand) => {
+    const fallbackPrompt = defaultPromptForCommand(command, editorHasSelection)
+    const prompt = aiPrompt.trim() || fallbackPrompt
     if (!prompt || aiRunning) return
-    void requestAICompletion(prompt)
+    void requestAICompletion(prompt, command)
   }
 
   const createAtomsFromAIResult = async () => {
     if (!aiResult) return
-    const candidates = parseAtomCandidates(aiResult.insertableResponse || aiResult.response)
+    const candidates = parseAtomCandidates(aiResult.draftText)
     if (!candidates.length) {
       setNotice('No atom candidates found in the AI response.')
       return
@@ -1452,6 +2131,75 @@ function App() {
     setAtoms((current) => [...created, ...current])
     setAiResult(null)
     setNotice(`Created ${created.length} atom${created.length === 1 ? '' : 's'}.`)
+  }
+
+  const draftProjectInstructionsFromAIResult = async () => {
+    if (!aiResult || !selectedProject) return
+    const providerId = userSettings.defaultAIProvider
+    const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
+    const provider = userSettings.aiProviders[providerId]
+    if (!provider.enabled || !provider.apiKey.trim()) {
+      setNotice(`Add a ${providerMeta.name} API key in Settings first.`)
+      setActiveView('settings')
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: 'error',
+        aiLastProvider: providerId,
+        aiLastError: `Missing ${providerMeta.name} API key.`,
+        aiLastRequestAt: nowIso(),
+      })
+      return
+    }
+
+    const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\n${AI_TASK_CONTRACTS.update_project_instructions}`
+    const context = buildAIContext('update_project_instructions')
+    const userContent = [
+      context ? `Context:\n${context}` : '',
+      `Current project memory:\n${serializeProjectMemory(parseProjectMemory(selectedProject.description ?? '')) || '(empty)'}`,
+      `Latest AI task: ${aiResult.taskType}`,
+      `Latest user request:\n${aiResult.prompt}`,
+      `Latest editable AI draft or feedback:\n${aiResult.draftText}`,
+      'Draft a replacement project description that can be saved directly.',
+    ].filter(Boolean).join('\n\n')
+
+    setAiInstructionUpdating(true)
+    setNotice('')
+    try {
+      const result = await requestAIText(taskInstruction, userContent, controller.signal)
+      const projectInstructionDraft = cleanAIDraftFormatting(sanitizeAIInsertText(result.responseText))
+      setAiResult((current) => (current ? { ...current, projectInstructionDraft } : current))
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: 'success',
+        aiLastProvider: result.providerId,
+        aiLastError: '',
+        aiLastUsage: result.usage,
+        aiLastRequestAt: nowIso(),
+      })
+    } catch (error) {
+      const timedOut = error instanceof DOMException && error.name === 'AbortError'
+      const message = timedOut
+        ? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
+        : error instanceof TypeError
+          ? 'The provider request was blocked by the browser or network.'
+          : error instanceof Error
+            ? error.message
+            : 'AI request failed.'
+      setNotice(`${providerMeta.name}: ${message}`)
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: timedOut ? 'timeout' : 'error',
+        aiLastProvider: providerId,
+        aiLastError: message,
+        aiLastRequestAt: nowIso(),
+      })
+    } finally {
+      window.clearTimeout(timeoutId)
+      setAiInstructionUpdating(false)
+    }
   }
 
   const openProjectQuickNote = useCallback((noteId: string) => {
@@ -1507,6 +2255,12 @@ function App() {
         setActiveEditorPanel(null)
         return
       }
+      if (event.key === 'Escape' && aiPromptFocused) {
+        event.preventDefault()
+        setAiPromptFocused(false)
+        aiPromptInputRef.current?.blur()
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         if (atomDialog) return
@@ -1523,7 +2277,7 @@ function App() {
     }
     document.addEventListener('keydown', onDocKeyDown)
     return () => document.removeEventListener('keydown', onDocKeyDown)
-  }, [activeEditorPanel, appDialog, atomDialog, closeAppDialog, closeSearch, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchProjectQuickNote, templateProjectId])
+  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, closeAppDialog, closeSearch, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchProjectQuickNote, templateProjectId])
 
   
   useEffect(() => {
@@ -1601,13 +2355,13 @@ function App() {
 
   const openTemplateChooser = (projectOverrideId?: string) => {
     setActiveEditorPanel(null)
-    setTemplateProjectId(projectOverrideId || selectedProjectId || selectedProject?.id || projects[0]?.id || 'project_database')
+    setTemplateProjectId(projectOverrideId || UNASSIGNED_PROJECT_ID)
   }
 
   const createNoteFromTemplate = async (templateId: NoteTemplateId, projectOverrideId?: string) => {
     const template = getNoteTemplate(templateId)
     if (!template.available) return
-    const projectId = projectOverrideId || selectedProjectId || selectedProject?.id || projects[0]?.id || 'project_database'
+    const projectId = projectOverrideId || templateProjectId || UNASSIGNED_PROJECT_ID
     const templateData = templateDataFor(templateId, template.content)
     const note: Note = {
       id: createId('note'),
@@ -1626,7 +2380,8 @@ function App() {
     setTemplateProjectId(null)
     setNotes((current) => [note, ...current])
     setSelectedNoteId(note.id)
-    setSelectedProjectId(projectId)
+    setSelectedNoteIds([])
+    setSelectedProjectId(projectId === UNASSIGNED_PROJECT_ID ? '' : projectId)
     setActiveView('editor')
   }
 
@@ -1941,6 +2696,31 @@ function App() {
     })
   }
 
+  const toggleHighlight = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
+    if (!editor) return
+    if (editor.state.selection.empty) {
+      setHighlighterArmed((armed) => !armed)
+      lastPaintedHighlightRangeRef.current = ''
+      editor.chain().focus().run()
+      return
+    }
+    editor.chain().focus().toggleHighlight({ color }).run()
+    setHighlighterArmed(false)
+  }
+
+  const selectHighlighterColor = (color: string) => {
+    updateUserSettings({ highlighterColor: color })
+    setHighlightPaletteOpen(false)
+    if (editor && !editor.state.selection.empty) {
+      editor.chain().focus().toggleHighlight({ color }).run()
+      setHighlighterArmed(false)
+      return
+    }
+    setHighlighterArmed(true)
+    lastPaintedHighlightRangeRef.current = ''
+    editor?.chain().focus().run()
+  }
+
   const formatOptions: FormatOption[] = [
     {
       id: 'heading-1',
@@ -2045,6 +2825,19 @@ function App() {
 
   const formatGroups: Array<FormatOption['group']> = ['Structure', 'Insert', 'Advanced blocks']
 
+  const startWindowDrag = () => {
+    void getCurrentWindow().startDragging()
+  }
+  const minimizeWindow = () => {
+    void getCurrentWindow().minimize()
+  }
+  const toggleMaximizeWindow = () => {
+    void getCurrentWindow().toggleMaximize()
+  }
+  const closeWindow = () => {
+    void getCurrentWindow().close()
+  }
+
   const sidebarOpen = sidebarPinned || sidebarHovered
   const shellClassName = [
     'app-shell',
@@ -2063,6 +2856,16 @@ function App() {
 
   return (
     <main className="app-stage">
+      <header className="custom-titlebar" onMouseDown={startWindowDrag}>
+        <div className="custom-titlebar-drag">
+          <span>Loci Notes</span>
+        </div>
+        <div className="custom-titlebar-controls" onMouseDown={(event) => event.stopPropagation()}>
+          <button type="button" aria-label="Minimize window" onClick={minimizeWindow}>−</button>
+          <button type="button" aria-label="Maximize window" onClick={toggleMaximizeWindow}>□</button>
+          <button type="button" className="is-close" aria-label="Close window" onClick={closeWindow}>×</button>
+        </div>
+      </header>
       <section className={shellClassName} aria-label="Loci Notes">
         <aside
           className={sidebarClassName}
@@ -2094,7 +2897,15 @@ function App() {
               <Home size={18} />
               <span className="nav-label">Home</span>
             </button>
-            <button className={activeView === 'projects' ? 'active' : ''} type="button" onClick={() => setActiveView('projects')}>
+            <button
+              className={`${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
+              type="button"
+              onDragOver={handleNoteDropTargetDragOver}
+              onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
+              onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
+              onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
+              onClick={() => setActiveView('projects')}
+            >
               <Layers3 size={18} />
               <span className="nav-label">Projects</span>
             </button>
@@ -2307,9 +3118,13 @@ function App() {
             <div className="document-scroll">
               <div className="breadcrumbs">
                 <button
-                  className="compact-back-button"
+                  className={`compact-back-button ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
                   type="button"
                   aria-label={selectedProject ? `Back to ${selectedProject.name}` : 'Back to Projects'}
+                  onDragOver={handleNoteDropTargetDragOver}
+                  onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
+                  onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
+                  onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
                   onClick={() => {
                     setSelectedProjectId(selectedProject?.id ?? '')
                     setActiveView('projects')
@@ -2318,8 +3133,12 @@ function App() {
                   <ArrowLeft size={16} />
                 </button>
                 <button
-                  className="breadcrumb-button"
+                  className={`breadcrumb-button ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
                   type="button"
+                  onDragOver={handleNoteDropTargetDragOver}
+                  onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
+                  onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
+                  onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
                   onClick={() => {
                     setSelectedProjectId('')
                     setActiveView('projects')
@@ -2488,19 +3307,79 @@ function App() {
                 <div className="floating-editor-bar" role="toolbar" aria-label="Editor tools">
                   <button type="button" onClick={atomiseSelection}><Sparkles size={16} /> Atomise</button>
                   <button type="button" onClick={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}><Heading2 size={16} /> Format</button>
-                  <label className="floating-ai-prompt">
+                  <div className="highlight-tool">
+                    <button
+                      type="button"
+                      className={`highlight-button ${highlighterArmed ? 'is-armed' : ''}`}
+                      aria-label="Highlight"
+                      title={highlighterArmed ? 'Highlight mode active' : 'Highlight selected text'}
+                      aria-pressed={highlighterArmed}
+                      aria-expanded={highlightPaletteOpen}
+                      onClick={() => toggleHighlight()}
+                      onDoubleClick={(event) => {
+                        event.preventDefault()
+                        setHighlightPaletteOpen((open) => !open)
+                      }}
+                    >
+                      <svg className="highlight-icon" viewBox="0 0 24 24" aria-hidden>
+                        <path d="M4 20h16" />
+                        <path d="M14.5 4.5 19 9l-8.7 8.7-4.5-4.5z" />
+                        <path d="m5.8 13.2-1.2 4.2 4.2-1.2" />
+                      </svg>
+                      <span className="highlight-swatch" style={{ background: userSettings.highlighterColor }} aria-hidden />
+                    </button>
+                    {highlightPaletteOpen && (
+                      <div className="highlight-palette" aria-label="Highlight colours">
+                        {HIGHLIGHTER_COLORS.map((color) => (
+                          <button
+                            type="button"
+                            key={color}
+                            className={color === userSettings.highlighterColor ? 'is-active' : ''}
+                            style={{ background: color }}
+                            aria-label={`Use highlight colour ${color}`}
+                            onClick={() => selectHighlighterColor(color)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className={`floating-ai-prompt ${aiPromptFocused ? 'is-open' : ''}`}>
                     <Sparkles size={16} aria-hidden />
                     <input
+                      ref={aiPromptInputRef}
                       value={aiPrompt}
+                      onFocus={() => {
+                        if (editor && !editor.state.selection.empty) {
+                          aiSelectionRangeRef.current = {
+                            from: editor.state.selection.from,
+                            to: editor.state.selection.to,
+                          }
+                          editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range: aiSelectionRangeRef.current }))
+                        }
+                        setAiPromptFocused(true)
+                        setActiveEditorPanel(null)
+                      }}
+                      onBlur={() => setAiPromptFocused(false)}
                       onChange={(event) => setAiPrompt(event.target.value)}
                       onKeyDown={(event) => {
+                        if (event.key === 'Tab' && event.shiftKey) {
+                          event.preventDefault()
+                          cycleAICommand(1)
+                          return
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          setAiPromptFocused(false)
+                          aiPromptInputRef.current?.blur()
+                          return
+                        }
                         if (event.key === 'Enter') {
                           event.preventDefault()
                           submitAIPrompt()
                         }
                       }}
                       disabled={aiRunning}
-                      placeholder={aiRunning ? 'Asking...' : 'Ask AI...'}
+                      placeholder={aiRunning ? 'Working...' : defaultPromptForCommand(activeAICommand, editorHasSelection) || 'Tell AI what to do...'}
                     />
                   </label>
                   <span className={`floating-save-state ${showSaveState ? 'is-visible' : ''}`}>{showSaveState ? (saving ? 'Saving...' : 'Saved') : ''}</span>
@@ -2577,9 +3456,11 @@ function App() {
                 project={openedProject}
                 notes={notes}
                 atomCards={atomCards}
-                draggedNoteId={draggedNoteId}
+                draggedNoteIds={draggedNoteIds}
+                selectedNoteIds={selectedNoteIds}
                 onNoteDragStart={handleNoteDragStart}
                 onNoteDragEnd={handleNoteDragEnd}
+                onNoteSelect={setSelectedNoteIds}
                 deleteNote={(note) => void deleteNote(note)}
                 openNote={(noteId) => {
                   setSelectedNoteId(noteId)
@@ -2602,7 +3483,7 @@ function App() {
                       <button
                         type="button"
                         key={project.id}
-                        className={`project-row ${draggedNoteId ? 'is-drop-target' : ''} ${isDropActive ? 'is-drop-active' : ''}`}
+                        className={`project-row ${draggedNoteIds.length ? 'is-drop-target' : ''} ${isDropActive ? 'is-drop-active' : ''}`}
                         onDragOver={handleNoteDropTargetDragOver}
                         onDragEnter={() => setDragOverProjectId(project.id)}
                         onDragLeave={() => setDragOverProjectId((current) => (current === project.id ? '' : current))}
@@ -2612,80 +3493,77 @@ function App() {
                           setSelectedProjectId(project.id)
                         }}
                       >
-                        <span className="project-color-strip" style={{ background: project.color }} />
                         <span className="project-row-main">
                           <strong>{project.name}</strong>
                           <p>{project.description?.trim() || 'No description yet'}</p>
                           {recentNote && <small>Recent: {recentNote.title}</small>}
                         </span>
-                        <span className="project-row-meta">
-                          <small>{draggedNoteId && isDropActive ? 'Drop here' : `${projectNotes.length} file${projectNotes.length === 1 ? '' : 's'}`}</small>
-                          <b>Open</b>
+                        <span className="project-card-type-icon" aria-label="Project">
+                          <Layers3 size={22} />
                         </span>
                       </button>
                     )
                   })}
-                </div>
-
-                <section
-                  className={`loose-files-panel ${draggedNoteId ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
-                  aria-label="Loose files"
-                  onDragOver={handleNoteDropTargetDragOver}
-                  onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
-                  onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
-                  onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-                >
-                  <div className="loose-files-head">
-                    <p>Notes not assigned to a project.</p>
-                    <span>{unassignedNotes.length} file{unassignedNotes.length === 1 ? '' : 's'}</span>
-                  </div>
-                  {unassignedNotes.length ? (
-                    <ul className="loose-file-list">
-                      {unassignedNotes.map((note) => (
-                        <li key={note.id}>
-                          <div
-                            className={`loose-file-row ${draggedNoteId === note.id ? 'is-dragging' : ''}`}
-                            role="button"
-                            tabIndex={0}
-                            draggable
-                            onDragStart={(event) => handleNoteDragStart(event, note.id)}
-                            onDragEnd={handleNoteDragEnd}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault()
-                                setSelectedNoteId(note.id)
-                                setActiveView('editor')
-                              }
-                            }}
-                            onClick={() => {
-                              setSelectedNoteId(note.id)
-                              setActiveView('editor')
+                  {unassignedNotes.map((note) => {
+                    const isSelected = selectedNoteIds.includes(note.id)
+                    const isDragging = draggedNoteIds.includes(note.id)
+                    const NoteTypeIcon = noteTemplateIcons[note.templateId ?? 'blank']
+                    return (
+                      <div
+                        className={`project-loose-note-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
+                        key={note.id}
+                        role="button"
+                        tabIndex={0}
+                        draggable
+                        aria-selected={isSelected}
+                        onDragStart={(event) => handleNoteDragStart(event, note.id)}
+                        onDragEnd={handleNoteDragEnd}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSelectedNoteId(note.id)
+                            setActiveView('editor')
+                          }
+                        }}
+                        onClick={(event) => {
+                          if (event.shiftKey) {
+                            setSelectedNoteIds((current) =>
+                              current.includes(note.id)
+                                ? current.filter((id) => id !== note.id)
+                                : [...current, note.id],
+                            )
+                            return
+                          }
+                          setSelectedNoteIds([])
+                          setSelectedNoteId(note.id)
+                          setActiveView('editor')
+                        }}
+                      >
+                        <span className="project-row-main">
+                          <strong>{note.title}</strong>
+                          <p>{collectText(note.content) || 'Empty note'}</p>
+                          <small>Unsorted</small>
+                        </span>
+                        <span className="project-loose-note-actions">
+                          <span className="project-card-type-icon" aria-label={getNoteTemplate(note.templateId ?? 'blank').name}>
+                            <NoteTypeIcon size={22} />
+                          </span>
+                          <button
+                            type="button"
+                            className="note-row-delete"
+                            aria-label={`Delete ${note.title || 'Untitled Note'}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void deleteNote(note)
                             }}
                           >
-                            <div>
-                              <strong>{note.title}</strong>
-                              <p>{collectText(note.content) || 'Empty file'}</p>
-                            </div>
-                            <time>{formatDay(note.updatedAt)}</time>
-                            <button
-                              type="button"
-                              className="note-row-delete"
-                              aria-label={`Delete ${note.title || 'Untitled Note'}`}
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                void deleteNote(note)
-                              }}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="loose-files-empty">Nothing loose right now. New notes assigned to projects will stay organized here.</p>
-                  )}
-                </section>
+                            <Trash2 size={14} />
+                          </button>
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
               </>
             )}
           </section>
@@ -2968,51 +3846,121 @@ function App() {
             if (event.target === event.currentTarget) setAiResult(null)
           }}
         >
-          <section className="ai-result-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-result-title">
-            <span className="panel-kicker">{aiProviders.find((provider) => provider.id === aiResult.provider)?.name ?? 'AI'}</span>
-            <h2 id="ai-result-title">AI response</h2>
-            <span className="ai-task-label">{aiResult.taskType.replace(/_/g, ' ')}</span>
-            <p>{aiResult.prompt}</p>
-            <div className="ai-result-output">{aiResult.insertableResponse || aiResult.response}</div>
-            <footer>
-              {aiResult.canCreateAtoms && (
-                <button type="button" className="primary" onClick={() => void createAtomsFromAIResult()}>
-                  Create atoms
-                </button>
+          <section
+            className={`ai-result-dialog${aiResult.canReplaceSelection && aiResult.selectionOriginalText !== undefined ? ' ai-result-dialog--wide' : ''}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-result-title"
+          >
+            <button
+              type="button"
+              className="ai-result-close"
+              aria-label="Close AI result"
+              onClick={() => setAiResult(null)}
+            >
+              <X size={18} />
+            </button>
+            <h2 id="ai-result-title">{aiResultTitle(aiResult)}</h2>
+            {aiResult.taskType === 'mark_writing' ? (
+              <MarkWritingFeedbackFields
+                draftText={aiResult.draftText}
+                onChange={(next) => setAiResult((current) => (current ? { ...current, draftText: next } : current))}
+              />
+            ) : aiResult.canReplaceSelection && aiResult.selectionOriginalText !== undefined ? (
+              <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
+                <div className="ai-rewrite-compare-pane">
+                  <span className="ai-rewrite-compare-heading">Original selection</span>
+                  <div className="ai-rewrite-compare-readonly">{aiResult.selectionOriginalText.trim() || '—'}</div>
+                </div>
+                <div className="ai-rewrite-compare-pane">
+                  <label className="ai-draft-editor ai-rewrite-compare-draft">
+                    <textarea
+                      value={aiResult.draftText}
+                      onChange={(event) =>
+                        setAiResult((current) => (current ? { ...current, draftText: event.target.value } : current))
+                      }
+                      aria-label={aiDraftLabel(aiResult.taskType)}
+                      autoFocus
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <label className="ai-draft-editor">
+                <textarea
+                  value={aiResult.draftText}
+                  onChange={(event) => setAiResult((current) => (current ? { ...current, draftText: event.target.value } : current))}
+                  aria-label={aiDraftLabel(aiResult.taskType)}
+                  autoFocus
+                />
+              </label>
+            )}
+            {aiResult.taskType !== 'mark_writing' &&
+              aiResult.taskType !== 'ai_atomise' &&
+              aiResult.taskType !== 'atom_task' && (
+                <details className="ai-draft-preview-details" open>
+                  <summary>Formatted preview</summary>
+                  <div className="ai-draft-preview-panel">
+                    <AiDraftFormattedPreview text={aiResult.draftText} />
+                  </div>
+                </details>
               )}
-              {aiResult.canReplaceSelection && aiResult.selection && (
+            {aiResult.projectInstructionDraft !== undefined && (
+              <label className="ai-draft-editor ai-project-instruction-draft">
+                <textarea
+                  value={aiResult.projectInstructionDraft}
+                  onChange={(event) => setAiResult((current) => (current ? { ...current, projectInstructionDraft: event.target.value } : current))}
+                  aria-label="Project instructions update"
+                />
+              </label>
+            )}
+            <footer>
+              {(aiResult.canCreateAtoms || aiResult.canReplaceSelection || aiResult.canInsert || aiResult.taskType === 'answer_with_context' || aiResult.taskType === 'app_help' || aiResult.taskType === 'mark_writing') && (
                 <button
                   type="button"
                   className="primary"
                   onClick={() => {
-                    const selection = aiResult.selection
-                    if (!selection) return
-                    editor
-                      ?.chain()
-                      .focus()
-                      .setTextSelection(selection)
-                      .deleteSelection()
-                      .insertContent(aiResult.insertableResponse || aiResult.response)
-                      .run()
+                    if (aiResult.canCreateAtoms) {
+                      void createAtomsFromAIResult()
+                      return
+                    }
+                    if (aiResult.canReplaceSelection && aiResult.selection) {
+                      editor
+                        ?.chain()
+                        .focus()
+                        .setTextSelection(aiResult.selection)
+                        .deleteSelection()
+                        .insertContent(textToEditorContent(aiResult.draftText).content ?? [])
+                        .run()
+                      setAiResult(null)
+                      return
+                    }
+                    if (editor) insertDraftText(editor, aiResult.draftText)
                     setAiResult(null)
                   }}
                 >
-                  Replace selection
+                  {aiPrimaryActionLabel(aiResult)}
                 </button>
               )}
-              <button type="button" onClick={() => void copyToClipboard(aiResult.insertableResponse || aiResult.response)}>Copy</button>
-              {(aiResult.canInsert || aiResult.taskType === 'answer_with_context' || aiResult.taskType === 'app_help' || aiResult.taskType === 'atom_task') && (
+              {aiResult.canUpdateProjectInstructions && selectedProject && aiResult.projectInstructionDraft === undefined && (
+                <button type="button" onClick={() => void draftProjectInstructionsFromAIResult()} disabled={aiInstructionUpdating}>
+                  {aiInstructionUpdating ? 'Drafting...' : 'Update project instructions'}
+                </button>
+              )}
+              {selectedProject && aiResult.projectInstructionDraft !== undefined && (
                 <button
                   type="button"
                   onClick={() => {
-                    editor?.chain().focus().insertContent(aiResult.insertableResponse || aiResult.response).run()
-                    setAiResult(null)
+                    const draft = aiResult.projectInstructionDraft?.trim()
+                    if (!draft) return
+                    void updateProjectDescription(selectedProject.id, draft)
+                    setAiResult((current) => (current ? { ...current, projectInstructionDraft: undefined } : current))
                   }}
                 >
-                  {aiResult.taskType === 'atom_task' ? 'Insert definitions' : 'Insert'}
+                  Save project instructions
                 </button>
               )}
-              <button type="button" onClick={() => setAiResult(null)}>Close</button>
+              <button type="button" onClick={() => void copyToClipboard(aiResult.draftText)}>Copy</button>
             </footer>
           </section>
         </div>
@@ -3064,21 +4012,6 @@ function App() {
                 aria-activedescendant={searchHits[searchActiveIndex] ? `search-hit-${searchActiveIndex}` : undefined}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
-              <button
-                type="button"
-                className="global-search-clear-button"
-                aria-label={searchQuery ? 'Clear search' : 'Close search'}
-                onClick={() => {
-                  if (searchQuery) {
-                    setSearchQuery('')
-                    searchInputRef.current?.focus()
-                    return
-                  }
-                  closeSearch()
-                }}
-              >
-                <X size={16} aria-hidden />
-              </button>
             </div>
             <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
               {searchNormalized && searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
@@ -3473,13 +4406,58 @@ function DashboardPanel({ title, className = '', children }: { title: string; cl
   )
 }
 
-function ProjectDetail({ project, notes, atomCards, draggedNoteId, onNoteDragStart, onNoteDragEnd, deleteNote, openNote, newNote, deleteProject, updateDescription, back }: {
+function ProjectMemoryTextarea({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+}: {
+  value: string
+  onChange: (next: string) => void
+  placeholder: string
+  ariaLabel: string
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  const syncHeight = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    const minPx = 68
+    el.style.height = `${Math.max(minPx, el.scrollHeight)}px`
+  }, [])
+
+  useLayoutEffect(() => {
+    syncHeight()
+  }, [value, syncHeight])
+
+  useEffect(() => {
+    window.addEventListener('resize', syncHeight)
+    return () => window.removeEventListener('resize', syncHeight)
+  }, [syncHeight])
+
+  return (
+    <textarea
+      ref={ref}
+      className="project-memory-field"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      rows={1}
+    />
+  )
+}
+
+function ProjectDetail({ project, notes, atomCards, draggedNoteIds, selectedNoteIds, onNoteDragStart, onNoteDragEnd, onNoteSelect, deleteNote, openNote, newNote, deleteProject, updateDescription, back }: {
   project: Project
   notes: Note[]
   atomCards: ReturnType<typeof buildAtomCards>
-  draggedNoteId: string
+  draggedNoteIds: string[]
+  selectedNoteIds: string[]
   onNoteDragStart: (event: React.DragEvent<HTMLElement>, noteId: string) => void
   onNoteDragEnd: () => void
+  onNoteSelect: React.Dispatch<React.SetStateAction<string[]>>
   deleteNote: (note: Note) => void
   openNote: (noteId: string) => void
   newNote: () => void
@@ -3489,6 +4467,8 @@ function ProjectDetail({ project, notes, atomCards, draggedNoteId, onNoteDragSta
 }) {
   const projectNotes = notes.filter((note) => note.projectId === project.id)
   const projectAtoms = atomCards.filter((card) => card.projectIds.includes(project.id))
+  const projectMemory = parseProjectMemory(project.description ?? '')
+  const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
 
   return (
     <>
@@ -3503,54 +4483,100 @@ function ProjectDetail({ project, notes, atomCards, draggedNoteId, onNoteDragSta
           </div>
         }
       />
-      <button className="back-link" type="button" onClick={back}><ArrowLeft size={15} /> Projects</button>
-      <div className="project-detail-summary">
-        <input
-          className="project-description-field"
-          type="text"
-          value={project.description ?? ''}
-          onChange={(event) => updateDescription(event.target.value)}
-          placeholder="Add a project description..."
-          aria-label="Project description"
-        />
+      <div className="project-detail-toolbar">
+        <div className="project-detail-toolbar-top">
+          <button type="button" className="back-link" onClick={back}>
+            <ArrowLeft size={15} /> Projects
+          </button>
+          <button
+            type="button"
+            className="project-description-toolbar-summary"
+            aria-expanded={projectDescriptionOpen}
+            onClick={() => setProjectDescriptionOpen((open) => !open)}
+          >
+            <span>Project Description</span>
+            <ChevronDown
+              size={16}
+              className={`project-description-toolbar-chevron${projectDescriptionOpen ? ' is-open' : ''}`}
+              aria-hidden
+            />
+          </button>
+        </div>
+        {projectDescriptionOpen && (
+          <div className="project-memory-expand">
+            {PROJECT_MEMORY_HEADINGS.map(({ key, label }) => {
+              const meta = PROJECT_MEMORY_FIELD_META[key]
+              return (
+                <div className="project-memory-row" key={key}>
+                  <div className="project-memory-row-head">
+                    <strong>{label}</strong>
+                    <span className="project-memory-hint">{meta.hint}</span>
+                  </div>
+                  <ProjectMemoryTextarea
+                    value={projectMemory[key]}
+                    onChange={(next) => updateDescription(updateProjectMemorySection(project.description, key, next))}
+                    placeholder={meta.placeholder}
+                    ariaLabel={meta.ariaLabel}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
       <div className="project-detail-grid">
         <section className="project-files-panel">
           <span>Files · {projectNotes.length}</span>
           {projectNotes.length ? (
-            projectNotes.map((note) => (
-              <div
-                className={`file-row ${draggedNoteId === note.id ? 'is-dragging' : ''}`}
-                key={note.id}
-                role="button"
-                tabIndex={0}
-                draggable
-                onDragStart={(event) => onNoteDragStart(event, note.id)}
-                onDragEnd={onNoteDragEnd}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    openNote(note.id)
-                  }
-                }}
-                onClick={() => openNote(note.id)}
-              >
-                <strong>{note.title}</strong>
-                <span className="file-row-date">{formatDay(note.updatedAt)}</span>
-                <p>{collectText(note.content) || 'Empty note'}</p>
-                <button
-                  type="button"
-                  className="note-row-delete"
-                  aria-label={`Delete ${note.title || 'Untitled Note'}`}
+            projectNotes.map((note) => {
+              const isSelected = selectedNoteIds.includes(note.id)
+              const isDragging = draggedNoteIds.includes(note.id)
+              return (
+                <div
+                  className={`file-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
+                  key={note.id}
+                  role="button"
+                  tabIndex={0}
+                  draggable
+                  aria-selected={isSelected}
+                  onDragStart={(event) => onNoteDragStart(event, note.id)}
+                  onDragEnd={onNoteDragEnd}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      openNote(note.id)
+                    }
+                  }}
                   onClick={(event) => {
-                    event.stopPropagation()
-                    deleteNote(note)
+                    if (event.shiftKey) {
+                      onNoteSelect((current) =>
+                        current.includes(note.id)
+                          ? current.filter((id) => id !== note.id)
+                          : [...current, note.id],
+                      )
+                      return
+                    }
+                    onNoteSelect([])
+                    openNote(note.id)
                   }}
                 >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))
+                  <strong>{note.title}</strong>
+                  <span className="file-row-date">{formatDay(note.updatedAt)}</span>
+                  <p>{collectText(note.content) || 'Empty note'}</p>
+                  <button
+                    type="button"
+                    className="note-row-delete"
+                    aria-label={`Delete ${note.title || 'Untitled Note'}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      deleteNote(note)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )
+            })
           ) : (
             <p className="empty-state">No files in this project yet.</p>
           )}

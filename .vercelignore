@@ -1,0 +1,6 @@
+node_modules
+dist
+dist-ssr
+src-tauri/target
+vite-dev.*.log
+*.log

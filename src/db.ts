@@ -54,6 +54,7 @@ export type UserSettings = {
     cachedTokens?: number
   }
   aiLastRequestAt?: string
+  highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
   createdAt: string
