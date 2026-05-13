@@ -11,6 +11,14 @@ node_modules
 dist
 dist-ssr
 *.local
+.tauri-signing-private-key
+.tauri-signing-private-key.pub
+
+# Release artifacts are published through GitHub Releases.
+public/downloads/*.exe
+public/downloads/*.msi
+public/downloads/*.sig
+public/downloads/latest.json
 
 # Editor directories and files
 .vscode/*

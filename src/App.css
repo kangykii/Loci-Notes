@@ -2018,6 +2018,8 @@ button {
 
 .note-editor > *:hover .block-hover-controls,
 .block-hover-controls:hover,
+.format-block-control-hotspot:hover .format-block-hover-controls,
+.format-block-control-hotspot:focus-within .format-block-hover-controls,
 .format-block-hover-controls:hover,
 .format-block-hover-controls:focus-within,
 .note-editor:focus-within .block-hover-controls:hover {
@@ -2031,7 +2033,16 @@ button {
   pointer-events: none;
 }
 
+.format-block-control-hotspot {
+  position: absolute;
+  left: -96px;
+  right: 0;
+  display: block;
+  pointer-events: auto;
+}
+
 .format-block-hover-controls {
+  top: 0;
   pointer-events: auto;
 }
 
@@ -2913,6 +2924,48 @@ button {
 
 .settings-data-list strong {
   color: #111;
+}
+
+.settings-update-status {
+  display: grid;
+  gap: 4px;
+  border-radius: 10px;
+  background: #f6f6f4;
+  padding: 12px;
+  color: #4d4943;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-update-status strong,
+.settings-update-status span {
+  display: block;
+}
+
+.settings-update-status.is-available {
+  background: #eef2e7;
+  color: #526344;
+}
+
+.settings-update-status.is-error {
+  background: #f6e9e6;
+  color: #8f3d30;
+}
+
+.settings-update-button {
+  width: max-content;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: #111;
+  padding: 0 14px;
+  color: #fff;
+  font-weight: 700;
+}
+
+.settings-update-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .dashboard-bento {

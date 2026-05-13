@@ -2,3 +2,7 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# Release/update artifacts are uploaded to GitHub Releases, not committed.
+*.sig
+latest.json

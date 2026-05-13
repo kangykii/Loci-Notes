@@ -1,24 +1,21 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import { Extension, mergeAttributes, Node as TiptapNode } from '@tiptap/core'
 import { EditorContent, useEditor } from '@tiptap/react'
-import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Highlight from '@tiptap/extension-highlight'
 import Link from '@tiptap/extension-link'
-import Image from '@tiptap/extension-image'
 import { TextStyle } from '@tiptap/extension-text-style'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { check } from '@tauri-apps/plugin-updater'
 import {
   ArrowLeft,
   Brain,
-  Calendar,
   ChartNoAxesColumn,
   ChevronDown,
   Code2,
@@ -36,11 +33,9 @@ import {
   Layers3,
   LinkIcon,
   MoreHorizontal,
-  Minus,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
-  Quote,
   RemoveFormatting,
   Search,
   Settings,
@@ -56,188 +51,118 @@ import { AtomMark } from './AtomMark'
 import {
   appendNoteSnapshot,
   createId,
-  db,
-  ensureSeedData,
   loadNoteSnapshots,
   nowIso,
 } from './db'
+import type {
+  Atom,
+  FlashcardSet,
+  JSONContent,
+  LociBlock,
+  LociBlockType,
+  Note,
+  NoteSnapshot,
+  NoteTemplateData,
+  NoteTemplateId,
+  Project,
+  TemplateScheduleItem,
+  TemplateSlide,
+  TemplateTask,
+  UserProfile,
+  UserSettings,
+} from './db'
 import { exportNoteDocx, exportNotePdf } from './exports'
+import { requestAIText } from './ai/aiClient'
+import type { AIProviderId } from './ai/aiTypes'
+import { aiProviders, DEFAULT_AI_TIMEOUT_MS } from './ai/providers'
+import {
+  AI_SYSTEM_INSTRUCTION,
+  AI_TASK_CONTRACTS,
+  DEFAULT_MARKING_CRITERIA,
+  aiActionConfig,
+  canResultUpdateProjectInstructions,
+  cleanAIDraftFormatting,
+  defaultPromptForCommand,
+  parseAIQuotePayload,
+  parseAITablePayload,
+  parseAtomCandidates,
+  routeAITask,
+  sanitizeAIInsertText,
+  taskUsesWritingStyle,
+} from './ai/aiTasks'
+import type {
+  AIBlockPayload,
+  AICommandId,
+  AIResult,
+  AITaskType,
+} from './ai/aiTasks'
+import { AIResultDialog } from './components/dialogs/AIResultDialog'
+import { PageHeader } from './components/layout/PageHeader'
+import { DashboardPanel } from './components/views/DashboardPanel'
+import { ProjectDetail } from './components/views/ProjectDetail'
+import {
+  AISelectionHighlight,
+  BlockControlsExtension,
+  LociFlashcard,
+  LociImage,
+  LociQuote,
+  aiSelectionHighlightKey,
+  blockControlsKey,
+} from './editor/extensions'
+import type { EditorRange } from './editor/extensions'
+import {
+  blankBlockNode,
+  blankDoc,
+  blockContentNodes,
+  clampImageNumber,
+  collectAtomIds,
+  collectNotePreviewLines,
+  collectText,
+  contentFromBlocks,
+  contentHasAtom,
+  createLociBlock,
+  cloneTemplateValue,
+  flashcardBlockDoc,
+  flashcardsFromContent,
+  formatBlockTypeForBlock,
+  imageBlockDoc,
+  normalizeBlocksForContent,
+  quoteAuthorNode,
+  quoteBlockDocFromData,
+  quoteDataFromNode,
+  stripAtomMarks,
+  tableBlockDocFromData,
+  tableDataFromNode,
+  textToEditorContent,
+} from './editor/blocks'
+import type { FormatBlockType, ImageAlignPreset } from './editor/blocks'
+import {
+  blockPickerOptions,
+  emptyDoc,
+  getNoteTemplate,
+  normalizeTemplateData,
+  noteTemplateIcons,
+  noteTemplates,
+  primaryTemplateContent,
+  templateBlocksFor,
+  templateDataFor,
+  templateDataToContent,
+  templateStructureLabel,
+  updatePrimaryTemplateContent,
+} from './notes/templates'
+import { parseProjectMemory, serializeProjectMemory } from './projects/projectMemory'
+import { atomsStore } from './stores/atomsStore'
+import { flashcardSetsStore } from './stores/flashcardSetsStore'
+import { loadLocalAppData } from './stores/appDataStore'
+import { noteSnapshotsStore } from './stores/noteSnapshotsStore'
+import { notesStore } from './stores/notesStore'
+import { profileStore } from './stores/profileStore'
+import { projectsStore } from './stores/projectsStore'
+import { settingsStore } from './stores/settingsStore'
+import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
 import './App.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
-
-type JSONContent = {
-  type?: string
-  attrs?: Record<string, unknown>
-  content?: JSONContent[]
-  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>
-  text?: string
-  [key: string]: unknown
-}
-
-type Project = {
-  id: string
-  name: string
-  description?: string
-  color: string
-  createdAt: string
-}
-
-type Atom = {
-  id: string
-  phrase: string
-  definition: string
-  tags: string[]
-  createdAt: string
-  updatedAt: string
-  reviewCount: number
-  knownCount: number
-}
-
-type FlashcardSet = {
-  id: string
-  name: string
-  description?: string
-  atomIds: string[]
-  createdAt: string
-  updatedAt: string
-  lastStudiedAt?: string
-}
-
-type NoteTemplateId = 'blank' | 'report' | 'planner' | 'slideshow'
-type AIProviderId = 'openai' | 'gemini' | 'claude' | 'kimi'
-
-type LociBlockType =
-  | 'paragraph'
-  | 'heading'
-  | 'checklist'
-  | 'table'
-  | 'flashcard'
-  | 'bulletList'
-  | 'numberedList'
-  | 'quote'
-  | 'image'
-  | 'divider'
-  | 'callout'
-  | 'template'
-
-type LociBlock = {
-  id: string
-  type: LociBlockType
-  content: JSONContent
-  attrs?: Record<string, unknown>
-  createdAt: string
-  updatedAt: string
-}
-
-type TemplateTask = {
-  id: string
-  text: string
-  done: boolean
-}
-
-type TemplateScheduleItem = {
-  id: string
-  time: string
-  text: string
-}
-
-type TemplateSlide = {
-  id: string
-  title: string
-  body: JSONContent
-  speakerNotes: string
-}
-
-type NoteTemplateData =
-  | { kind: 'blank'; body: JSONContent }
-  | {
-      kind: 'report'
-      subtitle: string
-      summary: string
-      findings: string
-      recommendations: string
-      appendix: JSONContent
-    }
-  | {
-      kind: 'planner'
-      date: string
-      priorities: string[]
-      tasks: TemplateTask[]
-      schedule: TemplateScheduleItem[]
-      notes: JSONContent
-    }
-  | {
-      kind: 'slideshow'
-      activeSlideId: string
-      slides: TemplateSlide[]
-    }
-
-type Note = {
-  id: string
-  title: string
-  projectId: string
-  templateId: NoteTemplateId
-  templateData: NoteTemplateData
-  blocks?: LociBlock[]
-  author: string
-  tags: string[]
-  content: JSONContent
-  createdAt: string
-  updatedAt: string
-}
-
-type NoteSnapshot = {
-  id: string
-  noteId: string
-  savedAt: string
-  title: string
-  content: JSONContent
-  contentHash: string
-}
-
-type UserProfile = {
-  id: 'local'
-  displayName: string
-  initials: string
-  avatarColor: string
-  createdAt: string
-  updatedAt: string
-}
-
-type AIProviderSettings = {
-  enabled: boolean
-  apiKey: string
-  model: string
-  baseUrl?: string
-}
-
-type UserSettings = {
-  id: 'local'
-  defaultAIProvider: AIProviderId
-  aiProviders: Record<AIProviderId, AIProviderSettings>
-  aiTemperature: number
-  aiMaxTokens: number
-  aiTimeoutMs?: number
-  aiIncludeNoteTitle: boolean
-  aiIncludeSelectedText: boolean
-  aiIncludeNoteExcerpt: boolean
-  aiLastStatus?: 'idle' | 'success' | 'error' | 'timeout'
-  aiLastProvider?: AIProviderId
-  aiLastUsage?: {
-    inputTokens?: number
-    outputTokens?: number
-    cachedTokens?: number
-  }
-  aiLastError?: string
-  aiLastRequestAt?: string
-  highlighterColor: string
-  reduceMotion: boolean
-  compactMode: boolean
-  preferredAtomSubView: 'atoms' | 'sets'
-  createdAt: string
-  updatedAt: string
-}
 
 type View = 'home' | 'editor' | 'projects' | 'atoms' | 'settings'
 type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
@@ -258,26 +183,8 @@ type SearchHit =
 
 type EditorPanel = 'format' | 'more'
 
-type AITaskType =
-  | 'ai_atomise'
-  | 'edit_selection'
-  | 'generate_insert'
-  | 'table_block'
-  | 'quote_block'
-  | 'answer_with_context'
-  | 'summarize_note'
-  | 'mark_writing'
-  | 'update_project_instructions'
-  | 'app_help'
-  | 'atom_task'
-  | 'general'
-
-type AICommandId = 'rewrite' | 'continue' | 'summarise' | 'atomise' | 'mark' | 'custom'
-
-type EditorRange = { from: number; to: number }
 type ImageCropMode = 'contain' | 'cover'
 type ImageAspectPreset = 'auto' | 'square' | 'wide' | 'portrait'
-type ImageAlignPreset = 'left' | 'center' | 'right'
 type ImageCropDragState = {
   startX: number
   startY: number
@@ -302,60 +209,19 @@ type BlockDropTarget = {
   left: number
 }
 
-type FormatBlockType = 'table' | 'quote' | 'image'
-
 type FormatBlockControlRect = {
   blockId: string
   type: FormatBlockType
   top: number
+  height: number
   left: number
 }
 
-type FormatSideControlsRect = FormatBlockControlRect
-
-type AITablePayload = {
-  mode: 'create' | 'update'
-  columns: string[]
-  rows: string[][]
-}
-
-type AIQuotePayload = {
-  mode: 'create' | 'update'
-  quote: string
-  author?: string
-}
-
-type AIBlockPayload =
-  | { kind: 'table'; data: AITablePayload; targetBlockId?: string }
-  | { kind: 'quote'; data: AIQuotePayload; targetBlockId?: string }
-
-type AIResult = {
-  prompt: string
-  taskType: AITaskType
-  response: string
-  insertableResponse: string
-  draftText: string
-  actionLabel: string
-  canReplaceSelection: boolean
-  canInsert: boolean
-  canCreateAtoms: boolean
-  canApplyBlock?: boolean
-  blockPayload?: AIBlockPayload
-  provider: AIProviderId
-  selection?: { from: number; to: number }
-  /** Plain text of the selection when `edit_selection` ran; used for before/after review. */
-  selectionOriginalText?: string
-  projectInstructionDraft?: string
-  canUpdateProjectInstructions?: boolean
-}
-
-type ProviderMeta = {
-  id: AIProviderId
-  name: string
-  description: string
-  defaultModel: string
-  baseUrl: string
-  baseUrlLocked?: boolean
+type FormatSideControlsRect = {
+  blockId: string
+  type: FormatBlockType
+  top: number
+  left: number
 }
 
 type FormatOption = {
@@ -367,13 +233,6 @@ type FormatOption = {
   enabled: boolean
   action?: () => void
   comingSoonLabel?: string
-}
-
-type BlockPickerOption = {
-  type: LociBlockType
-  label: string
-  description: string
-  icon: IconComponent
 }
 
 type AppDialog =
@@ -399,340 +258,8 @@ type AppDialog =
       onConfirm: (value: string, secondaryValue?: string) => void | Promise<void>
     }
 
-const aiProviders: ProviderMeta[] = [
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    description: 'General writing, reasoning, and editing support.',
-    defaultModel: 'gpt-5.2',
-    baseUrl: 'https://api.openai.com/v1',
-  },
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    description: 'Google hosted Gemini text generation.',
-    defaultModel: 'gemini-2.5-flash',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    baseUrlLocked: true,
-  },
-  {
-    id: 'claude',
-    name: 'Claude',
-    description: 'Anthropic Messages API for long-form drafting.',
-    defaultModel: 'claude-sonnet-4-20250514',
-    baseUrl: 'https://api.anthropic.com/v1',
-    baseUrlLocked: true,
-  },
-  {
-    id: 'kimi',
-    name: 'Kimi',
-    description: 'Moonshot/Kimi OpenAI-compatible chat completions.',
-    defaultModel: 'kimi-k2.6',
-    baseUrl: 'https://api.moonshot.ai/v1',
-  },
-]
-
-const AI_SYSTEM_INSTRUCTION = [
-  "You are Loci Notes' task assistant.",
-  'Help the user complete writing and knowledge-management tasks inside the app.',
-  'Use provided note, project, and editor context whenever possible.',
-  'Keep a neutral tone and prefer precise edits and concise output.',
-  'Use plain editor text. Do not use Markdown heading markers, bold markers, code fences, or table syntax.',
-  'Do not include greetings, sign-offs, "hope this helps", or meta commentary.',
-  'Do not invent facts outside the provided context.',
-].join('\n')
-
-const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
-  ai_atomise: 'Task: ai_atomise. Return atom candidates as one per line in the format "Phrase - definition". Prefer durable concepts, key terms, named methods, and definitions that help future review.',
-  edit_selection: 'Task: edit_selection. Return only the replacement text for the selected passage. Preserve meaning unless the user explicitly asks to change it.',
-  generate_insert: 'Task: generate_insert. Return only clean document text that can be inserted at the cursor.',
-  table_block: 'Task: table_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","columns":["Column"],"rows":[["Cell"]]}. Use update only when highlighted table context is provided; otherwise use create. Reorganize, clean, add, or edit data according to the user request.',
-  quote_block: 'Task: quote_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","quote":"Quote text","author":"Optional author"}. Use update only when highlighted quote context is provided. Do not invent an author; omit author if unknown.',
-  answer_with_context: 'Task: answer_with_context. Answer briefly using note/project context. Mention the context used in plain language when useful. Do not format as insertable prose by default.',
-  summarize_note: 'Task: summarize_note. Return plain text with short section headings and dash bullets. Do not use Markdown syntax.',
-  mark_writing: 'Task: mark_writing. Mark the writing against the supplied marking criteria. Return concise plain-text sections: Overall, Strengths, Improvements, Suggested edit. If no clear criteria are supplied, use the default criteria from context and say that default criteria were used. Do not use Markdown syntax.',
-  update_project_instructions: 'Task: update_project_instructions. Draft a concise replacement project description with exactly these plain-text section labels: Summary, Instructions, Writing style, Marking criteria. Use current project memory as the base, integrate reusable guidance from the latest AI draft, and avoid copying note-specific content.',
-  app_help: 'Task: app_help. Answer as product guidance for Loci Notes. Do not write document text unless asked.',
-  atom_task: 'Task: atom_task. Return atom candidates as one per line in the format "Phrase — definition". Keep definitions short and clear.',
-  general: 'Task: general. Answer briefly. Ask for missing context only when necessary.',
-}
-
-const DEFAULT_AI_TIMEOUT_MS = 60000
-const CLAUDE_REQUIRED_MAX_TOKENS = 4096
 const HIGHLIGHTER_COLORS = ['#fff1a8', '#dff4cc', '#d9ecff', '#ffe3d2', '#eadfff'] as const
 const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0]
-const DEFAULT_MARKING_CRITERIA = [
-  'Clarity: the writing is easy to follow and uses precise language.',
-  'Structure: ideas are ordered logically with clear transitions.',
-  'Evidence: claims are supported by relevant examples, facts, or reasoning.',
-  'Depth: the writing explains significance rather than only listing points.',
-  'Tone: the writing fits the project context and intended reader.',
-].join('\n')
-
-type ProjectMemorySections = {
-  summary: string
-  instructions: string
-  writingStyle: string
-  markingCriteria: string
-}
-
-const PROJECT_MEMORY_HEADINGS: Array<{ key: keyof ProjectMemorySections; label: string }> = [
-  { key: 'summary', label: 'Summary' },
-  { key: 'instructions', label: 'Instructions' },
-  { key: 'writingStyle', label: 'Writing style' },
-  { key: 'markingCriteria', label: 'Marking criteria' },
-]
-
-const PROJECT_MEMORY_FIELD_META: Record<
-  keyof ProjectMemorySections,
-  { hint: string; placeholder: string; ariaLabel: string }
-> = {
-  summary: {
-    hint: 'Project purpose, topic, audience, and context.',
-    placeholder: 'What is this project about?',
-    ariaLabel: 'Project summary',
-  },
-  instructions: {
-    hint: 'General AI behavior for this project.',
-    placeholder: 'How should AI work in this project?',
-    ariaLabel: 'Project instructions',
-  },
-  writingStyle: {
-    hint: 'Tone, structure, and phrasing preferences.',
-    placeholder: 'What should the writing sound like?',
-    ariaLabel: 'Project writing style',
-  },
-  markingCriteria: {
-    hint: 'Rubric used only by Mark writing.',
-    placeholder: 'How should writing be assessed?',
-    ariaLabel: 'Project marking criteria',
-  },
-}
-
-const aiSelectionHighlightKey = new PluginKey<EditorRange | null>('aiSelectionHighlight')
-const blockControlsKey = new PluginKey('blockControls')
-
-const LociFlashcard = TiptapNode.create({
-  name: 'lociFlashcard',
-  group: 'block',
-  content: 'block+',
-  isolating: true,
-
-  addAttributes() {
-    return {
-      atomId: { default: null },
-    }
-  },
-
-  parseHTML() {
-    return [{ tag: 'section[data-loci-flashcard]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['section', { ...HTMLAttributes, 'data-loci-flashcard': 'true', class: 'loci-flashcard' }, 0]
-  },
-})
-
-const LociQuote = TiptapNode.create({
-  name: 'lociQuote',
-  group: 'block',
-  content: 'block+',
-  isolating: true,
-
-  parseHTML() {
-    return [{ tag: 'figure[data-loci-quote]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['figure', { ...HTMLAttributes, 'data-loci-quote': 'true', class: 'loci-quote' }, 0]
-  },
-})
-
-const LociImage = Image.extend({
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      width: {
-        default: 78,
-        parseHTML: (element) => Number(element.getAttribute('data-image-width')) || 78,
-        renderHTML: (attrs) => ({ 'data-image-width': String(attrs.width || 78) }),
-      },
-      align: {
-        default: 'center',
-        parseHTML: (element) => element.getAttribute('data-image-align') || 'center',
-        renderHTML: (attrs) => ({ 'data-image-align': attrs.align || 'center' }),
-      },
-      cropMode: {
-        default: 'contain',
-        parseHTML: (element) => element.getAttribute('data-image-crop-mode') || 'contain',
-        renderHTML: (attrs) => ({ 'data-image-crop-mode': attrs.cropMode || 'contain' }),
-      },
-      aspect: {
-        default: 'auto',
-        parseHTML: (element) => element.getAttribute('data-image-aspect') || 'auto',
-        renderHTML: (attrs) => ({ 'data-image-aspect': attrs.aspect || 'auto' }),
-      },
-      offsetX: {
-        default: 50,
-        parseHTML: (element) => Number(element.getAttribute('data-image-offset-x')) || 50,
-        renderHTML: (attrs) => ({ 'data-image-offset-x': String(attrs.offsetX ?? 50) }),
-      },
-      offsetY: {
-        default: 50,
-        parseHTML: (element) => Number(element.getAttribute('data-image-offset-y')) || 50,
-        renderHTML: (attrs) => ({ 'data-image-offset-y': String(attrs.offsetY ?? 50) }),
-      },
-      zoom: {
-        default: 100,
-        parseHTML: (element) => Number(element.getAttribute('data-image-zoom')) || 100,
-        renderHTML: (attrs) => ({ 'data-image-zoom': String(attrs.zoom ?? 100) }),
-      },
-    }
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    const width = Number(HTMLAttributes['data-image-width']) || 78
-    const offsetX = Number(HTMLAttributes['data-image-offset-x']) || 50
-    const offsetY = Number(HTMLAttributes['data-image-offset-y']) || 50
-    const zoom = Number(HTMLAttributes['data-image-zoom']) || 100
-    const align = HTMLAttributes['data-image-align'] || 'center'
-    const cropMode = HTMLAttributes['data-image-crop-mode'] || 'contain'
-    const aspect = HTMLAttributes['data-image-aspect'] || 'auto'
-    const { src, alt, title } = HTMLAttributes
-    return [
-      'figure',
-      mergeAttributes({
-        class: 'loci-image-frame',
-        'data-image-width': String(width),
-        'data-image-align': align,
-        'data-image-crop-mode': cropMode,
-        'data-image-aspect': aspect,
-        'data-image-offset-x': String(offsetX),
-        'data-image-offset-y': String(offsetY),
-        'data-image-zoom': String(zoom),
-        style: `--image-width:${width}%;--image-position-x:${offsetX}%;--image-position-y:${offsetY}%;--image-zoom:${zoom / 100};`,
-      }),
-      ['img', { src, alt, title }],
-    ]
-  },
-})
-
-const AISelectionHighlight = Extension.create({
-  name: 'aiSelectionHighlight',
-
-  addProseMirrorPlugins() {
-    return [
-      new Plugin<EditorRange | null>({
-        key: aiSelectionHighlightKey,
-        state: {
-          init: () => null,
-          apply(transaction, previous) {
-            const meta = transaction.getMeta(aiSelectionHighlightKey) as { range: EditorRange | null } | undefined
-            if (meta) return meta.range
-            if (!previous || !transaction.docChanged) return previous
-            const from = transaction.mapping.map(previous.from, -1)
-            const to = transaction.mapping.map(previous.to, 1)
-            return from < to ? { from, to } : null
-          },
-        },
-        props: {
-          decorations(state) {
-            const range = aiSelectionHighlightKey.getState(state)
-            if (!range || range.from >= range.to) return null
-            return DecorationSet.create(state.doc, [
-              Decoration.inline(range.from, range.to, { class: 'ai-selection-highlight' }),
-            ])
-          },
-        },
-      }),
-    ]
-  },
-})
-
-function blockControlWidget(pos: number, blockId: string, blockType: LociBlockType) {
-  const icon = (paths: string[], circles: Array<[number, number, number]> = []) => {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    svg.setAttribute('viewBox', '0 0 24 24')
-    svg.setAttribute('aria-hidden', 'true')
-    paths.forEach((d) => {
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      path.setAttribute('d', d)
-      svg.appendChild(path)
-    })
-    circles.forEach(([cx, cy, r]) => {
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
-      circle.setAttribute('cx', String(cx))
-      circle.setAttribute('cy', String(cy))
-      circle.setAttribute('r', String(r))
-      svg.appendChild(circle)
-    })
-    return svg
-  }
-  const wrapper = document.createElement('span')
-  wrapper.className = 'block-hover-controls'
-  wrapper.contentEditable = 'false'
-  wrapper.setAttribute('data-block-id', blockId)
-  wrapper.setAttribute('data-block-type', blockType)
-
-  const deleteButton = document.createElement('button')
-  deleteButton.type = 'button'
-  deleteButton.className = 'block-control-button block-control-delete'
-  deleteButton.setAttribute('aria-label', 'Delete block')
-  deleteButton.appendChild(icon(['M6 6l12 12', 'M18 6L6 18']))
-  Object.assign(deleteButton.dataset, { blockAction: 'delete', blockId })
-
-  const addButton = document.createElement('button')
-  addButton.type = 'button'
-  addButton.className = 'block-control-button'
-  addButton.setAttribute('aria-label', 'Insert block')
-  addButton.appendChild(icon(['M12 5v14', 'M5 12h14']))
-  Object.assign(addButton.dataset, { blockAction: 'insert', blockId })
-
-  const dragHandle = document.createElement('button')
-  dragHandle.type = 'button'
-  dragHandle.className = 'block-control-button block-control-handle'
-  dragHandle.setAttribute('aria-label', 'Move block')
-  dragHandle.draggable = true
-  dragHandle.appendChild(icon([], [[9, 7.5, 1.25], [15, 7.5, 1.25], [9, 12, 1.25], [15, 12, 1.25], [9, 16.5, 1.25], [15, 16.5, 1.25]]))
-  Object.assign(dragHandle.dataset, { blockAction: 'drag', blockId })
-
-  wrapper.append(deleteButton, addButton, dragHandle)
-  return Decoration.widget(pos, wrapper, { side: -1, key: `block-controls-${blockId}` })
-}
-
-const BlockControlsExtension = Extension.create({
-  name: 'blockControls',
-
-  addProseMirrorPlugins() {
-    return [
-      new Plugin<LociBlock[]>({
-        key: blockControlsKey,
-        props: {
-          decorations(state) {
-            const blocks = blockControlsKey.getState(state) as LociBlock[] | undefined
-            if (!blocks?.length) return null
-            const decorations: Decoration[] = []
-            let pos = 1
-            blocks.forEach((block) => {
-              if (!formatBlockTypeForBlock(block)) decorations.push(blockControlWidget(pos, block.id, block.type))
-              blockContentNodes(block.content).forEach((node) => {
-                pos += state.schema.nodeFromJSON(node).nodeSize
-              })
-            })
-            return DecorationSet.create(state.doc, decorations)
-          },
-        },
-        state: {
-          init: () => [],
-          apply(transaction, previous) {
-            const meta = transaction.getMeta(blockControlsKey) as LociBlock[] | undefined
-            return meta ?? previous
-          },
-        },
-      }),
-    ]
-  },
-})
 
 function defaultUserSettings(): UserSettings {
   const now = nowIso()
@@ -781,500 +308,8 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
   }
 }
 
-function sanitizeAIInsertText(text: string) {
-  return text
-    .replace(/^\s*(sure|certainly|of course|absolutely|here(?:'|’)s|here is)[,.!:\-\s]+/i, '')
-    .replace(/\n{0,2}\s*(hope this helps|i hope this helps|let me know if you need anything else|happy to help)[.!]*\s*$/i, '')
-    .trim()
-}
-
-function cleanAIDraftFormatting(text: string) {
-  return text
-    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-zA-Z0-9_-]*\n?/g, '').replace(/```/g, ''))
-    .split('\n')
-    .map((line) =>
-      line
-        .replace(/^\s{0,3}#{1,6}\s+/, '')
-        .replace(/^\s{0,3}[-*+]\s+/, '- ')
-        .replace(/^\s{0,3}\d+[.)]\s+/, (match) => `${match.trim().replace(/[.)]$/, '.')} `)
-        .replace(/\*\*([^*]+)\*\*/g, '$1')
-        .replace(/__([^_]+)__/g, '$1')
-        .replace(/`([^`]+)`/g, '$1')
-        .trimEnd(),
-    )
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function extractOpenAIText(data: { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }) {
-  if (data.output_text) return data.output_text.trim()
-  return (data.output ?? [])
-    .flatMap((item) => item.content ?? [])
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim()
-}
-
-function extractUsage(data: {
-  usage?: {
-    input_tokens?: number
-    output_tokens?: number
-    prompt_tokens?: number
-    completion_tokens?: number
-    prompt_tokens_details?: { cached_tokens?: number }
-    input_tokens_details?: { cached_tokens?: number }
-  }
-  usageMetadata?: {
-    promptTokenCount?: number
-    candidatesTokenCount?: number
-    cachedContentTokenCount?: number
-  }
-  usage_metadata?: {
-    prompt_token_count?: number
-    candidates_token_count?: number
-    cached_content_token_count?: number
-  }
-}) {
-  const usage = data.usage
-  const camel = data.usageMetadata
-  const snake = data.usage_metadata
-  return {
-    inputTokens: usage?.input_tokens ?? usage?.prompt_tokens ?? camel?.promptTokenCount ?? snake?.prompt_token_count,
-    outputTokens: usage?.output_tokens ?? usage?.completion_tokens ?? camel?.candidatesTokenCount ?? snake?.candidates_token_count,
-    cachedTokens:
-      usage?.input_tokens_details?.cached_tokens ??
-      usage?.prompt_tokens_details?.cached_tokens ??
-      camel?.cachedContentTokenCount ??
-      snake?.cached_content_token_count,
-  }
-}
-
-function taskFromAICommand(command: AICommandId, hasSelection: boolean): AITaskType | undefined {
-  switch (command) {
-    case 'rewrite':
-      return hasSelection ? 'edit_selection' : 'generate_insert'
-    case 'continue':
-      return 'generate_insert'
-    case 'summarise':
-      return 'summarize_note'
-    case 'atomise':
-      return 'ai_atomise'
-    case 'mark':
-      return 'mark_writing'
-    case 'custom':
-      return undefined
-  }
-}
-
-function defaultPromptForCommand(command: AICommandId, hasSelection: boolean) {
-  switch (command) {
-    case 'rewrite':
-      return hasSelection ? 'Improve the selected writing.' : 'Draft a clearer version for the current note.'
-    case 'continue':
-      return 'Continue the current note in the same style.'
-    case 'summarise':
-      return hasSelection ? 'Summarise the selected writing.' : 'Summarise this note.'
-    case 'atomise':
-      return hasSelection ? 'Atomise the selected writing.' : 'Find atom candidates in this note.'
-    case 'mark':
-      return hasSelection ? 'Mark the selected writing.' : 'Mark this note.'
-    case 'custom':
-      return ''
-  }
-}
-
-function routeAITask(prompt: string, hasSelection: boolean, command?: AICommandId): AITaskType {
-  const explicitTask = command ? taskFromAICommand(command, hasSelection) : undefined
-  if (explicitTask) return explicitTask
-
-  const q = prompt.toLowerCase().trim()
-  if (/\b(table|tabulate|spreadsheet|columns?|rows?|grid|organise .*data|organize .*data)\b/.test(q)) return 'table_block'
-  if (/\b(quote|qoute|blockquote|pull quote|pull qoute|cite this|citation|add author|shorten quote|shorten qoute|polish quote|polish qoute)\b/.test(q)) return 'quote_block'
-  if (/\b(atomi[sz]e|make atoms?|create atoms?|extract atoms?|key terms?|define terms?|glossary|concept cards?)\b/.test(q)) return 'ai_atomise'
-  if (/\b(mark|grade|rubric|criteria|assess|evaluate|feedback|review my writing|score|critique)\b/.test(q)) return 'mark_writing'
-  if (/\b(how do i|how to|where is|settings?|export|pdf|docx|create|delete|shortcut|sidebar|project|note history)\b/.test(q)) return 'app_help'
-  if (/\b(summar(?:y|ize|ise)|recap|outline|flashcards?|study guide|key points?|explain this note|what is this note saying|tl;?dr)\b/.test(q)) return 'summarize_note'
-  if (hasSelection && /\b(rewrite|revise|fix|clean up|sharpen|make sharper|concise|shorten|expand|improve|polish|edit|grammar|tone|clarify|simplify|make academic|make formal|make casual)\b/.test(q)) return 'edit_selection'
-  if (/\b(write|draft|compose|add|insert|continue|extend|intro|introduction|paragraph|section|conclusion|next part|turn this into)\b/.test(q)) return 'generate_insert'
-  if (/\b(what|why|how|explain|compare|does|is this|means?|meaning|difference between|relationship between)\b/.test(q)) return 'answer_with_context'
-  return hasSelection ? 'edit_selection' : 'general'
-}
-
-function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
-  return {
-    actionLabel:
-      taskType === 'edit_selection'
-        ? 'Replace selection'
-        : taskType === 'atom_task' || taskType === 'ai_atomise'
-          ? 'Create atoms'
-            : taskType === 'table_block' || taskType === 'quote_block'
-              ? 'Apply block'
-            : taskType === 'mark_writing'
-            ? 'Copy feedback'
-          : taskType === 'answer_with_context' || taskType === 'app_help'
-            ? 'Copy'
-            : 'Insert',
-    canReplaceSelection: taskType === 'edit_selection' && hasSelection,
-    canInsert: taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general',
-    canCreateAtoms: taskType === 'atom_task' || taskType === 'ai_atomise',
-    canApplyBlock: taskType === 'table_block' || taskType === 'quote_block',
-  }
-}
-
-function aiResultTitle(result: AIResult) {
-  const promptTitle = result.prompt.trim()
-  if (promptTitle) return promptTitle
-  if (result.taskType === 'mark_writing') return 'Marked writing'
-  if (result.taskType === 'ai_atomise' || result.taskType === 'atom_task') return 'Atomise'
-  return 'AI draft'
-}
-
-function aiPrimaryActionLabel(result: AIResult) {
-  if (result.canReplaceSelection) return 'Apply rewrite'
-  if (result.canCreateAtoms) return 'Create atoms'
-  if (result.canApplyBlock) return 'Apply block'
-  if (result.taskType === 'mark_writing') return 'Add feedback to note'
-  return 'Insert draft'
-}
-
-function aiDraftLabel(taskType: AITaskType) {
-  if (taskType === 'mark_writing') return 'Editable feedback'
-  if (taskType === 'ai_atomise' || taskType === 'atom_task') return 'Editable atom candidates'
-  if (taskType === 'table_block' || taskType === 'quote_block') return 'Editable block JSON'
-  if (taskType === 'update_project_instructions') return 'Editable project instructions'
-  return 'Editable draft'
-}
-
-function canResultUpdateProjectInstructions(taskType: AITaskType) {
-  return taskType === 'mark_writing' || taskType === 'summarize_note' || taskType === 'generate_insert' || taskType === 'edit_selection'
-}
-
-function parseProjectMemory(description = ''): ProjectMemorySections {
-  const sections: ProjectMemorySections = {
-    summary: '',
-    instructions: '',
-    writingStyle: '',
-    markingCriteria: '',
-  }
-  const headingByLabel = new Map(PROJECT_MEMORY_HEADINGS.map((item) => [item.label.toLowerCase(), item.key]))
-  let current: keyof ProjectMemorySections | null = null
-  const unsectioned: string[] = []
-
-  for (const line of description.replace(/\r\n?/g, '\n').split('\n')) {
-    const key = headingByLabel.get(line.trim().replace(/:$/, '').toLowerCase())
-    if (key) {
-      current = key
-      continue
-    }
-    if (current) {
-      sections[current] = `${sections[current]}${sections[current] ? '\n' : ''}${line}`.trimEnd()
-    } else if (line.trim()) {
-      unsectioned.push(line)
-    }
-  }
-
-  if (!Object.values(sections).some((value) => value.trim()) && unsectioned.length) {
-    sections.summary = unsectioned.join('\n').trim()
-  } else if (unsectioned.length && !sections.summary.trim()) {
-    sections.summary = unsectioned.join('\n').trim()
-  }
-
-  return sections
-}
-
-function serializeProjectMemory(sections: ProjectMemorySections) {
-  return PROJECT_MEMORY_HEADINGS
-    .map(({ key, label }) => `${label}\n${sections[key].trim()}`)
-    .join('\n\n')
-    .trim()
-}
-
-function updateProjectMemorySection(description: string | undefined, key: keyof ProjectMemorySections, value: string) {
-  const sections = parseProjectMemory(description ?? '')
-  sections[key] = value
-  return serializeProjectMemory(sections)
-}
-
-function taskUsesWritingStyle(taskType: AITaskType) {
-  return taskType === 'edit_selection' || taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general'
-}
-
-function parseAtomCandidates(text: string) {
-  return text
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .map((line) => {
-      const [phrase, ...definitionParts] = line.split(/\s+[—-]\s+|:\s+/)
-      return { phrase: phrase?.trim() ?? '', definition: definitionParts.join(' - ').trim() }
-    })
-    .filter((item) => item.phrase && item.definition)
-}
-
-function parseAIJson(text: string): unknown {
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
-  const start = trimmed.indexOf('{')
-  const end = trimmed.lastIndexOf('}')
-  if (start < 0 || end < start) throw new Error('AI did not return JSON.')
-  return JSON.parse(trimmed.slice(start, end + 1)) as unknown
-}
-
-function parseAITablePayload(text: string): AITablePayload {
-  const value = parseAIJson(text) as Partial<AITablePayload>
-  const columns = Array.isArray(value.columns) ? value.columns.map(String).map((item) => item.trim()).filter(Boolean) : []
-  const rows = Array.isArray(value.rows)
-    ? value.rows.map((row) => {
-      if (Array.isArray(row)) return row.map((cell) => String(cell ?? '').trim())
-      if (row && typeof row === 'object') return columns.map((column) => String((row as Record<string, unknown>)[column] ?? '').trim())
-      return []
-    }).filter((row) => row.length > 0)
-    : []
-  if (!columns.length && rows[0]?.length) {
-    return { mode: value.mode === 'update' ? 'update' : 'create', columns: rows[0].map((_, index) => `Column ${index + 1}`), rows }
-  }
-  if (!columns.length) throw new Error('Table JSON needs columns.')
-  return { mode: value.mode === 'update' ? 'update' : 'create', columns, rows }
-}
-
-function parseAIQuotePayload(text: string): AIQuotePayload {
-  const value = parseAIJson(text) as Partial<AIQuotePayload> & { text?: string; body?: string; content?: string; citation?: string }
-  const quoteSource = value.quote ?? value.text ?? value.body ?? value.content
-  const quote = typeof quoteSource === 'string' ? quoteSource.trim() : ''
-  if (!quote) throw new Error('Quote JSON needs quote text.')
-  const authorSource = value.author ?? value.citation
-  const author = typeof authorSource === 'string' && authorSource.trim() ? authorSource.trim() : undefined
-  return { mode: value.mode === 'update' ? 'update' : 'create', quote, author }
-}
-
-function paragraphNode(text: string): JSONContent {
-  return { type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }
-}
-
-function textToEditorContent(text: string): JSONContent {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n')
-  const content: JSONContent[] = []
-  let listItems: JSONContent[] = []
-  let listType: 'bulletList' | 'orderedList' | null = null
-
-  const flushList = () => {
-    if (!listType || !listItems.length) return
-    content.push({ type: listType, content: listItems })
-    listItems = []
-    listType = null
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd()
-    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/)
-    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/)
-
-    if (bulletMatch || orderedMatch) {
-      const nextType = bulletMatch ? 'bulletList' : 'orderedList'
-      if (listType && listType !== nextType) flushList()
-      listType = nextType
-      listItems.push({
-        type: 'listItem',
-        content: [paragraphNode((bulletMatch?.[1] ?? orderedMatch?.[1] ?? '').trim())],
-      })
-      continue
-    }
-
-    flushList()
-    content.push(paragraphNode(line.trim()))
-  }
-
-  flushList()
-  return { type: 'doc', content: content.length ? content : [paragraphNode('')] }
-}
-
 function insertDraftText(editor: NonNullable<ReturnType<typeof useEditor>>, text: string) {
   editor.chain().focus().insertContent(textToEditorContent(text).content ?? []).run()
-}
-
-const MARK_WRITING_FEEDBACK_SECTIONS = [
-  { key: 'overall', label: 'Overall' },
-  { key: 'strengths', label: 'Strengths' },
-  { key: 'improvements', label: 'Improvements' },
-  { key: 'suggestedEdit', label: 'Suggested edit' },
-] as const
-
-type MarkWritingFeedbackKey = (typeof MARK_WRITING_FEEDBACK_SECTIONS)[number]['key']
-
-type MarkWritingFeedbackSections = Record<MarkWritingFeedbackKey, string>
-
-function markWritingSectionHeadingKey(line: string): MarkWritingFeedbackKey | null {
-  const normalized = line.trim().replace(/:+\s*$/, '').toLowerCase()
-  for (const { key, label } of MARK_WRITING_FEEDBACK_SECTIONS) {
-    if (normalized === label.toLowerCase()) return key
-  }
-  return null
-}
-
-function parseMarkWritingFeedback(text: string): MarkWritingFeedbackSections {
-  const empty: MarkWritingFeedbackSections = {
-    overall: '',
-    strengths: '',
-    improvements: '',
-    suggestedEdit: '',
-  }
-  const lines = text.replace(/\r\n?/g, '\n').split('\n')
-  let hasHeading = false
-  for (const line of lines) {
-    if (markWritingSectionHeadingKey(line)) {
-      hasHeading = true
-      break
-    }
-  }
-  if (!hasHeading) {
-    return { ...empty, overall: text.trim() }
-  }
-
-  let current: MarkWritingFeedbackKey | null = null
-  const buckets: Record<MarkWritingFeedbackKey, string[]> = {
-    overall: [],
-    strengths: [],
-    improvements: [],
-    suggestedEdit: [],
-  }
-
-  for (const line of lines) {
-    const heading = markWritingSectionHeadingKey(line)
-    if (heading) {
-      current = heading
-      continue
-    }
-    if (current) buckets[current].push(line)
-    else buckets.overall.push(line)
-  }
-
-  for (const { key } of MARK_WRITING_FEEDBACK_SECTIONS) {
-    empty[key] = buckets[key].join('\n').trim()
-  }
-  return empty
-}
-
-function serializeMarkWritingFeedback(sections: MarkWritingFeedbackSections) {
-  return MARK_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => ({ label, body: sections[key].trim() }))
-    .filter(({ body }) => body.length > 0)
-    .map(({ label, body }) => `${label}\n${body}`)
-    .join('\n\n')
-    .trim()
-}
-
-function MarkWritingFeedbackFields({
-  draftText,
-  onChange,
-}: {
-  draftText: string
-  onChange: (next: string) => void
-}) {
-  const sections = parseMarkWritingFeedback(draftText)
-  const patch = (key: MarkWritingFeedbackKey, value: string) => {
-    onChange(serializeMarkWritingFeedback({ ...sections, [key]: value }))
-  }
-
-  return (
-    <div className="ai-mark-feedback-cards" role="group" aria-label="Editable feedback sections">
-      {MARK_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => (
-        <div key={key} className="ai-mark-feedback-card">
-          <span className="ai-mark-feedback-card-title">{label}</span>
-          <textarea
-            className="ai-mark-feedback-card-input"
-            value={sections[key]}
-            onChange={(event) => patch(key, event.target.value)}
-            aria-label={label}
-            rows={key === 'suggestedEdit' ? 5 : 4}
-            autoFocus={key === 'overall'}
-          />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function AiDraftFormattedPreview({ text }: { text: string }) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n')
-  const nodes: ReactNode[] = []
-  let listItems: string[] = []
-  let listKind: 'bullet' | 'ordered' | null = null
-
-  const flushList = () => {
-    if (!listKind || !listItems.length) return
-    const items = listItems.map((item, index) => (
-      <li key={`${nodes.length}-${index}`}>{item}</li>
-    ))
-    nodes.push(
-      listKind === 'bullet' ? (
-        <ul key={`list-${nodes.length}`} className="ai-draft-preview-list">
-          {items}
-        </ul>
-      ) : (
-        <ol key={`list-${nodes.length}`} className="ai-draft-preview-list ai-draft-preview-list--ordered">
-          {items}
-        </ol>
-      ),
-    )
-    listItems = []
-    listKind = null
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd()
-    const bulletMatch = line.match(/^\s*[-*+]\s+(.+)$/)
-    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/)
-    if (bulletMatch || orderedMatch) {
-      const nextKind = bulletMatch ? 'bullet' : 'ordered'
-      if (listKind && listKind !== nextKind) flushList()
-      listKind = nextKind
-      listItems.push((bulletMatch?.[1] ?? orderedMatch?.[1] ?? '').trim())
-      continue
-    }
-    flushList()
-    const trimmed = line.trim()
-    if (trimmed.length) {
-      nodes.push(
-        <p key={`p-${nodes.length}`} className="ai-draft-preview-p">
-          {trimmed}
-        </p>,
-      )
-    }
-  }
-  flushList()
-
-  if (!nodes.length) {
-    return <p className="ai-draft-preview-empty">Nothing to preview yet.</p>
-  }
-  return <div className="ai-draft-preview-doc">{nodes}</div>
-}
-
-function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
-  if (payload.kind === 'table') {
-    return (
-      <div className="ai-block-preview">
-        <table className="ai-block-preview-table">
-          <thead>
-            <tr>{payload.data.columns.map((column, index) => <th key={`${column}-${index}`}>{column}</th>)}</tr>
-          </thead>
-          <tbody>
-            {payload.data.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {payload.data.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] ?? ''}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  }
-
-  return (
-    <div className="ai-block-preview">
-      <figure className="ai-block-preview-quote">
-        <p>{payload.data.quote}</p>
-        {payload.data.author && <figcaption>{payload.data.author}</figcaption>}
-      </figure>
-    </div>
-  )
 }
 
 function hitKey(hit: SearchHit): string {
@@ -1290,459 +325,6 @@ function hitKey(hit: SearchHit): string {
 
 function normalizeSearch(query: string) {
   return query.trim().toLowerCase()
-}
-
-const emptyDoc: JSONContent = {
-  type: 'doc',
-  content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Start writing...' }] }],
-}
-
-const blankDoc = (text = ''): JSONContent => ({
-  type: 'doc',
-  content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }],
-})
-
-const headingDoc = (heading: string, body = ''): JSONContent => ({
-  type: 'doc',
-  content: [
-    { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: heading }] },
-    { type: 'paragraph', content: body ? [{ type: 'text', text: body }] : [] },
-  ],
-})
-
-function blockTypeForNode(node: JSONContent): LociBlockType {
-  if (node.type === 'doc') return blockTypeForNode(node.content?.[0] ?? { type: 'paragraph' })
-  if (node.type === 'heading') return 'heading'
-  if (node.type === 'taskList') return 'checklist'
-  if (node.type === 'table') return 'table'
-  if (node.type === 'lociFlashcard') return 'flashcard'
-  if (node.type === 'lociQuote') return 'quote'
-  if (node.type === 'bulletList') return 'bulletList'
-  if (node.type === 'orderedList') return 'numberedList'
-  if (node.type === 'blockquote') return 'quote'
-  if (node.type === 'image') return 'image'
-  if (node.type === 'horizontalRule') return 'divider'
-  if (node.type === 'lociCallout') return 'callout'
-  return 'paragraph'
-}
-
-function blockContentNodes(content?: JSONContent): JSONContent[] {
-  if (!content) return []
-  return content.type === 'doc' ? content.content ?? [] : [content]
-}
-
-function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | null {
-  const contentType = blockTypeForNode(block.content)
-  if (contentType === 'table' || contentType === 'quote' || contentType === 'image') return contentType
-  if (block.type === 'table' || block.type === 'quote' || block.type === 'image') return block.type
-  return null
-}
-
-function blockDoc(nodes: JSONContent[]): JSONContent {
-  return { type: 'doc', content: nodes.length ? nodes : [{ type: 'paragraph', content: [] }] }
-}
-
-function createLociBlock(content: JSONContent, type = blockTypeForNode(content)): LociBlock {
-  const now = nowIso()
-  return {
-    id: createId('block'),
-    type,
-    content: content.type === 'doc' ? cloneTemplateValue(content) : blockDoc([cloneTemplateValue(content)]),
-    createdAt: now,
-    updatedAt: now,
-  }
-}
-
-function tableCellNode(text = '', header = false): JSONContent {
-  return {
-    type: header ? 'tableHeader' : 'tableCell',
-    attrs: { colspan: 1, rowspan: 1, colwidth: null },
-    content: [paragraphNode(text)],
-  }
-}
-
-function tableRowNode(cells: JSONContent[]): JSONContent {
-  return { type: 'tableRow', content: cells }
-}
-
-function tableBlockDoc(): JSONContent {
-  return blockDoc([{
-    type: 'table',
-    content: [
-      tableRowNode([tableCellNode('Term', true), tableCellNode('Definition', true)]),
-      tableRowNode([tableCellNode(''), tableCellNode('')]),
-      tableRowNode([tableCellNode(''), tableCellNode('')]),
-      tableRowNode([tableCellNode(''), tableCellNode('')]),
-    ],
-  }])
-}
-
-function tableBlockDocFromData(columns: string[], rows: string[][]): JSONContent {
-  const safeColumns = columns.length ? columns : ['Column 1', 'Column 2']
-  const normalizedRows = rows.length ? rows : [safeColumns.map(() => '')]
-  return blockDoc([{
-    type: 'table',
-    content: [
-      tableRowNode(safeColumns.map((column) => tableCellNode(column, true))),
-      ...normalizedRows.map((row) => tableRowNode(safeColumns.map((_, index) => tableCellNode(row[index] ?? '')))),
-    ],
-  }])
-}
-
-function flashcardBlockDoc(atomId?: string): JSONContent {
-  return blockDoc([{
-    type: 'lociFlashcard',
-    attrs: { atomId: atomId ?? null },
-    content: [
-      { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'Question' }] },
-      paragraphNode('Answer'),
-    ],
-  }])
-}
-
-function quoteAuthorNode(text = 'Author'): JSONContent {
-  return {
-    type: 'paragraph',
-    attrs: { 'data-quote-author': true },
-    content: text ? [{ type: 'text', text }] : [],
-  }
-}
-
-function quoteBlockDoc(showAuthor = true): JSONContent {
-  return blockDoc([{
-    type: 'lociQuote',
-    content: [
-      paragraphNode('Quote'),
-      ...(showAuthor ? [quoteAuthorNode()] : []),
-    ],
-  }])
-}
-
-function quoteBlockDocFromData(quote: string, author?: string): JSONContent {
-  return blockDoc([{
-    type: 'lociQuote',
-    content: [
-      paragraphNode(quote || 'Quote'),
-      ...(author?.trim() ? [quoteAuthorNode(author.trim())] : []),
-    ],
-  }])
-}
-
-function clampImageNumber(value: unknown, min: number, max: number, fallback: number) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return fallback
-  return Math.max(min, Math.min(max, number))
-}
-
-function imageBlockDoc(src: string, width = 78, align: ImageAlignPreset = 'center'): JSONContent {
-  return blockDoc([{
-    type: 'image',
-    attrs: {
-      src,
-      width: clampImageNumber(width, 25, 100, 78),
-      align,
-      cropMode: 'contain',
-      aspect: 'auto',
-      offsetX: 50,
-      offsetY: 50,
-      zoom: 100,
-    },
-  }])
-}
-
-function tableDataFromNode(node: JSONContent): { columns: string[]; rows: string[][] } {
-  const rows = (node.content ?? []).filter((row) => row.type === 'tableRow')
-  const cells = rows.map((row) => (row.content ?? []).map((cell) => collectText(cell).trim()))
-  return { columns: cells[0] ?? [], rows: cells.slice(1) }
-}
-
-function quoteDataFromNode(node: JSONContent): { quote: string; author?: string } {
-  const parts = node.content ?? []
-  const authorNode = parts.find((part) => part.attrs?.['data-quote-author'])
-  const quoteNodes = parts.filter((part) => part !== authorNode)
-  return {
-    quote: collectText({ type: 'doc', content: quoteNodes }).trim(),
-    author: authorNode ? collectText(authorNode).trim() : undefined,
-  }
-}
-
-function blocksFromContent(content?: JSONContent): LociBlock[] {
-  const nodes = content?.type === 'doc' ? content.content ?? [] : []
-  return [createLociBlock(blockDoc(nodes.length ? nodes : [{ type: 'paragraph', content: [] }]), 'paragraph')]
-}
-
-function contentFromBlocks(blocks?: LociBlock[]): JSONContent {
-  if (!blocks?.length) return blankDoc()
-  return {
-    type: 'doc',
-    content: blocks.flatMap((block) => cloneTemplateValue(blockContentNodes(block.content))),
-  }
-}
-
-function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlock[], activeIndex = -1): LociBlock[] {
-  const nodes = content?.type === 'doc' ? content.content ?? [] : []
-  const now = nowIso()
-  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
-  if (!blocks?.length) return [createLociBlock(blockDoc(sourceNodes), 'paragraph')]
-  const existingNodes = blocks.flatMap((block) => blockContentNodes(block.content))
-  if (JSON.stringify(existingNodes) === JSON.stringify(sourceNodes)) {
-    return blocks.map((block) => ({
-      ...block,
-      content: block.content.type === 'doc' ? block.content : blockDoc([block.content]),
-      updatedAt: now,
-    }))
-  }
-  if (blocks.length === 1) {
-    const existing = blocks[0]
-    return [{
-      ...existing,
-      type: blockTypeForNode(sourceNodes[0] ?? { type: 'paragraph' }),
-      content: blockDoc(cloneTemplateValue(sourceNodes)),
-      updatedAt: now,
-    }]
-  }
-  const counts = blocks.map((block) => Math.max(1, blockContentNodes(block.content).length))
-  const totalPrevious = counts.reduce((sum, count) => sum + count, 0)
-  const delta = sourceNodes.length - totalPrevious
-  const targetIndex = activeIndex >= 0 && activeIndex < counts.length ? activeIndex : counts.length - 1
-  counts[targetIndex] = Math.max(1, counts[targetIndex] + delta)
-  let cursor = 0
-  return blocks.map((block, index) => {
-    const nextNodes = sourceNodes.slice(cursor, cursor + counts[index])
-    cursor += counts[index]
-    return {
-      ...block,
-      type: blockTypeForNode(nextNodes[0] ?? { type: 'paragraph' }),
-      content: blockDoc(cloneTemplateValue(nextNodes.length ? nextNodes : [{ type: 'paragraph', content: [] }])),
-      updatedAt: now,
-    }
-  })
-}
-
-function templateBlocksFor(templateId: NoteTemplateId, data: NoteTemplateData) {
-  const templateBlocks = getNoteTemplate(templateId).blocks
-  if (templateBlocks?.length) return templateBlocks.map((block) => ({ ...block, id: createId('block'), createdAt: nowIso(), updatedAt: nowIso() }))
-  return normalizeBlocksForContent(templateDataToContent(data))
-}
-
-function blankBlockNode(type: LociBlockType): JSONContent {
-  if (type === 'heading') return blockDoc([{ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Heading' }] }])
-  if (type === 'checklist') {
-    return blockDoc([{
-      type: 'taskList',
-      content: [{ type: 'taskItem', attrs: { checked: false }, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Task' }] }] }],
-    }])
-  }
-  if (type === 'table') return tableBlockDoc()
-  if (type === 'flashcard') return flashcardBlockDoc()
-  if (type === 'bulletList') return blockDoc([{ type: 'bulletList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
-  if (type === 'numberedList') return blockDoc([{ type: 'orderedList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
-  if (type === 'quote') return quoteBlockDoc()
-  if (type === 'divider') return blockDoc([{ type: 'horizontalRule' }])
-  if (type === 'callout') return blockDoc([{ type: 'blockquote', content: [paragraphNode('Callout')] }])
-  return blockDoc([{ type: 'paragraph', content: [] }])
-}
-
-function createTemplateBlocks(content: JSONContent) {
-  return blocksFromContent(content)
-}
-
-type NoteTemplate = {
-  id: NoteTemplateId
-  name: string
-  description: string
-  title: string
-  content: JSONContent
-  blocks?: LociBlock[]
-  templateData: NoteTemplateData
-  available: boolean
-  comingSoonLabel?: string
-}
-
-const noteTemplates: NoteTemplate[] = [
-  {
-    id: 'blank',
-    name: 'Blank page',
-    description: 'A clean pageless note for fast writing.',
-    title: 'Untitled Note',
-    content: emptyDoc,
-    blocks: createTemplateBlocks(emptyDoc),
-    templateData: { kind: 'blank', body: emptyDoc },
-    available: true,
-  },
-  {
-    id: 'report',
-    name: 'Report',
-    description: 'Structured sections for findings and recommendations.',
-    title: 'Untitled Report',
-    content: headingDoc('Appendix', 'Add supporting notes, evidence, and context.'),
-    templateData: {
-      kind: 'report',
-      subtitle: 'Working report',
-      summary: 'Write the main finding here.',
-      findings: 'Capture evidence, observations, and context.',
-      recommendations: 'List the recommended next steps.',
-      appendix: headingDoc('Appendix', 'Add supporting notes, evidence, and context.'),
-    },
-    available: false,
-    comingSoonLabel: 'Coming soon',
-  },
-  {
-    id: 'planner',
-    name: 'Planner',
-    description: 'A practical layout for priorities, tasks, and next steps.',
-    title: 'Untitled Planner',
-    content: blankDoc('Plan the next move.'),
-    blocks: createTemplateBlocks({
-      type: 'doc',
-      content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: "Today's priorities" }] },
-        { type: 'taskList', content: [{ type: 'taskItem', attrs: { checked: false }, content: [paragraphNode('Define the day')] }] },
-        paragraphNode('Plan the next move.'),
-      ],
-    }),
-    templateData: {
-      kind: 'planner',
-      date: new Date().toISOString().slice(0, 10),
-      priorities: ['Top priority', 'Secondary focus', 'Keep in view'],
-      tasks: [
-        { id: 'task_1', text: 'Define the day', done: false },
-        { id: 'task_2', text: 'Review progress', done: false },
-      ],
-      schedule: [
-        { id: 'schedule_1', time: '09:00', text: 'Focus block' },
-        { id: 'schedule_2', time: '14:00', text: 'Review block' },
-      ],
-      notes: blankDoc('Plan the next move.'),
-    },
-    available: true,
-  },
-  {
-    id: 'slideshow',
-    name: 'Slideshow',
-    description: 'Slide-style sections that export cleanly later.',
-    title: 'Untitled Slideshow',
-    content: blankDoc('Introduce the idea.'),
-    templateData: {
-      kind: 'slideshow',
-      activeSlideId: 'slide_1',
-      slides: [
-        { id: 'slide_1', title: 'Slide 1: Title', body: blankDoc('Introduce the idea.'), speakerNotes: 'Speaker notes for the opening slide.' },
-        { id: 'slide_2', title: 'Slide 2: Key Point', body: blankDoc('Add the supporting point.'), speakerNotes: '' },
-      ],
-    },
-    available: false,
-    comingSoonLabel: 'Coming soon',
-  },
-]
-
-function getNoteTemplate(id: NoteTemplateId = 'blank') {
-  return noteTemplates.find((template) => template.id === id) ?? noteTemplates[0]
-}
-
-const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
-  blank: FileText,
-  report: ChartNoAxesColumn,
-  planner: Calendar,
-  slideshow: Columns3,
-}
-
-const blockPickerOptions: BlockPickerOption[] = [
-  { type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
-  { type: 'flashcard', label: 'Flashcard', description: 'Question and answer atom card.', icon: Brain },
-  { type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
-  { type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
-  { type: 'callout', label: 'Callout', description: 'Highlight an important note.', icon: Info },
-]
-
-function cloneTemplateValue<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
-}
-
-function templateStructureLabel(id: NoteTemplateId) {
-  if (id === 'report') return 'Subtitle / Summary / Findings / Recommendations / Appendix'
-  if (id === 'planner') return 'Date / Priorities / Tasks / Schedule / Notes'
-  if (id === 'slideshow') return 'Slide cards / Slide body / Speaker notes'
-  return 'Title / Body'
-}
-
-function normalizeTemplateData(templateId: NoteTemplateId, content: JSONContent, data?: NoteTemplateData): NoteTemplateData {
-  if (data?.kind === templateId) return data
-  if (templateId === 'report') return cloneTemplateValue(getNoteTemplate('report').templateData)
-  if (templateId === 'planner') return cloneTemplateValue(getNoteTemplate('planner').templateData)
-  if (templateId === 'slideshow') return cloneTemplateValue(getNoteTemplate('slideshow').templateData)
-  return { kind: 'blank', body: cloneTemplateValue(content) }
-}
-
-function primaryTemplateContent(note: Note | undefined): JSONContent {
-  if (!note) return emptyDoc
-  const data = normalizeTemplateData(note.templateId ?? 'blank', note.content ?? emptyDoc, note.templateData)
-  if (data.kind === 'blank') return data.body
-  if (data.kind === 'report') return data.appendix
-  if (data.kind === 'planner') return data.notes
-  const slide = data.slides.find((item) => item.id === data.activeSlideId) ?? data.slides[0]
-  return slide?.body ?? emptyDoc
-}
-
-function updatePrimaryTemplateContent(note: Note, content: JSONContent): NoteTemplateData {
-  const data = normalizeTemplateData(note.templateId ?? 'blank', note.content ?? emptyDoc, note.templateData)
-  if (data.kind === 'blank') return { ...data, body: content }
-  if (data.kind === 'report') return { ...data, appendix: content }
-  if (data.kind === 'planner') return { ...data, notes: content }
-  return {
-    ...data,
-    slides: data.slides.map((slide) => (slide.id === data.activeSlideId ? { ...slide, body: content } : slide)),
-  }
-}
-
-function templateDataToContent(data: NoteTemplateData): JSONContent {
-  if (data.kind === 'blank') return data.body
-  if (data.kind === 'report') {
-    return {
-      type: 'doc',
-      content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Summary' }] },
-        { type: 'paragraph', content: data.summary ? [{ type: 'text', text: data.summary }] : [] },
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Findings' }] },
-        { type: 'paragraph', content: data.findings ? [{ type: 'text', text: data.findings }] : [] },
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Recommendations' }] },
-        { type: 'paragraph', content: data.recommendations ? [{ type: 'text', text: data.recommendations }] : [] },
-        ...(data.appendix.content ?? []),
-      ],
-    }
-  }
-  if (data.kind === 'planner') {
-    return {
-      type: 'doc',
-      content: [
-        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: data.date || 'Planner' }] },
-        { type: 'bulletList', content: data.priorities.map((text) => ({ type: 'listItem', content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }] })) },
-        { type: 'bulletList', content: data.tasks.map((task) => ({ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: `${task.done ? '[x]' : '[ ]'} ${task.text}` }] }] })) },
-        ...(data.notes.content ?? []),
-      ],
-    }
-  }
-  return {
-    type: 'doc',
-    content: data.slides.flatMap((slide, index) => [
-      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: slide.title || `Slide ${index + 1}` }] },
-      ...(slide.body.content ?? []),
-    ]),
-  }
-}
-
-function templateDataFor(templateId: NoteTemplateId, content = emptyDoc): NoteTemplateData {
-  if (templateId === 'blank') return { kind: 'blank', body: cloneTemplateValue(content) }
-  const data = cloneTemplateValue(getNoteTemplate(templateId).templateData)
-  if (data.kind === 'report') return { ...data, appendix: cloneTemplateValue(content) }
-  if (data.kind === 'planner') return { ...data, notes: cloneTemplateValue(content) }
-  if (data.kind === 'slideshow') {
-    return {
-      ...data,
-      slides: data.slides.map((slide, index) => (index === 0 ? { ...slide, body: cloneTemplateValue(content) } : slide)),
-    }
-  }
-  return data
 }
 
 function escapeRegExp(value: string) {
@@ -1921,6 +503,14 @@ type ProfileDraft = {
   avatarColor: string
 }
 
+type UpdateStatus = 'idle' | 'checking' | 'available' | 'current' | 'installing' | 'error'
+
+type UpdateState = {
+  status: UpdateStatus
+  message: string
+  version?: string
+}
+
 function createNoteDragPreview(title: string) {
   const preview = document.createElement('div')
   preview.className = 'drag-preview-card'
@@ -2006,6 +596,10 @@ function App() {
   const [aiRunning, setAiRunning] = useState(false)
   const [aiInstructionUpdating, setAiInstructionUpdating] = useState(false)
   const [aiResult, setAiResult] = useState<AIResult | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateState>({
+    status: 'idle',
+    message: 'Check GitHub Releases for signed app updates.',
+  })
   const [showSaveState, setShowSaveState] = useState(true)
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
@@ -2018,6 +612,7 @@ function App() {
   const flashcardProjectFilterRef = useRef<HTMLDivElement | null>(null)
   const aiContextRangeRef = useRef<EditorRange | null>(null)
   const highlighterArmedRef = useRef(false)
+  const updateCheckRanRef = useRef(false)
   const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
@@ -2073,17 +668,16 @@ function App() {
   }, [selectedNoteId])
 
   const loadData = useCallback(async () => {
-    await ensureSeedData()
-    const [storedNotes, storedAtoms, storedFlashcardSets, storedProjects, storedProfile, storedSettings] = await Promise.all([
-      db.notes.orderBy('updatedAt').reverse().toArray(),
-      db.atoms.orderBy('updatedAt').reverse().toArray(),
-      db.flashcardSets.orderBy('updatedAt').reverse().toArray(),
-      db.projects.orderBy('name').toArray(),
-      db.userProfiles.get('local'),
-      db.userSettings.get('local'),
-    ])
+    const {
+      notes: storedNotes,
+      atoms: storedAtoms,
+      flashcardSets: storedFlashcardSets,
+      projects: storedProjects,
+      profile: storedProfile,
+      settings: storedSettings,
+    } = await loadLocalAppData()
     const normalizedSettings = normalizeUserSettings(storedSettings)
-    if (!storedSettings) await db.userSettings.put(normalizedSettings)
+    if (!storedSettings) await settingsStore.save(normalizedSettings)
 
     const projectIds = new Set(storedProjects.map((p) => p.id))
 
@@ -2109,7 +703,7 @@ function App() {
 
         const changed = nextPid !== note.projectId || (note.tags?.length ?? 0) > 0 || !note.templateId || !note.templateData || !note.blocks
 
-        if (changed) await db.notes.put(next)
+        if (changed) await notesStore.save(next)
 
         return next
       }),
@@ -2120,12 +714,12 @@ function App() {
     setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
     const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
     if (storedProjects.some((project) => project.description === undefined)) {
-      await db.projects.bulkPut(normalizedProjects)
+      await projectsStore.saveMany(normalizedProjects)
     }
     setProjects(normalizedProjects)
     setLocalProfile(storedProfile ?? null)
     setUserSettings(normalizedSettings)
-    setAtomSubView(normalizedSettings.preferredAtomSubView)
+    setAtomSubView(normalizedSettings.preferredAtomSubView ?? 'atoms')
     setProfileLoaded(true)
     setSelectedNoteId((current) => current || normalized[0]?.id || '')
   }, [])
@@ -2133,6 +727,82 @@ function App() {
   useEffect(() => {
     void loadData()
   }, [loadData])
+
+  const checkForUpdates = useCallback(async (manual = false) => {
+    if (!window.__TAURI_INTERNALS__) {
+      setUpdateState({
+        status: 'current',
+        message: 'Updates are only available in the desktop app.',
+      })
+      return
+    }
+
+    setUpdateState({
+      status: 'checking',
+      message: manual ? 'Checking GitHub Releases for updates...' : 'Checking for app updates...',
+    })
+
+    try {
+      const update = await check()
+      if (!update) {
+        setUpdateState({
+          status: 'current',
+          message: 'You are running the latest version.',
+        })
+        return
+      }
+
+      setUpdateState({
+        status: 'available',
+        message: `Version ${update.version} is available. Downloading signed update...`,
+        version: update.version,
+      })
+
+      let downloaded = 0
+      await update.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          downloaded = 0
+          setUpdateState({
+            status: 'installing',
+            message: event.data.contentLength
+              ? `Downloading update (${Math.round(event.data.contentLength / 1024 / 1024)} MB)...`
+              : 'Downloading update...',
+            version: update.version,
+          })
+          return
+        }
+
+        if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength
+          setUpdateState({
+            status: 'installing',
+            message: `Downloaded ${Math.round(downloaded / 1024 / 1024)} MB...`,
+            version: update.version,
+          })
+          return
+        }
+
+        setUpdateState({
+          status: 'installing',
+          message: 'Update installed. Relaunching Loci Notes...',
+          version: update.version,
+        })
+      })
+
+      await relaunch()
+    } catch (error) {
+      setUpdateState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Could not check for updates.',
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (updateCheckRanRef.current || !window.__TAURI_INTERNALS__) return
+    updateCheckRanRef.current = true
+    void checkForUpdates()
+  }, [checkForUpdates])
 
   useEffect(() => {
     return () => {
@@ -2178,7 +848,7 @@ function App() {
     const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
     notesRef.current = nextNotes
     setNotes(nextNotes)
-    await db.notes.bulkPut(updatedNotes)
+    await notesStore.saveMany(updatedNotes)
     const openNote = updatedById.get(selectedNoteIdRef.current)
     if (openNote) setEditorContentFromSync(primaryTemplateContent(openNote))
     return markCount
@@ -2209,7 +879,7 @@ function App() {
     setShowSaveState(false)
     if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
     setSaving(true)
-    await db.notes.put(updated)
+    await notesStore.save(updated)
     setSaving(false)
     saveStateDelayRef.current = setTimeout(() => {
       setShowSaveState(true)
@@ -2227,7 +897,7 @@ function App() {
           })
           .filter((atom): atom is Atom => Boolean(atom))
         if (changedAtoms.length) {
-          await db.atoms.bulkPut(changedAtoms)
+          await atomsStore.saveMany(changedAtoms)
           setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
         }
       }
@@ -2269,7 +939,7 @@ function App() {
     const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
     notesRef.current = nextNotes
     setNotes(nextNotes)
-    await db.notes.bulkPut(updatedNotes)
+    await notesStore.saveMany(updatedNotes)
   }, [])
 
   const handleNoteDragStart = useCallback((event: React.DragEvent<HTMLElement>, noteId: string) => {
@@ -2313,7 +983,10 @@ function App() {
       StarterKit.configure({ link: false }),
       TextStyle,
       Highlight.configure({ multicolor: true }),
-      Link.configure({ openOnClick: false }),
+      Link.configure({
+        openOnClick: false,
+        isAllowedUri: (url) => isAllowedLinkUrl(url),
+      }),
       LociImage.configure({ inline: false, allowBase64: true }),
       TaskList,
       TaskItem.configure({ nested: true }),
@@ -2879,14 +1552,14 @@ function App() {
       createdAt: localProfile?.createdAt ?? now,
       updatedAt: now,
     }
-    await db.userProfiles.put(profile)
+    await profileStore.save(profile)
     setLocalProfile(profile)
     setProfileModalOpen(false)
   }
 
   const saveUserSettings = async (next: UserSettings) => {
     const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
-    await db.userSettings.put(normalized)
+    await settingsStore.save(normalized)
     setUserSettings(normalized)
   }
 
@@ -2921,90 +1594,19 @@ function App() {
     }
   }
 
-  const requestAIText = async (taskInstruction: string, userContent: string, signal: AbortSignal) => {
+  const requestConfiguredAIText = async (taskInstruction: string, userContent: string, signal: AbortSignal) => {
     const providerId = userSettings.defaultAIProvider
     const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
     const provider = userSettings.aiProviders[providerId]
-    const apiKey = provider.apiKey.trim()
-    if (!provider.enabled || !apiKey) throw new Error(`Missing ${providerMeta.name} API key.`)
-
-    let responseText = ''
-    let usage: UserSettings['aiLastUsage']
-    if (providerId === 'gemini') {
-      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-      const response = await fetch(`${baseUrl}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal,
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: taskInstruction }] },
-          contents: [{ role: 'user', parts: [{ text: userContent }] }],
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-      responseText = data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? '').join('').trim()
-      usage = extractUsage(data)
-    } else if (providerId === 'openai') {
-      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-      const response = await fetch(`${baseUrl}/responses`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        signal,
-        body: JSON.stringify({
-          model: provider.model,
-          instructions: taskInstruction,
-          input: userContent,
-          prompt_cache_key: selectedNote?.id ?? 'loci-notes-local',
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-      responseText = extractOpenAIText(data)
-      usage = extractUsage(data)
-    } else {
-      const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      }
-      const body: Record<string, unknown> = {
-        model: provider.model,
-        messages: [
-          { role: 'system', content: taskInstruction },
-          { role: 'user', content: userContent },
-        ],
-      }
-      let url = `${baseUrl}/chat/completions`
-      if (providerId === 'claude') {
-        url = `${baseUrl}/messages`
-        headers['x-api-key'] = apiKey
-        headers['anthropic-version'] = '2023-06-01'
-        delete headers.Authorization
-        body.max_tokens = CLAUDE_REQUIRED_MAX_TOKENS
-        body.system = taskInstruction
-        body.messages = [{ role: 'user', content: userContent }]
-      }
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        signal,
-        body: JSON.stringify(body),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-      responseText =
-        providerId === 'claude'
-          ? data?.content?.map((part: { text?: string }) => part.text ?? '').join('').trim()
-          : data?.choices?.[0]?.message?.content?.trim()
-      usage = extractUsage(data)
-    }
-
-    if (!responseText) throw new Error(`${providerMeta.name} returned an empty response.`)
-    return { providerId, providerMeta, responseText, usage }
+    return requestAIText({
+      providerId,
+      provider,
+      providerMeta,
+      taskInstruction,
+      userContent,
+      promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+      signal,
+    })
   }
 
   const buildAIContext = (taskType: AITaskType, selection?: EditorRange) => {
@@ -3105,82 +1707,16 @@ function App() {
     setAiRunning(true)
     setNotice('')
     try {
-      let responseText = ''
-      let usage: UserSettings['aiLastUsage']
-      if (providerId === 'gemini') {
-        const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-        const response = await fetch(`${baseUrl}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: taskInstruction }] },
-            contents: [{ role: 'user', parts: [{ text: userContent }] }],
-          }),
-        })
-        const data = await response.json()
-        if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-        responseText = data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? '').join('').trim()
-        usage = extractUsage(data)
-      } else if (providerId === 'openai') {
-        const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-        const response = await fetch(`${baseUrl}/responses`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: provider.model,
-            instructions: taskInstruction,
-            input: userContent,
-            prompt_cache_key: selectedNote?.id ?? 'loci-notes-local',
-          }),
-        })
-        const data = await response.json()
-        if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-        responseText = extractOpenAIText(data)
-        usage = extractUsage(data)
-      } else {
-        const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        }
-        const body: Record<string, unknown> = {
-          model: provider.model,
-          messages: [
-            { role: 'system', content: taskInstruction },
-            { role: 'user', content: userContent },
-          ],
-        }
-        let url = `${baseUrl}/chat/completions`
-        if (providerId === 'claude') {
-          url = `${baseUrl}/messages`
-          headers['x-api-key'] = apiKey
-          headers['anthropic-version'] = '2023-06-01'
-          delete headers.Authorization
-          body.max_tokens = CLAUDE_REQUIRED_MAX_TOKENS
-          body.system = taskInstruction
-          body.messages = [{ role: 'user', content: userContent }]
-        }
-        const response = await fetch(url, {
-          method: 'POST',
-          headers,
-          signal: controller.signal,
-          body: JSON.stringify(body),
-        })
-        const data = await response.json()
-        if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-        responseText =
-          providerId === 'claude'
-            ? data?.content?.map((part: { text?: string }) => part.text ?? '').join('').trim()
-            : data?.choices?.[0]?.message?.content?.trim()
-        usage = extractUsage(data)
-      }
-
-      if (!responseText) throw new Error(`${providerMeta.name} returned an empty response.`)
+      const result = await requestAIText({
+        providerId,
+        provider,
+        providerMeta,
+        taskInstruction,
+        userContent,
+        promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+        signal: controller.signal,
+      })
+      const { responseText, usage } = result
       const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
       const highlighted = selection ? highlightedFormatBlock(selection) : null
       const blockPayload: AIBlockPayload | undefined =
@@ -3213,7 +1749,7 @@ function App() {
       void saveUserSettings({
         ...userSettings,
         aiLastStatus: 'success',
-        aiLastProvider: providerId,
+        aiLastProvider: result.providerId,
         aiLastError: '',
         aiLastUsage: usage,
         aiLastRequestAt: nowIso(),
@@ -3268,7 +1804,7 @@ function App() {
       reviewCount: 0,
       knownCount: 0,
     }))
-    await db.atoms.bulkPut(created)
+    await atomsStore.saveMany(created)
     setAtoms((current) => [...created, ...current])
     const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, created) : editor ? applyAtomMarksToEditor(editor, created) : 0
     setAiResult(null)
@@ -3311,7 +1847,7 @@ function App() {
     setAiInstructionUpdating(true)
     setNotice('')
     try {
-      const result = await requestAIText(taskInstruction, userContent, controller.signal)
+      const result = await requestConfiguredAIText(taskInstruction, userContent, controller.signal)
       const projectInstructionDraft = cleanAIDraftFormatting(sanitizeAIInsertText(result.responseText))
       setAiResult((current) => (current ? { ...current, projectInstructionDraft } : current))
       void saveUserSettings({
@@ -3533,7 +2069,7 @@ function App() {
       updatedAt: nowIso(),
     }
 
-    await db.notes.put(note)
+    await notesStore.save(note)
     setTemplateProjectId(null)
     setNotes((current) => [note, ...current])
     setSelectedNoteId(note.id)
@@ -3610,10 +2146,12 @@ function App() {
       if (!formatType || !blockChildren.length) return
       const rects = blockChildren.map((child) => child.getBoundingClientRect())
       const top = Math.min(...rects.map((rect) => rect.top))
+      const bottom = Math.max(...rects.map((rect) => rect.bottom))
       controls.push({
         blockId: block.id,
         type: formatType,
         top: top - shellRect.top + 3,
+        height: Math.max(24, bottom - top),
         left: -82,
       })
     })
@@ -3674,21 +2212,25 @@ function App() {
     block.attrs = { atomId: atom.id }
     const nextBlocks = [...selectedBlocks]
     nextBlocks.splice(insertIndex, 0, block)
-    void db.atoms.put(atom)
+    void atomsStore.save(atom)
     setAtoms((current) => [atom, ...current])
     persistBlocks(nextBlocks)
     setNotice('Flashcard block added and linked as an atom.')
   }
 
   const insertImageAfterActive = (src: string) => {
-    if (!src) return
+    const safeSrc = sanitizeImageUrl(src)
+    if (!safeSrc) {
+      setNotice('Use a valid http(s) image URL or supported image data URL.')
+      return
+    }
     if (!selectedBlocks.length) {
-      editor?.chain().focus().insertContent(imageBlockDoc(src).content?.[0] ?? { type: 'image', attrs: { src } }).run()
+      editor?.chain().focus().insertContent(imageBlockDoc(safeSrc).content?.[0] ?? { type: 'image', attrs: { src: safeSrc } }).run()
       return
     }
     const insertIndex = Math.min(selectedBlocks.length, activeBlockIndex() + 1)
     const nextBlocks = [...selectedBlocks]
-    nextBlocks.splice(insertIndex, 0, createLociBlock(imageBlockDoc(src), 'image'))
+    nextBlocks.splice(insertIndex, 0, createLociBlock(imageBlockDoc(safeSrc), 'image'))
     persistBlocks(nextBlocks)
     setNotice('Image block added.')
   }
@@ -3920,27 +2462,28 @@ function App() {
     return (
       <div className="format-block-controls-layer" aria-hidden={false}>
         {formatBlockControls.map((control) => (
-          <span
-            key={control.blockId}
-            className="block-hover-controls format-block-hover-controls"
-            style={{ top: control.top, left: control.left }}
-            data-block-id={control.blockId}
-            data-block-type={control.type}
-            contentEditable={false}
-          >
-            <button className="block-control-button block-control-delete" type="button" aria-label="Delete format block" data-block-action="delete" data-block-id={control.blockId}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
-            </button>
-            <button className="block-control-button" type="button" aria-label="Insert block after format block" data-block-action="insert" data-block-id={control.blockId}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
-            </button>
-            <button className="block-control-button block-control-handle" type="button" aria-label="Move format block" draggable data-block-action="drag" data-block-id={control.blockId}>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="9" cy="7.5" r="1.25" /><circle cx="15" cy="7.5" r="1.25" />
-                <circle cx="9" cy="12" r="1.25" /><circle cx="15" cy="12" r="1.25" />
-                <circle cx="9" cy="16.5" r="1.25" /><circle cx="15" cy="16.5" r="1.25" />
-              </svg>
-            </button>
+          <span key={control.blockId} className="format-block-control-hotspot" style={{ top: control.top, height: control.height }}>
+            <span
+              className="block-hover-controls format-block-hover-controls"
+              style={{ left: control.left }}
+              data-block-id={control.blockId}
+              data-block-type={control.type}
+              contentEditable={false}
+            >
+              <button className="block-control-button block-control-delete" type="button" aria-label="Delete format block" data-block-action="delete" data-block-id={control.blockId}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
+              </button>
+              <button className="block-control-button" type="button" aria-label="Insert block after format block" data-block-action="insert" data-block-id={control.blockId}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+              </button>
+              <button className="block-control-button block-control-handle" type="button" aria-label="Move format block" draggable data-block-action="drag" data-block-id={control.blockId}>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="9" cy="7.5" r="1.25" /><circle cx="15" cy="7.5" r="1.25" />
+                  <circle cx="9" cy="12" r="1.25" /><circle cx="15" cy="12" r="1.25" />
+                  <circle cx="9" cy="16.5" r="1.25" /><circle cx="15" cy="16.5" r="1.25" />
+                </svg>
+              </button>
+            </span>
           </span>
         ))}
       </div>
@@ -4180,10 +2723,7 @@ function App() {
       confirmLabel: 'Delete',
       intent: 'danger',
       onConfirm: async () => {
-        await db.transaction('rw', db.notes, db.noteSnapshots, async () => {
-          await db.notes.delete(note.id)
-          await db.noteSnapshots.where('noteId').equals(note.id).delete()
-        })
+        await notesStore.deleteWithSnapshots(note.id)
         const remaining = notesRef.current.filter((item) => item.id !== note.id)
         notesRef.current = remaining
         setNotes(remaining)
@@ -4216,11 +2756,7 @@ function App() {
           .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => !atomIdSet.has(atomId)), updatedAt: nowIso() }))
           .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
 
-        await db.transaction('rw', db.atoms, db.notes, db.flashcardSets, async () => {
-          await db.atoms.bulkDelete(atomIds)
-          if (touchedNotes.length) await db.notes.bulkPut(touchedNotes)
-          if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
-        })
+        await atomsStore.deleteManyAndUnlink(atomIds, touchedNotes, updatedSets)
 
         setAtoms((current) => current.filter((item) => !atomIdSet.has(item.id)))
         if (updatedSets.length) {
@@ -4284,7 +2820,7 @@ function App() {
       updatedAt: now,
       lastStudiedAt: existing?.lastStudiedAt,
     }
-    await db.flashcardSets.put(next)
+    await flashcardSetsStore.save(next)
     setFlashcardSets((current) =>
       [next, ...current.filter((set) => set.id !== next.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     )
@@ -4300,7 +2836,7 @@ function App() {
       confirmLabel: 'Delete',
       intent: 'danger',
       onConfirm: async () => {
-        await db.flashcardSets.delete(set.id)
+        await flashcardSetsStore.delete(set.id)
         setFlashcardSets((current) => current.filter((item) => item.id !== set.id))
         if (studyingFlashcardSetId === set.id) {
           setStudyingFlashcardSetId(null)
@@ -4322,7 +2858,7 @@ function App() {
     if (!nextIds.length) return
     const now = nowIso()
     const updatedSet = { ...set, lastStudiedAt: now }
-    await db.flashcardSets.put(updatedSet)
+    await flashcardSetsStore.save(updatedSet)
     setFlashcardSets((current) => current.map((item) => (item.id === set.id ? updatedSet : item)))
     setStudyingFlashcardSetId(set.id)
     setStudyAtomIds(nextIds)
@@ -4397,7 +2933,7 @@ function App() {
       confirmLabel: 'Delete',
       intent: 'danger',
       onConfirm: async () => {
-        const snapshots = await db.noteSnapshots.toArray()
+        const snapshots = await noteSnapshotsStore.list()
         const snapshotIdsToDelete = snapshots.filter((snapshot) => projectNoteIds.has(snapshot.noteId)).map((snapshot) => snapshot.id)
 
         const deletedAtomIdSet = new Set(atomIdsToDelete)
@@ -4405,13 +2941,7 @@ function App() {
           .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => !deletedAtomIdSet.has(atomId)), updatedAt: nowIso() }))
           .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
 
-        await db.transaction('rw', [db.projects, db.notes, db.atoms, db.noteSnapshots, db.flashcardSets], async () => {
-          await db.projects.delete(projectId)
-          if (projectNotes.length) await db.notes.bulkDelete(projectNotes.map((note) => note.id))
-          if (snapshotIdsToDelete.length) await db.noteSnapshots.bulkDelete(snapshotIdsToDelete)
-          if (atomIdsToDelete.length) await db.atoms.bulkDelete(atomIdsToDelete)
-          if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
-        })
+        await projectsStore.deleteProjectData(projectId, projectNotes, snapshotIdsToDelete, atomIdsToDelete, updatedSets)
 
         setProjects((current) => current.filter((item) => item.id !== projectId))
         setNotes(keptNotes.sort(sortByUpdated))
@@ -4444,7 +2974,7 @@ function App() {
       confirmLabel: 'Create project',
       onConfirm: async (name, description) => {
         const project: Project = { id: createId('project'), name, description: description ?? '', color: '#111111', createdAt: nowIso() }
-        await db.projects.put(project)
+        await projectsStore.save(project)
         setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
       },
     })
@@ -4457,19 +2987,19 @@ function App() {
       name: `${project.name} Copy`,
       createdAt: nowIso(),
     }
-    await db.projects.put(duplicatedProject)
+    await projectsStore.save(duplicatedProject)
     setProjects((current) => [...current, duplicatedProject].sort((a, b) => a.name.localeCompare(b.name)))
   }
 
   const updateProjectDescription = async (projectId: string, description: string) => {
-    await db.projects.update(projectId, { description })
+    await projectsStore.updateDescription(projectId, description)
     setProjects((current) => current.map((project) => (project.id === projectId ? { ...project, description } : project)))
   }
 
   const updateProjectName = async (projectId: string, name: string) => {
     const nextName = name.trim()
     if (!nextName) return
-    await db.projects.update(projectId, { name: nextName })
+    await projectsStore.rename(projectId, nextName)
     setProjects((current) =>
       current
         .map((project) => (project.id === projectId ? { ...project, name: nextName } : project))
@@ -4532,7 +3062,7 @@ function App() {
       knownCount: existing?.knownCount ?? 0,
     }
 
-    await db.atoms.put(atom)
+    await atomsStore.save(atom)
     setAtoms((current) => [atom, ...current.filter((item) => item.id !== atom.id)])
     const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, [atom]) : applyAtomMarksToEditor(editor, [atom])
     setNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
@@ -4549,7 +3079,12 @@ function App() {
       placeholder: 'https://example.com',
       confirmLabel: 'Add link',
       onConfirm: (href) => {
-        editor.chain().focus().extendMarkRange('link').setLink({ href }).run()
+        const safeHref = sanitizeLinkUrl(href)
+        if (!safeHref) {
+          setNotice('Use a valid http, https, or mailto link.')
+          return
+        }
+        editor.chain().focus().extendMarkRange('link').setLink({ href: safeHref }).run()
       },
     })
   }
@@ -4564,7 +3099,12 @@ function App() {
       placeholder: 'https://example.com/image.jpg',
       confirmLabel: 'Add image',
       onConfirm: (src) => {
-        insertImageAfterActive(src.trim())
+        const safeSrc = sanitizeImageUrl(src)
+        if (!safeSrc) {
+          setNotice('Use a valid http(s) image URL or supported image data URL.')
+          return
+        }
+        insertImageAfterActive(safeSrc)
       },
     })
   }
@@ -5526,6 +4066,7 @@ function App() {
                 updateDescription={(description) => void updateProjectDescription(openedProject.id, description)}
                 updateName={(name) => void updateProjectName(openedProject.id, name)}
                 back={() => setSelectedProjectId('')}
+                formatDay={formatDay}
               />
             ) : (
               <>
@@ -6282,146 +4823,86 @@ function App() {
                   <span><strong>{dashboardStats.dailyStreak}</strong> day streak</span>
                 </div>
               </section>
+
+              <section className="settings-card settings-grid-pair">
+                <div className="settings-card-heading">
+                  <Download size={18} />
+                  <div>
+                    <h3>App updates</h3>
+                    <p>Signed desktop updates are delivered from GitHub Releases.</p>
+                  </div>
+                </div>
+                <div className={`settings-update-status is-${updateState.status}`}>
+                  <strong>
+                    {updateState.status === 'available'
+                      ? `Update ${updateState.version}`
+                      : updateState.status === 'checking'
+                        ? 'Checking'
+                        : updateState.status === 'installing'
+                          ? 'Installing'
+                          : updateState.status === 'error'
+                            ? 'Update check failed'
+                            : 'Desktop updater'}
+                  </strong>
+                  <span>{updateState.message}</span>
+                </div>
+                <button
+                  type="button"
+                  className="settings-update-button"
+                  disabled={updateState.status === 'checking' || updateState.status === 'installing'}
+                  onClick={() => void checkForUpdates(true)}
+                >
+                  {updateState.status === 'checking'
+                    ? 'Checking...'
+                    : updateState.status === 'installing'
+                      ? 'Installing...'
+                      : 'Check for updates'}
+                </button>
+              </section>
             </div>
           </section>
         )}
       </section>
 
       {aiResult && (
-        <div
-          className="modal-backdrop ai-result-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeAIResult()
+        <AIResultDialog
+          result={aiResult}
+          selectedProjectName={selectedProject?.name}
+          aiInstructionUpdating={aiInstructionUpdating}
+          onClose={closeAIResult}
+          onDraftChange={(patch) => setAiResult((current) => (current ? { ...current, ...patch } : current))}
+          onPrimaryAction={() => {
+            if (aiResult.canCreateAtoms) {
+              void createAtomsFromAIResult()
+              return
+            }
+            if (aiResult.canApplyBlock && aiResult.blockPayload) {
+              applyAIBlockPayload(aiResult.blockPayload)
+              closeAIResult()
+              return
+            }
+            if (aiResult.canReplaceSelection && aiResult.selection) {
+              editor
+                ?.chain()
+                .focus()
+                .setTextSelection(aiResult.selection)
+                .deleteSelection()
+                .insertContent(textToEditorContent(aiResult.draftText).content ?? [])
+                .run()
+              closeAIResult()
+              return
+            }
+            if (editor) insertDraftText(editor, aiResult.draftText)
+            closeAIResult()
           }}
-        >
-          <section
-            className={`ai-result-dialog${aiResult.canReplaceSelection && aiResult.selectionOriginalText !== undefined ? ' ai-result-dialog--wide' : ''}`}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ai-result-title"
-          >
-            <button
-              type="button"
-              className="ai-result-close"
-              aria-label="Close AI result"
-              onClick={closeAIResult}
-            >
-              <X size={18} />
-            </button>
-            <h2 id="ai-result-title">{aiResultTitle(aiResult)}</h2>
-            {aiResult.taskType === 'mark_writing' ? (
-              <MarkWritingFeedbackFields
-                draftText={aiResult.draftText}
-                onChange={(next) => setAiResult((current) => (current ? { ...current, draftText: next } : current))}
-              />
-            ) : aiResult.canReplaceSelection && aiResult.selectionOriginalText !== undefined ? (
-              <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
-                <div className="ai-rewrite-compare-pane">
-                  <span className="ai-rewrite-compare-heading">Original selection</span>
-                  <div className="ai-rewrite-compare-readonly">{aiResult.selectionOriginalText.trim() || '—'}</div>
-                </div>
-                <div className="ai-rewrite-compare-pane">
-                  <label className="ai-draft-editor ai-rewrite-compare-draft">
-                    <textarea
-                      value={aiResult.draftText}
-                      onChange={(event) =>
-                        setAiResult((current) => (current ? { ...current, draftText: event.target.value } : current))
-                      }
-                      aria-label={aiDraftLabel(aiResult.taskType)}
-                      autoFocus
-                    />
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <label className="ai-draft-editor">
-                <textarea
-                  value={aiResult.draftText}
-                  onChange={(event) => setAiResult((current) => (current ? { ...current, draftText: event.target.value } : current))}
-                  aria-label={aiDraftLabel(aiResult.taskType)}
-                  autoFocus
-                />
-              </label>
-            )}
-            {aiResult.taskType !== 'mark_writing' &&
-              aiResult.taskType !== 'ai_atomise' &&
-              aiResult.taskType !== 'atom_task' && (
-                <details className="ai-draft-preview-details" open>
-                  <summary>Formatted preview</summary>
-                  <div className="ai-draft-preview-panel">
-                    {aiResult.blockPayload ? (
-                      <AIBlockFormattedPreview payload={aiResult.blockPayload} />
-                    ) : (
-                      <AiDraftFormattedPreview text={aiResult.draftText} />
-                    )}
-                  </div>
-                </details>
-              )}
-            {aiResult.projectInstructionDraft !== undefined && (
-              <label className="ai-draft-editor ai-project-instruction-draft">
-                <textarea
-                  value={aiResult.projectInstructionDraft}
-                  onChange={(event) => setAiResult((current) => (current ? { ...current, projectInstructionDraft: event.target.value } : current))}
-                  aria-label="Project instructions update"
-                />
-              </label>
-            )}
-            <footer>
-              {(aiResult.canCreateAtoms || aiResult.canApplyBlock || aiResult.canReplaceSelection || aiResult.canInsert || aiResult.taskType === 'answer_with_context' || aiResult.taskType === 'app_help' || aiResult.taskType === 'mark_writing') && (
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => {
-                    if (aiResult.canCreateAtoms) {
-                      void createAtomsFromAIResult()
-                      return
-                    }
-                    if (aiResult.canApplyBlock && aiResult.blockPayload) {
-                      applyAIBlockPayload(aiResult.blockPayload)
-                      closeAIResult()
-                      return
-                    }
-                    if (aiResult.canReplaceSelection && aiResult.selection) {
-                      editor
-                        ?.chain()
-                        .focus()
-                        .setTextSelection(aiResult.selection)
-                        .deleteSelection()
-                        .insertContent(textToEditorContent(aiResult.draftText).content ?? [])
-                        .run()
-                      closeAIResult()
-                      return
-                    }
-                    if (editor) insertDraftText(editor, aiResult.draftText)
-                    closeAIResult()
-                  }}
-                >
-                  {aiPrimaryActionLabel(aiResult)}
-                </button>
-              )}
-              {aiResult.canUpdateProjectInstructions && selectedProject && aiResult.projectInstructionDraft === undefined && (
-                <button type="button" onClick={() => void draftProjectInstructionsFromAIResult()} disabled={aiInstructionUpdating}>
-                  {aiInstructionUpdating ? 'Drafting...' : 'Update project instructions'}
-                </button>
-              )}
-              {selectedProject && aiResult.projectInstructionDraft !== undefined && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const draft = aiResult.projectInstructionDraft?.trim()
-                    if (!draft) return
-                    void updateProjectDescription(selectedProject.id, draft)
-                    setAiResult((current) => (current ? { ...current, projectInstructionDraft: undefined } : current))
-                  }}
-                >
-                  Save project instructions
-                </button>
-              )}
-              <button type="button" onClick={() => void copyToClipboard(aiResult.draftText)}>Copy</button>
-            </footer>
-          </section>
-        </div>
+          onDraftProjectInstructions={() => void draftProjectInstructionsFromAIResult()}
+          onSaveProjectInstructions={(draft) => {
+            if (!selectedProject) return
+            void updateProjectDescription(selectedProject.id, draft)
+            setAiResult((current) => (current ? { ...current, projectInstructionDraft: undefined } : current))
+          }}
+          onCopy={() => void copyToClipboard(aiResult.draftText)}
+        />
       )}
 
       {searchOpen && (
@@ -6844,272 +5325,6 @@ function App() {
   )
 }
 
-function PageHeader({ title, action }: { title: React.ReactNode; action?: React.ReactNode }) {
-  return (
-    <header className="pane-header">
-      <div>
-        {typeof title === 'string' ? <h2>{title}</h2> : title}
-      </div>
-      {action}
-    </header>
-  )
-}
-
-function DashboardPanel({ title, className = '', children }: { title: string; className?: string; children: React.ReactNode }) {
-  return (
-    <section className={`dashboard-panel ${className}`}>
-      <h3>{title}</h3>
-      {children}
-    </section>
-  )
-}
-
-function ProjectMemoryTextarea({
-  value,
-  onChange,
-  placeholder,
-  ariaLabel,
-}: {
-  value: string
-  onChange: (next: string) => void
-  placeholder: string
-  ariaLabel: string
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null)
-
-  const syncHeight = useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    const minPx = 68
-    el.style.height = `${Math.max(minPx, el.scrollHeight)}px`
-  }, [])
-
-  useLayoutEffect(() => {
-    syncHeight()
-  }, [value, syncHeight])
-
-  useEffect(() => {
-    window.addEventListener('resize', syncHeight)
-    return () => window.removeEventListener('resize', syncHeight)
-  }, [syncHeight])
-
-  return (
-    <textarea
-      ref={ref}
-      className="project-memory-field"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      placeholder={placeholder}
-      aria-label={ariaLabel}
-      rows={1}
-    />
-  )
-}
-
-function ProjectDetail({ project, notes, atomCards, draggedNoteIds, selectedNoteIds, onNoteDragStart, onNoteDragEnd, onNoteSelect, deleteNote, openNote, newNote, deleteProject, updateDescription, updateName, back }: {
-  project: Project
-  notes: Note[]
-  atomCards: ReturnType<typeof buildAtomCards>
-  draggedNoteIds: string[]
-  selectedNoteIds: string[]
-  onNoteDragStart: (event: React.DragEvent<HTMLElement>, noteId: string) => void
-  onNoteDragEnd: () => void
-  onNoteSelect: React.Dispatch<React.SetStateAction<string[]>>
-  deleteNote: (note: Note) => void
-  openNote: (noteId: string) => void
-  newNote: () => void
-  deleteProject: () => void
-  updateDescription: (description: string) => void
-  updateName: (name: string) => void
-  back: () => void
-}) {
-  const projectNotes = notes.filter((note) => note.projectId === project.id)
-  const projectAtoms = atomCards.filter((card) => card.projectIds.includes(project.id))
-  const projectMemory = parseProjectMemory(project.description ?? '')
-  const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
-  const [projectTitleEditing, setProjectTitleEditing] = useState(false)
-  const [projectTitleDraft, setProjectTitleDraft] = useState(project.name)
-  const projectTitleInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (projectTitleEditing) return
-    setProjectTitleDraft(project.name)
-  }, [project.name, projectTitleEditing])
-
-  useEffect(() => {
-    if (!projectTitleEditing) return
-    projectTitleInputRef.current?.focus()
-    projectTitleInputRef.current?.select()
-  }, [projectTitleEditing])
-
-  const commitProjectTitle = () => {
-    const nextName = projectTitleDraft.trim()
-    if (nextName && nextName !== project.name) updateName(nextName)
-    else setProjectTitleDraft(project.name)
-    setProjectTitleEditing(false)
-  }
-
-  return (
-    <>
-      <PageHeader
-        title={
-          projectTitleEditing ? (
-            <input
-              ref={projectTitleInputRef}
-              className="project-title-input"
-              value={projectTitleDraft}
-              onChange={(event) => setProjectTitleDraft(event.target.value)}
-              onBlur={commitProjectTitle}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  commitProjectTitle()
-                }
-                if (event.key === 'Escape') {
-                  event.preventDefault()
-                  setProjectTitleDraft(project.name)
-                  setProjectTitleEditing(false)
-                }
-              }}
-              aria-label="Project name"
-            />
-          ) : (
-            <h2
-              className="project-title-editable"
-              onDoubleClick={() => setProjectTitleEditing(true)}
-              title="Double-click to rename"
-            >
-              {project.name}
-            </h2>
-          )
-        }
-        action={
-          <div className="project-header-actions">
-            <button type="button" onClick={newNote}><Plus size={17} /> New note in this project</button>
-            <button className="project-delete-button" type="button" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
-              <Trash2 size={16} />
-            </button>
-          </div>
-        }
-      />
-      <div className="project-detail-toolbar">
-        <div className="project-detail-toolbar-top">
-          <button type="button" className="back-link" onClick={back}>
-            <ArrowLeft size={15} /> Projects
-          </button>
-          <button
-            type="button"
-            className="project-description-toolbar-summary"
-            aria-expanded={projectDescriptionOpen}
-            onClick={() => setProjectDescriptionOpen((open) => !open)}
-          >
-            <span>Project Description</span>
-            <ChevronDown
-              size={16}
-              className={`project-description-toolbar-chevron${projectDescriptionOpen ? ' is-open' : ''}`}
-              aria-hidden
-            />
-          </button>
-        </div>
-        {projectDescriptionOpen && (
-          <div className="project-memory-expand">
-            {PROJECT_MEMORY_HEADINGS.map(({ key, label }) => {
-              const meta = PROJECT_MEMORY_FIELD_META[key]
-              return (
-                <div className="project-memory-row" key={key}>
-                  <div className="project-memory-row-head">
-                    <strong>{label}</strong>
-                    <span className="project-memory-hint">{meta.hint}</span>
-                  </div>
-                  <ProjectMemoryTextarea
-                    value={projectMemory[key]}
-                    onChange={(next) => updateDescription(updateProjectMemorySection(project.description, key, next))}
-                    placeholder={meta.placeholder}
-                    ariaLabel={meta.ariaLabel}
-                  />
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
-      <div className="project-detail-grid">
-        <section className="project-files-panel">
-          <span>Files · {projectNotes.length}</span>
-          {projectNotes.length ? (
-            projectNotes.map((note) => {
-              const isSelected = selectedNoteIds.includes(note.id)
-              const isDragging = draggedNoteIds.includes(note.id)
-              return (
-                <div
-                  className={`file-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
-                  key={note.id}
-                  role="button"
-                  tabIndex={0}
-                  draggable
-                  aria-selected={isSelected}
-                  onDragStart={(event) => onNoteDragStart(event, note.id)}
-                  onDragEnd={onNoteDragEnd}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      openNote(note.id)
-                    }
-                  }}
-                  onClick={(event) => {
-                    if (event.shiftKey) {
-                      onNoteSelect((current) =>
-                        current.includes(note.id)
-                          ? current.filter((id) => id !== note.id)
-                          : [...current, note.id],
-                      )
-                      return
-                    }
-                    onNoteSelect([])
-                    openNote(note.id)
-                  }}
-                >
-                  <strong>{note.title}</strong>
-                  <span className="file-row-date">{formatDay(note.updatedAt)}</span>
-                  <p>{collectText(note.content) || 'Empty note'}</p>
-                  <button
-                    type="button"
-                    className="note-row-delete"
-                    aria-label={`Delete ${note.title || 'Untitled Note'}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      deleteNote(note)
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              )
-            })
-          ) : (
-            <p className="empty-state">No files in this project yet.</p>
-          )}
-        </section>
-        <section className="project-files-panel">
-          <span>Linked atoms · {projectAtoms.length}</span>
-          {projectAtoms.length ? (
-            projectAtoms.map((card) => (
-              <div className="file-row static" key={card.atom.id}>
-                <strong>{card.atom.phrase}</strong>
-                <span>{card.atom.knownCount}/{card.atom.reviewCount} known</span>
-                <p>{card.atom.definition}</p>
-              </div>
-            ))
-          ) : (
-            <p className="empty-state">No atoms linked to this project yet.</p>
-          )}
-        </section>
-      </div>
-    </>
-  )
-}
-
 function buildAtomCards(atoms: Atom[], notes: Note[], projects: Project[]) {
   return atoms.map((atom) => {
     const linkedNotes = notes.filter((note) => contentHasAtom(note.content, atom.id))
@@ -7117,190 +5332,6 @@ function buildAtomCards(atoms: Atom[], notes: Note[], projects: Project[]) {
     const projectNames = projectIds.map((id) => projects.find((project) => project.id === id)?.name).filter(Boolean) as string[]
     return { atom: { ...atom, tags: atom.tags ?? [] }, noteCount: linkedNotes.length, projectIds, projectNames }
   })
-}
-
-function contentHasAtom(content: JSONContent, atomId: string): boolean {
-  if (content.attrs?.atomId === atomId) return true
-  if (content.marks?.some((mark) => mark.type === 'atom' && mark.attrs?.atomId === atomId)) return true
-  return (content.content ?? []).some((child) => contentHasAtom(child, atomId))
-}
-
-function collectAtomIds(content: JSONContent): string[] {
-  const attrAtomId = typeof content.attrs?.atomId === 'string' ? [content.attrs.atomId] : []
-  const own = (content.marks ?? [])
-    .filter((mark) => mark.type === 'atom' && typeof mark.attrs?.atomId === 'string')
-    .map((mark) => mark.attrs?.atomId as string)
-  return [...attrAtomId, ...own, ...(content.content ?? []).flatMap(collectAtomIds)]
-}
-
-function stripAtomMarks(content: JSONContent, atomIds: Set<string>): JSONContent {
-  const next: JSONContent = { ...content }
-  if (content.marks) {
-    const marks = content.marks.filter((mark) => mark.type !== 'atom' || !atomIds.has(String(mark.attrs?.atomId ?? '')))
-    if (marks.length) next.marks = marks
-    else delete next.marks
-  }
-  if (content.content) {
-    next.content = content.content.map((child) => stripAtomMarks(child, atomIds))
-  }
-  return next
-}
-
-function collectInlinePlain(node: JSONContent): string {
-  if (node.type === 'hardBreak') return '\n'
-  if (node.type === 'image') return ''
-  if (node.text) return node.text
-  return (node.content ?? []).map(collectInlinePlain).join('')
-}
-
-function normalizePreviewChunk(value: string) {
-  return value.replace(/\s+/g, ' ').trim()
-}
-
-/** TipTap-aware excerpt: one line per block / list row for dashboard previews. */
-function collectNotePreviewLines(content: JSONContent | undefined | null, maxLines: number): string[] {
-  if (!content) return []
-
-  const lines: string[] = []
-
-  function push(raw: string) {
-    const t = normalizePreviewChunk(raw)
-    if (!t || lines.length >= maxLines) return
-    lines.push(t)
-  }
-
-  function walkList(list: JSONContent, ordered: boolean) {
-    let n = 0
-    for (const item of list.content ?? []) {
-      if (item.type !== 'listItem') continue
-      n += 1
-      const bullet = ordered ? `${n}.` : '•'
-      walkListItem(item, bullet)
-      if (lines.length >= maxLines) return
-    }
-  }
-
-  function walkListItem(item: JSONContent, bullet: string) {
-    let first = true
-    for (const child of item.content ?? []) {
-      if (lines.length >= maxLines) return
-      const ct = child.type ?? 'paragraph'
-      if (ct === 'paragraph' || ct === 'heading') {
-        for (const part of splitInlineLines(collectInlinePlain(child))) {
-          for (const seg of segmentDensePreviewLine(part)) {
-            if (!normalizePreviewChunk(seg)) continue
-            push(first ? `${bullet} ${seg}` : `  ${seg}`)
-            first = false
-            if (lines.length >= maxLines) return
-          }
-        }
-      } else if (ct === 'bulletList') {
-        walkList(child, false)
-      } else if (ct === 'orderedList') {
-        walkList(child, true)
-      }
-    }
-  }
-
-  function walk(node: JSONContent) {
-    if (lines.length >= maxLines) return
-    const type = node.type ?? 'doc'
-    if (type === 'doc') {
-      for (const child of node.content ?? []) walk(child)
-      return
-    }
-    if (type === 'paragraph' || type === 'heading') {
-      for (const part of splitInlineLines(collectInlinePlain(node))) {
-        for (const seg of segmentDensePreviewLine(part)) {
-          push(seg)
-        }
-      }
-      return
-    }
-    if (type === 'blockquote') {
-      for (const child of node.content ?? []) walk(child)
-      return
-    }
-    if (type === 'lociQuote') {
-      for (const child of node.content ?? []) walk(child)
-      return
-    }
-    if (type === 'bulletList') {
-      walkList(node, false)
-      return
-    }
-    if (type === 'orderedList') {
-      walkList(node, true)
-      return
-    }
-    if (type === 'codeBlock') {
-      const code = normalizePreviewChunk(collectInlinePlain(node))
-      if (code) push(code)
-    }
-  }
-
-  walk(content)
-  return lines
-}
-
-function splitInlineLines(text: string) {
-  return text.split('\n').map(normalizePreviewChunk).filter(Boolean)
-}
-
-/** Improves single-block notes: pull leading ISO dates and task markers onto their own lines. */
-function segmentDensePreviewLine(line: string): string[] {
-  const t = normalizePreviewChunk(line)
-  if (!t) return []
-
-  const chunks: string[] = []
-  let rest = t
-
-  const dateHead = /^(\d{4}-\d{2}-\d{2})\b\s*/
-  const dm = rest.match(dateHead)
-  if (dm) {
-    chunks.push(dm[1])
-    rest = rest.slice(dm[0].length).trim()
-  }
-
-  if (!rest) return chunks
-
-  if (/\[\s*[xX_]?\s*\]/.test(rest)) {
-    const taskParts = rest.split(/\s+(?=\[\s*[xX_]?\s*\])/).map(normalizePreviewChunk).filter(Boolean)
-    if (taskParts.length > 1) {
-      chunks.push(...taskParts)
-      return chunks
-    }
-  }
-
-  const wide = rest.split(/\s{2,}/).map(normalizePreviewChunk).filter(Boolean)
-  if (wide.length > 1) {
-    chunks.push(...wide)
-    return chunks
-  }
-
-  chunks.push(rest)
-  return chunks
-}
-
-function collectText(content: JSONContent): string {
-  if (content.text) return content.text
-  return (content.content ?? []).map(collectText).join(' ').replace(/\s+/g, ' ').trim()
-}
-
-function flashcardsFromContent(content: JSONContent): Array<{ atomId: string; phrase: string; definition: string }> {
-  const cards: Array<{ atomId: string; phrase: string; definition: string }> = []
-  const visit = (node: JSONContent) => {
-    if (node.type === 'lociFlashcard' && typeof node.attrs?.atomId === 'string') {
-      const parts = node.content ?? []
-      const phrase = collectText(parts[0] ?? { type: 'paragraph' }).trim()
-      const definition = collectText({ type: 'doc', content: parts.slice(1) }).trim()
-      if (phrase && definition) cards.push({ atomId: node.attrs.atomId, phrase, definition })
-      return
-    }
-    ;(node.content ?? []).forEach(visit)
-  }
-  visit(content)
-  return cards
 }
 
 function mountedEditorDom(editor: TiptapEditor | null): HTMLElement | null {

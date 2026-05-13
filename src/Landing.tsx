@@ -53,13 +53,13 @@ const downloadOptions = [
   {
     title: 'Windows Setup EXE',
     detail: 'Recommended installer for most Windows users.',
-    href: '/downloads/Loci-Notes-Setup-0.3.0-x64.exe',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.0.0-x64.exe',
     label: 'Download EXE',
   },
   {
     title: 'Windows MSI',
     detail: 'Installer package for managed or admin-style installs.',
-    href: '/downloads/Loci-Notes-0.3.0-x64.msi',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-1.0.0-x64.msi',
     label: 'Download MSI',
   },
 ]
@@ -210,7 +210,7 @@ function Landing() {
           <div>
             <span>Download</span>
             <h2>
-              Download the Windows app, <span>served from this landing page</span>
+              Download the Windows app, <span>served from GitHub Releases</span>
             </h2>
           </div>
           <div className="closing-copy">
@@ -220,15 +220,15 @@ function Landing() {
             </p>
             <div className="closing-points">
               <span>
-                <Check size={14} aria-hidden /> Static files hosted with the site
+                <Check size={14} aria-hidden /> Release assets hosted on GitHub
               </span>
               <span>
-                <Sparkles size={14} aria-hidden /> Version 0.3.0 Windows builds
+                <Sparkles size={14} aria-hidden /> Version 1.0.0 Windows builds
               </span>
             </div>
             <div className="download-grid" aria-label="Download options">
               {downloadOptions.map((option) => (
-                <a className="download-card" href={option.href} download key={option.title}>
+                <a className="download-card" href={option.href} key={option.title}>
                   <div className="download-icon">
                     <Download size={18} aria-hidden />
                   </div>
