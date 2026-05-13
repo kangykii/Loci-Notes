@@ -57,6 +57,7 @@ export type UserSettings = {
   highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
+  preferredAtomSubView?: 'atoms' | 'sets'
   createdAt: string
   updatedAt: string
 }
@@ -72,7 +73,40 @@ export type Atom = {
   knownCount: number
 }
 
+export type FlashcardSet = {
+  id: string
+  name: string
+  description?: string
+  atomIds: string[]
+  createdAt: string
+  updatedAt: string
+  lastStudiedAt?: string
+}
+
 export type NoteTemplateId = 'blank' | 'report' | 'planner' | 'slideshow'
+
+export type LociBlockType =
+  | 'paragraph'
+  | 'heading'
+  | 'checklist'
+  | 'table'
+  | 'flashcard'
+  | 'bulletList'
+  | 'numberedList'
+  | 'quote'
+  | 'image'
+  | 'divider'
+  | 'callout'
+  | 'template'
+
+export type LociBlock = {
+  id: string
+  type: LociBlockType
+  content: JSONContent
+  attrs?: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
 
 export type TemplateTask = {
   id: string
@@ -123,6 +157,7 @@ export type Note = {
   projectId: string
   templateId: NoteTemplateId
   templateData: NoteTemplateData
+  blocks?: LociBlock[]
   author: string
   tags: string[]
   content: JSONContent
@@ -149,6 +184,7 @@ function snapshotContentHash(note: Pick<Note, 'title' | 'content'>) {
 class LociNotesDatabase extends Dexie {
   notes!: Dexie.Table<Note, string>
   atoms!: Dexie.Table<Atom, string>
+  flashcardSets!: Dexie.Table<FlashcardSet, string>
   projects!: Dexie.Table<Project, string>
   noteSnapshots!: Dexie.Table<NoteSnapshot, string>
   userProfiles!: Dexie.Table<UserProfile, string>
@@ -244,6 +280,32 @@ class LociNotesDatabase extends Dexie {
             project.description = project.description ?? ''
           })
       })
+    this.version(9)
+      .stores({
+        notes: 'id, title, projectId, templateId, updatedAt, *tags',
+        atoms: 'id, phrase, updatedAt, *tags',
+        projects: 'id, name',
+        noteSnapshots: 'id, noteId, savedAt',
+        userProfiles: 'id',
+        userSettings: 'id',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('notes')
+          .toCollection()
+          .modify((note) => {
+            note.blocks = note.blocks ?? contentToSeedBlocks(note.content)
+          })
+      })
+    this.version(10).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      atoms: 'id, phrase, updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+    })
   }
 }
 
@@ -253,6 +315,34 @@ export const nowIso = () => new Date().toISOString()
 
 export const createId = (prefix: string) =>
   `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
+
+function blockTypeForNode(node: JSONContent): LociBlockType {
+  if (node.type === 'doc') return blockTypeForNode(node.content?.[0] ?? { type: 'paragraph' })
+  if (node.type === 'heading') return 'heading'
+  if (node.type === 'taskList') return 'checklist'
+  if (node.type === 'table') return 'table'
+  if (node.type === 'lociFlashcard') return 'flashcard'
+  if (node.type === 'lociQuote') return 'quote'
+  if (node.type === 'bulletList') return 'bulletList'
+  if (node.type === 'orderedList') return 'numberedList'
+  if (node.type === 'blockquote') return 'quote'
+  if (node.type === 'image') return 'image'
+  if (node.type === 'horizontalRule') return 'divider'
+  return 'paragraph'
+}
+
+function contentToSeedBlocks(content?: JSONContent): LociBlock[] {
+  const now = nowIso()
+  const nodes = content?.type === 'doc' ? content.content ?? [] : []
+  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
+  return [{
+    id: createId('block'),
+    type: blockTypeForNode(sourceNodes[0] ?? { type: 'paragraph' }),
+    content: { type: 'doc', content: sourceNodes },
+    createdAt: now,
+    updatedAt: now,
+  }]
+}
 
 /** Skip if identical to latest snapshot; drop oldest past cap. */
 export async function appendNoteSnapshot(note: Pick<Note, 'id' | 'title' | 'content'>) {

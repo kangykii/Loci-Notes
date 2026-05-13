@@ -53,13 +53,13 @@ const downloadOptions = [
   {
     title: 'Windows Setup EXE',
     detail: 'Recommended installer for most Windows users.',
-    href: '/downloads/Loci-Notes-Setup-0.1.0-x64.exe',
+    href: '/downloads/Loci-Notes-Setup-0.3.0-x64.exe',
     label: 'Download EXE',
   },
   {
     title: 'Windows MSI',
     detail: 'Installer package for managed or admin-style installs.',
-    href: '/downloads/Loci-Notes-0.1.0-x64.msi',
+    href: '/downloads/Loci-Notes-0.3.0-x64.msi',
     label: 'Download MSI',
   },
 ]
@@ -223,7 +223,7 @@ function Landing() {
                 <Check size={14} aria-hidden /> Static files hosted with the site
               </span>
               <span>
-                <Sparkles size={14} aria-hidden /> Version 0.1.0 Windows builds
+                <Sparkles size={14} aria-hidden /> Version 0.3.0 Windows builds
               </span>
             </div>
             <div className="download-grid" aria-label="Download options">

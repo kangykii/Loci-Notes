@@ -1,10 +1,11 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Extension } from '@tiptap/core'
+import { Extension, mergeAttributes, Node as TiptapNode } from '@tiptap/core'
 import { EditorContent, useEditor } from '@tiptap/react'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import type { Editor as TiptapEditor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Highlight from '@tiptap/extension-highlight'
 import Link from '@tiptap/extension-link'
@@ -12,6 +13,7 @@ import Image from '@tiptap/extension-image'
 import { TextStyle } from '@tiptap/extension-text-style'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowLeft,
@@ -34,12 +36,16 @@ import {
   Layers3,
   LinkIcon,
   MoreHorizontal,
+  Minus,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Quote,
+  RemoveFormatting,
   Search,
   Settings,
   Shield,
+  Shuffle as ShuffleIcon,
   Sparkles,
   Sigma,
   Table2,
@@ -88,8 +94,41 @@ type Atom = {
   knownCount: number
 }
 
+type FlashcardSet = {
+  id: string
+  name: string
+  description?: string
+  atomIds: string[]
+  createdAt: string
+  updatedAt: string
+  lastStudiedAt?: string
+}
+
 type NoteTemplateId = 'blank' | 'report' | 'planner' | 'slideshow'
 type AIProviderId = 'openai' | 'gemini' | 'claude' | 'kimi'
+
+type LociBlockType =
+  | 'paragraph'
+  | 'heading'
+  | 'checklist'
+  | 'table'
+  | 'flashcard'
+  | 'bulletList'
+  | 'numberedList'
+  | 'quote'
+  | 'image'
+  | 'divider'
+  | 'callout'
+  | 'template'
+
+type LociBlock = {
+  id: string
+  type: LociBlockType
+  content: JSONContent
+  attrs?: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
 
 type TemplateTask = {
   id: string
@@ -140,6 +179,7 @@ type Note = {
   projectId: string
   templateId: NoteTemplateId
   templateData: NoteTemplateData
+  blocks?: LociBlock[]
   author: string
   tags: string[]
   content: JSONContent
@@ -194,11 +234,14 @@ type UserSettings = {
   highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
+  preferredAtomSubView: 'atoms' | 'sets'
   createdAt: string
   updatedAt: string
 }
 
 type View = 'home' | 'editor' | 'projects' | 'atoms' | 'settings'
+type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
+type StudyDirection = 'term' | 'definition'
 type AtomDialog = {
   phrase: string
   definition: string
@@ -219,6 +262,8 @@ type AITaskType =
   | 'ai_atomise'
   | 'edit_selection'
   | 'generate_insert'
+  | 'table_block'
+  | 'quote_block'
   | 'answer_with_context'
   | 'summarize_note'
   | 'mark_writing'
@@ -230,6 +275,59 @@ type AITaskType =
 type AICommandId = 'rewrite' | 'continue' | 'summarise' | 'atomise' | 'mark' | 'custom'
 
 type EditorRange = { from: number; to: number }
+type ImageCropMode = 'contain' | 'cover'
+type ImageAspectPreset = 'auto' | 'square' | 'wide' | 'portrait'
+type ImageAlignPreset = 'left' | 'center' | 'right'
+type ImageCropDragState = {
+  startX: number
+  startY: number
+  startOffsetX: number
+  startOffsetY: number
+  frameWidth: number
+  frameHeight: number
+}
+
+type BlockPickerState = {
+  open: boolean
+  blockId: string
+  placement: 'before' | 'after'
+  query: string
+}
+
+type BlockDropTarget = {
+  blockId: string
+  top: number
+  height: number
+  width: number
+  left: number
+}
+
+type FormatBlockType = 'table' | 'quote' | 'image'
+
+type FormatBlockControlRect = {
+  blockId: string
+  type: FormatBlockType
+  top: number
+  left: number
+}
+
+type FormatSideControlsRect = FormatBlockControlRect
+
+type AITablePayload = {
+  mode: 'create' | 'update'
+  columns: string[]
+  rows: string[][]
+}
+
+type AIQuotePayload = {
+  mode: 'create' | 'update'
+  quote: string
+  author?: string
+}
+
+type AIBlockPayload =
+  | { kind: 'table'; data: AITablePayload; targetBlockId?: string }
+  | { kind: 'quote'; data: AIQuotePayload; targetBlockId?: string }
 
 type AIResult = {
   prompt: string
@@ -241,6 +339,8 @@ type AIResult = {
   canReplaceSelection: boolean
   canInsert: boolean
   canCreateAtoms: boolean
+  canApplyBlock?: boolean
+  blockPayload?: AIBlockPayload
   provider: AIProviderId
   selection?: { from: number; to: number }
   /** Plain text of the selection when `edit_selection` ran; used for before/after review. */
@@ -263,10 +363,17 @@ type FormatOption = {
   label: string
   icon: IconComponent
   description: string
-  group: 'Structure' | 'Insert' | 'Advanced blocks'
+  group: 'Structure' | 'Text' | 'Insert' | 'Advanced blocks'
   enabled: boolean
   action?: () => void
   comingSoonLabel?: string
+}
+
+type BlockPickerOption = {
+  type: LociBlockType
+  label: string
+  description: string
+  icon: IconComponent
 }
 
 type AppDialog =
@@ -339,6 +446,8 @@ const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
   ai_atomise: 'Task: ai_atomise. Return atom candidates as one per line in the format "Phrase - definition". Prefer durable concepts, key terms, named methods, and definitions that help future review.',
   edit_selection: 'Task: edit_selection. Return only the replacement text for the selected passage. Preserve meaning unless the user explicitly asks to change it.',
   generate_insert: 'Task: generate_insert. Return only clean document text that can be inserted at the cursor.',
+  table_block: 'Task: table_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","columns":["Column"],"rows":[["Cell"]]}. Use update only when highlighted table context is provided; otherwise use create. Reorganize, clean, add, or edit data according to the user request.',
+  quote_block: 'Task: quote_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","quote":"Quote text","author":"Optional author"}. Use update only when highlighted quote context is provided. Do not invent an author; omit author if unknown.',
   answer_with_context: 'Task: answer_with_context. Answer briefly using note/project context. Mention the context used in plain language when useful. Do not format as insertable prose by default.',
   summarize_note: 'Task: summarize_note. Return plain text with short section headings and dash bullets. Do not use Markdown syntax.',
   mark_writing: 'Task: mark_writing. Mark the writing against the supplied marking criteria. Return concise plain-text sections: Overall, Strengths, Improvements, Suggested edit. If no clear criteria are supplied, use the default criteria from context and say that default criteria were used. Do not use Markdown syntax.',
@@ -401,6 +510,112 @@ const PROJECT_MEMORY_FIELD_META: Record<
 }
 
 const aiSelectionHighlightKey = new PluginKey<EditorRange | null>('aiSelectionHighlight')
+const blockControlsKey = new PluginKey('blockControls')
+
+const LociFlashcard = TiptapNode.create({
+  name: 'lociFlashcard',
+  group: 'block',
+  content: 'block+',
+  isolating: true,
+
+  addAttributes() {
+    return {
+      atomId: { default: null },
+    }
+  },
+
+  parseHTML() {
+    return [{ tag: 'section[data-loci-flashcard]' }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['section', { ...HTMLAttributes, 'data-loci-flashcard': 'true', class: 'loci-flashcard' }, 0]
+  },
+})
+
+const LociQuote = TiptapNode.create({
+  name: 'lociQuote',
+  group: 'block',
+  content: 'block+',
+  isolating: true,
+
+  parseHTML() {
+    return [{ tag: 'figure[data-loci-quote]' }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['figure', { ...HTMLAttributes, 'data-loci-quote': 'true', class: 'loci-quote' }, 0]
+  },
+})
+
+const LociImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      width: {
+        default: 78,
+        parseHTML: (element) => Number(element.getAttribute('data-image-width')) || 78,
+        renderHTML: (attrs) => ({ 'data-image-width': String(attrs.width || 78) }),
+      },
+      align: {
+        default: 'center',
+        parseHTML: (element) => element.getAttribute('data-image-align') || 'center',
+        renderHTML: (attrs) => ({ 'data-image-align': attrs.align || 'center' }),
+      },
+      cropMode: {
+        default: 'contain',
+        parseHTML: (element) => element.getAttribute('data-image-crop-mode') || 'contain',
+        renderHTML: (attrs) => ({ 'data-image-crop-mode': attrs.cropMode || 'contain' }),
+      },
+      aspect: {
+        default: 'auto',
+        parseHTML: (element) => element.getAttribute('data-image-aspect') || 'auto',
+        renderHTML: (attrs) => ({ 'data-image-aspect': attrs.aspect || 'auto' }),
+      },
+      offsetX: {
+        default: 50,
+        parseHTML: (element) => Number(element.getAttribute('data-image-offset-x')) || 50,
+        renderHTML: (attrs) => ({ 'data-image-offset-x': String(attrs.offsetX ?? 50) }),
+      },
+      offsetY: {
+        default: 50,
+        parseHTML: (element) => Number(element.getAttribute('data-image-offset-y')) || 50,
+        renderHTML: (attrs) => ({ 'data-image-offset-y': String(attrs.offsetY ?? 50) }),
+      },
+      zoom: {
+        default: 100,
+        parseHTML: (element) => Number(element.getAttribute('data-image-zoom')) || 100,
+        renderHTML: (attrs) => ({ 'data-image-zoom': String(attrs.zoom ?? 100) }),
+      },
+    }
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    const width = Number(HTMLAttributes['data-image-width']) || 78
+    const offsetX = Number(HTMLAttributes['data-image-offset-x']) || 50
+    const offsetY = Number(HTMLAttributes['data-image-offset-y']) || 50
+    const zoom = Number(HTMLAttributes['data-image-zoom']) || 100
+    const align = HTMLAttributes['data-image-align'] || 'center'
+    const cropMode = HTMLAttributes['data-image-crop-mode'] || 'contain'
+    const aspect = HTMLAttributes['data-image-aspect'] || 'auto'
+    const { src, alt, title } = HTMLAttributes
+    return [
+      'figure',
+      mergeAttributes({
+        class: 'loci-image-frame',
+        'data-image-width': String(width),
+        'data-image-align': align,
+        'data-image-crop-mode': cropMode,
+        'data-image-aspect': aspect,
+        'data-image-offset-x': String(offsetX),
+        'data-image-offset-y': String(offsetY),
+        'data-image-zoom': String(zoom),
+        style: `--image-width:${width}%;--image-position-x:${offsetX}%;--image-position-y:${offsetY}%;--image-zoom:${zoom / 100};`,
+      }),
+      ['img', { src, alt, title }],
+    ]
+  },
+})
 
 const AISelectionHighlight = Extension.create({
   name: 'aiSelectionHighlight',
@@ -434,6 +649,91 @@ const AISelectionHighlight = Extension.create({
   },
 })
 
+function blockControlWidget(pos: number, blockId: string, blockType: LociBlockType) {
+  const icon = (paths: string[], circles: Array<[number, number, number]> = []) => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('viewBox', '0 0 24 24')
+    svg.setAttribute('aria-hidden', 'true')
+    paths.forEach((d) => {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', d)
+      svg.appendChild(path)
+    })
+    circles.forEach(([cx, cy, r]) => {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+      circle.setAttribute('cx', String(cx))
+      circle.setAttribute('cy', String(cy))
+      circle.setAttribute('r', String(r))
+      svg.appendChild(circle)
+    })
+    return svg
+  }
+  const wrapper = document.createElement('span')
+  wrapper.className = 'block-hover-controls'
+  wrapper.contentEditable = 'false'
+  wrapper.setAttribute('data-block-id', blockId)
+  wrapper.setAttribute('data-block-type', blockType)
+
+  const deleteButton = document.createElement('button')
+  deleteButton.type = 'button'
+  deleteButton.className = 'block-control-button block-control-delete'
+  deleteButton.setAttribute('aria-label', 'Delete block')
+  deleteButton.appendChild(icon(['M6 6l12 12', 'M18 6L6 18']))
+  Object.assign(deleteButton.dataset, { blockAction: 'delete', blockId })
+
+  const addButton = document.createElement('button')
+  addButton.type = 'button'
+  addButton.className = 'block-control-button'
+  addButton.setAttribute('aria-label', 'Insert block')
+  addButton.appendChild(icon(['M12 5v14', 'M5 12h14']))
+  Object.assign(addButton.dataset, { blockAction: 'insert', blockId })
+
+  const dragHandle = document.createElement('button')
+  dragHandle.type = 'button'
+  dragHandle.className = 'block-control-button block-control-handle'
+  dragHandle.setAttribute('aria-label', 'Move block')
+  dragHandle.draggable = true
+  dragHandle.appendChild(icon([], [[9, 7.5, 1.25], [15, 7.5, 1.25], [9, 12, 1.25], [15, 12, 1.25], [9, 16.5, 1.25], [15, 16.5, 1.25]]))
+  Object.assign(dragHandle.dataset, { blockAction: 'drag', blockId })
+
+  wrapper.append(deleteButton, addButton, dragHandle)
+  return Decoration.widget(pos, wrapper, { side: -1, key: `block-controls-${blockId}` })
+}
+
+const BlockControlsExtension = Extension.create({
+  name: 'blockControls',
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<LociBlock[]>({
+        key: blockControlsKey,
+        props: {
+          decorations(state) {
+            const blocks = blockControlsKey.getState(state) as LociBlock[] | undefined
+            if (!blocks?.length) return null
+            const decorations: Decoration[] = []
+            let pos = 1
+            blocks.forEach((block) => {
+              if (!formatBlockTypeForBlock(block)) decorations.push(blockControlWidget(pos, block.id, block.type))
+              blockContentNodes(block.content).forEach((node) => {
+                pos += state.schema.nodeFromJSON(node).nodeSize
+              })
+            })
+            return DecorationSet.create(state.doc, decorations)
+          },
+        },
+        state: {
+          init: () => [],
+          apply(transaction, previous) {
+            const meta = transaction.getMeta(blockControlsKey) as LociBlock[] | undefined
+            return meta ?? previous
+          },
+        },
+      }),
+    ]
+  },
+})
+
 function defaultUserSettings(): UserSettings {
   const now = nowIso()
   return {
@@ -454,12 +754,13 @@ function defaultUserSettings(): UserSettings {
     highlighterColor: DEFAULT_HIGHLIGHTER_COLOR,
     reduceMotion: false,
     compactMode: false,
+    preferredAtomSubView: 'atoms',
     createdAt: now,
     updatedAt: now,
   }
 }
 
-function normalizeUserSettings(settings?: UserSettings | null): UserSettings {
+function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSettings {
   const base = defaultUserSettings()
   if (!settings) return base
   const providers = {
@@ -476,6 +777,7 @@ function normalizeUserSettings(settings?: UserSettings | null): UserSettings {
     ...base,
     ...settings,
     aiProviders: providers,
+    preferredAtomSubView: settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms',
   }
 }
 
@@ -587,6 +889,8 @@ function routeAITask(prompt: string, hasSelection: boolean, command?: AICommandI
   if (explicitTask) return explicitTask
 
   const q = prompt.toLowerCase().trim()
+  if (/\b(table|tabulate|spreadsheet|columns?|rows?|grid|organise .*data|organize .*data)\b/.test(q)) return 'table_block'
+  if (/\b(quote|qoute|blockquote|pull quote|pull qoute|cite this|citation|add author|shorten quote|shorten qoute|polish quote|polish qoute)\b/.test(q)) return 'quote_block'
   if (/\b(atomi[sz]e|make atoms?|create atoms?|extract atoms?|key terms?|define terms?|glossary|concept cards?)\b/.test(q)) return 'ai_atomise'
   if (/\b(mark|grade|rubric|criteria|assess|evaluate|feedback|review my writing|score|critique)\b/.test(q)) return 'mark_writing'
   if (/\b(how do i|how to|where is|settings?|export|pdf|docx|create|delete|shortcut|sidebar|project|note history)\b/.test(q)) return 'app_help'
@@ -604,7 +908,9 @@ function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
         ? 'Replace selection'
         : taskType === 'atom_task' || taskType === 'ai_atomise'
           ? 'Create atoms'
-          : taskType === 'mark_writing'
+            : taskType === 'table_block' || taskType === 'quote_block'
+              ? 'Apply block'
+            : taskType === 'mark_writing'
             ? 'Copy feedback'
           : taskType === 'answer_with_context' || taskType === 'app_help'
             ? 'Copy'
@@ -612,6 +918,7 @@ function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
     canReplaceSelection: taskType === 'edit_selection' && hasSelection,
     canInsert: taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general',
     canCreateAtoms: taskType === 'atom_task' || taskType === 'ai_atomise',
+    canApplyBlock: taskType === 'table_block' || taskType === 'quote_block',
   }
 }
 
@@ -626,6 +933,7 @@ function aiResultTitle(result: AIResult) {
 function aiPrimaryActionLabel(result: AIResult) {
   if (result.canReplaceSelection) return 'Apply rewrite'
   if (result.canCreateAtoms) return 'Create atoms'
+  if (result.canApplyBlock) return 'Apply block'
   if (result.taskType === 'mark_writing') return 'Add feedback to note'
   return 'Insert draft'
 }
@@ -633,6 +941,7 @@ function aiPrimaryActionLabel(result: AIResult) {
 function aiDraftLabel(taskType: AITaskType) {
   if (taskType === 'mark_writing') return 'Editable feedback'
   if (taskType === 'ai_atomise' || taskType === 'atom_task') return 'Editable atom candidates'
+  if (taskType === 'table_block' || taskType === 'quote_block') return 'Editable block JSON'
   if (taskType === 'update_project_instructions') return 'Editable project instructions'
   return 'Editable draft'
 }
@@ -700,6 +1009,41 @@ function parseAtomCandidates(text: string) {
       return { phrase: phrase?.trim() ?? '', definition: definitionParts.join(' - ').trim() }
     })
     .filter((item) => item.phrase && item.definition)
+}
+
+function parseAIJson(text: string): unknown {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start < 0 || end < start) throw new Error('AI did not return JSON.')
+  return JSON.parse(trimmed.slice(start, end + 1)) as unknown
+}
+
+function parseAITablePayload(text: string): AITablePayload {
+  const value = parseAIJson(text) as Partial<AITablePayload>
+  const columns = Array.isArray(value.columns) ? value.columns.map(String).map((item) => item.trim()).filter(Boolean) : []
+  const rows = Array.isArray(value.rows)
+    ? value.rows.map((row) => {
+      if (Array.isArray(row)) return row.map((cell) => String(cell ?? '').trim())
+      if (row && typeof row === 'object') return columns.map((column) => String((row as Record<string, unknown>)[column] ?? '').trim())
+      return []
+    }).filter((row) => row.length > 0)
+    : []
+  if (!columns.length && rows[0]?.length) {
+    return { mode: value.mode === 'update' ? 'update' : 'create', columns: rows[0].map((_, index) => `Column ${index + 1}`), rows }
+  }
+  if (!columns.length) throw new Error('Table JSON needs columns.')
+  return { mode: value.mode === 'update' ? 'update' : 'create', columns, rows }
+}
+
+function parseAIQuotePayload(text: string): AIQuotePayload {
+  const value = parseAIJson(text) as Partial<AIQuotePayload> & { text?: string; body?: string; content?: string; citation?: string }
+  const quoteSource = value.quote ?? value.text ?? value.body ?? value.content
+  const quote = typeof quoteSource === 'string' ? quoteSource.trim() : ''
+  if (!quote) throw new Error('Quote JSON needs quote text.')
+  const authorSource = value.author ?? value.citation
+  const author = typeof authorSource === 'string' && authorSource.trim() ? authorSource.trim() : undefined
+  return { mode: value.mode === 'update' ? 'update' : 'create', quote, author }
 }
 
 function paragraphNode(text: string): JSONContent {
@@ -903,6 +1247,36 @@ function AiDraftFormattedPreview({ text }: { text: string }) {
   return <div className="ai-draft-preview-doc">{nodes}</div>
 }
 
+function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
+  if (payload.kind === 'table') {
+    return (
+      <div className="ai-block-preview">
+        <table className="ai-block-preview-table">
+          <thead>
+            <tr>{payload.data.columns.map((column, index) => <th key={`${column}-${index}`}>{column}</th>)}</tr>
+          </thead>
+          <tbody>
+            {payload.data.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {payload.data.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] ?? ''}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  return (
+    <div className="ai-block-preview">
+      <figure className="ai-block-preview-quote">
+        <p>{payload.data.quote}</p>
+        {payload.data.author && <figcaption>{payload.data.author}</figcaption>}
+      </figure>
+    </div>
+  )
+}
+
 function hitKey(hit: SearchHit): string {
   switch (hit.kind) {
     case 'note':
@@ -936,12 +1310,250 @@ const headingDoc = (heading: string, body = ''): JSONContent => ({
   ],
 })
 
+function blockTypeForNode(node: JSONContent): LociBlockType {
+  if (node.type === 'doc') return blockTypeForNode(node.content?.[0] ?? { type: 'paragraph' })
+  if (node.type === 'heading') return 'heading'
+  if (node.type === 'taskList') return 'checklist'
+  if (node.type === 'table') return 'table'
+  if (node.type === 'lociFlashcard') return 'flashcard'
+  if (node.type === 'lociQuote') return 'quote'
+  if (node.type === 'bulletList') return 'bulletList'
+  if (node.type === 'orderedList') return 'numberedList'
+  if (node.type === 'blockquote') return 'quote'
+  if (node.type === 'image') return 'image'
+  if (node.type === 'horizontalRule') return 'divider'
+  if (node.type === 'lociCallout') return 'callout'
+  return 'paragraph'
+}
+
+function blockContentNodes(content?: JSONContent): JSONContent[] {
+  if (!content) return []
+  return content.type === 'doc' ? content.content ?? [] : [content]
+}
+
+function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | null {
+  const contentType = blockTypeForNode(block.content)
+  if (contentType === 'table' || contentType === 'quote' || contentType === 'image') return contentType
+  if (block.type === 'table' || block.type === 'quote' || block.type === 'image') return block.type
+  return null
+}
+
+function blockDoc(nodes: JSONContent[]): JSONContent {
+  return { type: 'doc', content: nodes.length ? nodes : [{ type: 'paragraph', content: [] }] }
+}
+
+function createLociBlock(content: JSONContent, type = blockTypeForNode(content)): LociBlock {
+  const now = nowIso()
+  return {
+    id: createId('block'),
+    type,
+    content: content.type === 'doc' ? cloneTemplateValue(content) : blockDoc([cloneTemplateValue(content)]),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function tableCellNode(text = '', header = false): JSONContent {
+  return {
+    type: header ? 'tableHeader' : 'tableCell',
+    attrs: { colspan: 1, rowspan: 1, colwidth: null },
+    content: [paragraphNode(text)],
+  }
+}
+
+function tableRowNode(cells: JSONContent[]): JSONContent {
+  return { type: 'tableRow', content: cells }
+}
+
+function tableBlockDoc(): JSONContent {
+  return blockDoc([{
+    type: 'table',
+    content: [
+      tableRowNode([tableCellNode('Term', true), tableCellNode('Definition', true)]),
+      tableRowNode([tableCellNode(''), tableCellNode('')]),
+      tableRowNode([tableCellNode(''), tableCellNode('')]),
+      tableRowNode([tableCellNode(''), tableCellNode('')]),
+    ],
+  }])
+}
+
+function tableBlockDocFromData(columns: string[], rows: string[][]): JSONContent {
+  const safeColumns = columns.length ? columns : ['Column 1', 'Column 2']
+  const normalizedRows = rows.length ? rows : [safeColumns.map(() => '')]
+  return blockDoc([{
+    type: 'table',
+    content: [
+      tableRowNode(safeColumns.map((column) => tableCellNode(column, true))),
+      ...normalizedRows.map((row) => tableRowNode(safeColumns.map((_, index) => tableCellNode(row[index] ?? '')))),
+    ],
+  }])
+}
+
+function flashcardBlockDoc(atomId?: string): JSONContent {
+  return blockDoc([{
+    type: 'lociFlashcard',
+    attrs: { atomId: atomId ?? null },
+    content: [
+      { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'Question' }] },
+      paragraphNode('Answer'),
+    ],
+  }])
+}
+
+function quoteAuthorNode(text = 'Author'): JSONContent {
+  return {
+    type: 'paragraph',
+    attrs: { 'data-quote-author': true },
+    content: text ? [{ type: 'text', text }] : [],
+  }
+}
+
+function quoteBlockDoc(showAuthor = true): JSONContent {
+  return blockDoc([{
+    type: 'lociQuote',
+    content: [
+      paragraphNode('Quote'),
+      ...(showAuthor ? [quoteAuthorNode()] : []),
+    ],
+  }])
+}
+
+function quoteBlockDocFromData(quote: string, author?: string): JSONContent {
+  return blockDoc([{
+    type: 'lociQuote',
+    content: [
+      paragraphNode(quote || 'Quote'),
+      ...(author?.trim() ? [quoteAuthorNode(author.trim())] : []),
+    ],
+  }])
+}
+
+function clampImageNumber(value: unknown, min: number, max: number, fallback: number) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(min, Math.min(max, number))
+}
+
+function imageBlockDoc(src: string, width = 78, align: ImageAlignPreset = 'center'): JSONContent {
+  return blockDoc([{
+    type: 'image',
+    attrs: {
+      src,
+      width: clampImageNumber(width, 25, 100, 78),
+      align,
+      cropMode: 'contain',
+      aspect: 'auto',
+      offsetX: 50,
+      offsetY: 50,
+      zoom: 100,
+    },
+  }])
+}
+
+function tableDataFromNode(node: JSONContent): { columns: string[]; rows: string[][] } {
+  const rows = (node.content ?? []).filter((row) => row.type === 'tableRow')
+  const cells = rows.map((row) => (row.content ?? []).map((cell) => collectText(cell).trim()))
+  return { columns: cells[0] ?? [], rows: cells.slice(1) }
+}
+
+function quoteDataFromNode(node: JSONContent): { quote: string; author?: string } {
+  const parts = node.content ?? []
+  const authorNode = parts.find((part) => part.attrs?.['data-quote-author'])
+  const quoteNodes = parts.filter((part) => part !== authorNode)
+  return {
+    quote: collectText({ type: 'doc', content: quoteNodes }).trim(),
+    author: authorNode ? collectText(authorNode).trim() : undefined,
+  }
+}
+
+function blocksFromContent(content?: JSONContent): LociBlock[] {
+  const nodes = content?.type === 'doc' ? content.content ?? [] : []
+  return [createLociBlock(blockDoc(nodes.length ? nodes : [{ type: 'paragraph', content: [] }]), 'paragraph')]
+}
+
+function contentFromBlocks(blocks?: LociBlock[]): JSONContent {
+  if (!blocks?.length) return blankDoc()
+  return {
+    type: 'doc',
+    content: blocks.flatMap((block) => cloneTemplateValue(blockContentNodes(block.content))),
+  }
+}
+
+function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlock[], activeIndex = -1): LociBlock[] {
+  const nodes = content?.type === 'doc' ? content.content ?? [] : []
+  const now = nowIso()
+  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
+  if (!blocks?.length) return [createLociBlock(blockDoc(sourceNodes), 'paragraph')]
+  const existingNodes = blocks.flatMap((block) => blockContentNodes(block.content))
+  if (JSON.stringify(existingNodes) === JSON.stringify(sourceNodes)) {
+    return blocks.map((block) => ({
+      ...block,
+      content: block.content.type === 'doc' ? block.content : blockDoc([block.content]),
+      updatedAt: now,
+    }))
+  }
+  if (blocks.length === 1) {
+    const existing = blocks[0]
+    return [{
+      ...existing,
+      type: blockTypeForNode(sourceNodes[0] ?? { type: 'paragraph' }),
+      content: blockDoc(cloneTemplateValue(sourceNodes)),
+      updatedAt: now,
+    }]
+  }
+  const counts = blocks.map((block) => Math.max(1, blockContentNodes(block.content).length))
+  const totalPrevious = counts.reduce((sum, count) => sum + count, 0)
+  const delta = sourceNodes.length - totalPrevious
+  const targetIndex = activeIndex >= 0 && activeIndex < counts.length ? activeIndex : counts.length - 1
+  counts[targetIndex] = Math.max(1, counts[targetIndex] + delta)
+  let cursor = 0
+  return blocks.map((block, index) => {
+    const nextNodes = sourceNodes.slice(cursor, cursor + counts[index])
+    cursor += counts[index]
+    return {
+      ...block,
+      type: blockTypeForNode(nextNodes[0] ?? { type: 'paragraph' }),
+      content: blockDoc(cloneTemplateValue(nextNodes.length ? nextNodes : [{ type: 'paragraph', content: [] }])),
+      updatedAt: now,
+    }
+  })
+}
+
+function templateBlocksFor(templateId: NoteTemplateId, data: NoteTemplateData) {
+  const templateBlocks = getNoteTemplate(templateId).blocks
+  if (templateBlocks?.length) return templateBlocks.map((block) => ({ ...block, id: createId('block'), createdAt: nowIso(), updatedAt: nowIso() }))
+  return normalizeBlocksForContent(templateDataToContent(data))
+}
+
+function blankBlockNode(type: LociBlockType): JSONContent {
+  if (type === 'heading') return blockDoc([{ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Heading' }] }])
+  if (type === 'checklist') {
+    return blockDoc([{
+      type: 'taskList',
+      content: [{ type: 'taskItem', attrs: { checked: false }, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Task' }] }] }],
+    }])
+  }
+  if (type === 'table') return tableBlockDoc()
+  if (type === 'flashcard') return flashcardBlockDoc()
+  if (type === 'bulletList') return blockDoc([{ type: 'bulletList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
+  if (type === 'numberedList') return blockDoc([{ type: 'orderedList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
+  if (type === 'quote') return quoteBlockDoc()
+  if (type === 'divider') return blockDoc([{ type: 'horizontalRule' }])
+  if (type === 'callout') return blockDoc([{ type: 'blockquote', content: [paragraphNode('Callout')] }])
+  return blockDoc([{ type: 'paragraph', content: [] }])
+}
+
+function createTemplateBlocks(content: JSONContent) {
+  return blocksFromContent(content)
+}
+
 type NoteTemplate = {
   id: NoteTemplateId
   name: string
   description: string
   title: string
   content: JSONContent
+  blocks?: LociBlock[]
   templateData: NoteTemplateData
   available: boolean
   comingSoonLabel?: string
@@ -954,6 +1566,7 @@ const noteTemplates: NoteTemplate[] = [
     description: 'A clean pageless note for fast writing.',
     title: 'Untitled Note',
     content: emptyDoc,
+    blocks: createTemplateBlocks(emptyDoc),
     templateData: { kind: 'blank', body: emptyDoc },
     available: true,
   },
@@ -980,6 +1593,14 @@ const noteTemplates: NoteTemplate[] = [
     description: 'A practical layout for priorities, tasks, and next steps.',
     title: 'Untitled Planner',
     content: blankDoc('Plan the next move.'),
+    blocks: createTemplateBlocks({
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: "Today's priorities" }] },
+        { type: 'taskList', content: [{ type: 'taskItem', attrs: { checked: false }, content: [paragraphNode('Define the day')] }] },
+        paragraphNode('Plan the next move.'),
+      ],
+    }),
     templateData: {
       kind: 'planner',
       date: new Date().toISOString().slice(0, 10),
@@ -1025,6 +1646,14 @@ const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
   planner: Calendar,
   slideshow: Columns3,
 }
+
+const blockPickerOptions: BlockPickerOption[] = [
+  { type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
+  { type: 'flashcard', label: 'Flashcard', description: 'Question and answer atom card.', icon: Brain },
+  { type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
+  { type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
+  { type: 'callout', label: 'Callout', description: 'Highlight an important note.', icon: Info },
+]
 
 function cloneTemplateValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -1147,6 +1776,123 @@ function findPhraseRanges(doc: { descendants: (callback: (node: { isText?: boole
   return ranges
 }
 
+function markSignature(mark: { type: string; attrs?: Record<string, unknown> }) {
+  return JSON.stringify([mark.type, mark.attrs ?? {}])
+}
+
+function sameMarks(a?: Array<{ type: string; attrs?: Record<string, unknown> }>, b?: Array<{ type: string; attrs?: Record<string, unknown> }>) {
+  const left = a ?? []
+  const right = b ?? []
+  if (left.length !== right.length) return false
+  return left.every((mark, index) => markSignature(mark) === markSignature(right[index]))
+}
+
+function mergeAdjacentTextNodes(nodes: JSONContent[]) {
+  return nodes.reduce<JSONContent[]>((merged, node) => {
+    const previous = merged[merged.length - 1]
+    if (previous?.type === 'text' && node.type === 'text' && sameMarks(previous.marks, node.marks)) {
+      previous.text = `${previous.text ?? ''}${node.text ?? ''}`
+      return merged
+    }
+    merged.push(node)
+    return merged
+  }, [])
+}
+
+function atomMarkFor(atom: Atom) {
+  return {
+    type: 'atom',
+    attrs: { atomId: atom.id, phrase: atom.phrase, definition: atom.definition },
+  }
+}
+
+function applyAtomToTextNode(node: JSONContent, atom: Atom) {
+  const text = node.text ?? ''
+  const needle = atom.phrase.trim()
+  if (!text || !needle) return { node, changed: false, count: 0 }
+
+  const matcher = new RegExp(escapeRegExp(needle), 'gi')
+  const segments: JSONContent[] = []
+  let cursor = 0
+  let count = 0
+  let match: RegExpExecArray | null
+
+  while ((match = matcher.exec(text))) {
+    const index = match.index
+    const end = index + match[0].length
+    if (!isWordBoundaryChar(text[index - 1]) || !isWordBoundaryChar(text[end])) {
+      if (matcher.lastIndex === index) matcher.lastIndex += 1
+      continue
+    }
+    if (index > cursor) segments.push({ ...node, text: text.slice(cursor, index) })
+    const existingMarks = (node.marks ?? []).filter((mark) => mark.type !== 'atom' || mark.attrs?.atomId !== atom.id)
+    segments.push({ ...node, text: text.slice(index, end), marks: [...existingMarks, atomMarkFor(atom)] })
+    count += 1
+    cursor = end
+    if (matcher.lastIndex === index) matcher.lastIndex += 1
+  }
+
+  if (!count) return { node, changed: false, count: 0 }
+  if (cursor < text.length) segments.push({ ...node, text: text.slice(cursor) })
+  return { node: { ...node, type: 'fragment', content: mergeAdjacentTextNodes(segments) }, changed: true, count }
+}
+
+function applyAtomsToContent(content: JSONContent, atomsToMark: Atom[]): { content: JSONContent; changed: boolean; count: number } {
+  if (!atomsToMark.length) return { content, changed: false, count: 0 }
+  let changed = false
+  let count = 0
+
+  if (content.type === 'text') {
+    let nodes = [content]
+    atomsToMark.forEach((atom) => {
+      const nextNodes: JSONContent[] = []
+      nodes.forEach((node) => {
+        const result = applyAtomToTextNode(node, atom)
+        if (result.changed) {
+          changed = true
+          count += result.count
+          nextNodes.push(...(result.node.content ?? [result.node]))
+        } else {
+          nextNodes.push(result.node)
+        }
+      })
+      nodes = mergeAdjacentTextNodes(nextNodes)
+    })
+    return nodes.length === 1 ? { content: nodes[0], changed, count } : { content: { type: 'fragment', content: nodes }, changed, count }
+  }
+
+  if (!content.content?.length) return { content, changed: false, count: 0 }
+  const nextChildren: JSONContent[] = []
+  content.content.forEach((child) => {
+    const result = applyAtomsToContent(child, atomsToMark)
+    changed ||= result.changed
+    count += result.count
+    if (result.content.type === 'fragment') nextChildren.push(...(result.content.content ?? []))
+    else nextChildren.push(result.content)
+  })
+
+  return changed ? { content: { ...content, content: nextChildren }, changed, count } : { content, changed: false, count: 0 }
+}
+
+function applyAtomMarksToEditor(editor: TiptapEditor, atomsToMark: Atom[]) {
+  const atomMarkType = editor.schema.marks.atom
+  if (!atomMarkType) return 0
+
+  let transaction = editor.state.tr
+  let markCount = 0
+
+  atomsToMark.forEach((atom) => {
+    const ranges = findPhraseRanges(editor.state.doc, atom.phrase)
+    ranges.forEach(({ from, to }) => {
+      transaction = transaction.addMark(from, to, atomMarkType.create({ atomId: atom.id, phrase: atom.phrase, definition: atom.definition }))
+      markCount += 1
+    })
+  })
+
+  if (markCount > 0) editor.view.dispatch(transaction.scrollIntoView())
+  return markCount
+}
+
 function selectionContainsAtom(editor: NonNullable<ReturnType<typeof useEditor>>) {
   const { from, to, empty } = editor.state.selection
   if (empty) return editor.isActive('atom')
@@ -1186,6 +1932,7 @@ function createNoteDragPreview(title: string) {
 function App() {
   const [notes, setNotes] = useState<Note[]>([])
   const [atoms, setAtoms] = useState<Atom[]>([])
+  const [flashcardSets, setFlashcardSets] = useState<FlashcardSet[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [localProfile, setLocalProfile] = useState<UserProfile | null>(null)
   const [userSettings, setUserSettings] = useState<UserSettings>(() => defaultUserSettings())
@@ -1204,11 +1951,29 @@ function App() {
   const [flippedAtomIds, setFlippedAtomIds] = useState<string[]>([])
   const [atomSelectionMode, setAtomSelectionMode] = useState(false)
   const [selectedAtomIds, setSelectedAtomIds] = useState<string[]>([])
+  const [atomSubView, setAtomSubView] = useState<AtomSubView>('atoms')
+  const [atomHeadingMenuOpen, setAtomHeadingMenuOpen] = useState(false)
+  const [editingFlashcardSetId, setEditingFlashcardSetId] = useState<string | null>(null)
+  const [flashcardSetTitleEditing, setFlashcardSetTitleEditing] = useState(false)
+  const [flashcardSetDraftName, setFlashcardSetDraftName] = useState('')
+  const [flashcardSetDraftDescription, setFlashcardSetDraftDescription] = useState('')
+  const [flashcardSetDraftAtomIds, setFlashcardSetDraftAtomIds] = useState<string[]>([])
+  const [flashcardSetAtomQuery, setFlashcardSetAtomQuery] = useState('')
+  const [studyingFlashcardSetId, setStudyingFlashcardSetId] = useState<string | null>(null)
+  const [studyAtomIds, setStudyAtomIds] = useState<string[]>([])
+  const [studyIndex, setStudyIndex] = useState(0)
+  const [studyFlipped, setStudyFlipped] = useState(false)
+  const [studyDirection, setStudyDirection] = useState<StudyDirection>('term')
+  const [studyShuffle, setStudyShuffle] = useState(false)
+  const [studyKnownAtomIds, setStudyKnownAtomIds] = useState<string[]>([])
+  const [studyLearningAtomIds, setStudyLearningAtomIds] = useState<string[]>([])
   const [draggedNoteIds, setDraggedNoteIds] = useState<string[]>([])
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
   const [atomSearchQuery, setAtomSearchQuery] = useState('')
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
+  const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
+  const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [saving, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
   const [notice, setNotice] = useState('')
@@ -1226,8 +1991,18 @@ function App() {
   const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
   const [highlighterArmed, setHighlighterArmed] = useState(false)
   const [activeAICommand, setActiveAICommand] = useState<AICommandId>('custom')
+  const [aiModePillVisible, setAiModePillVisible] = useState(false)
+  const [aiPromptHintDismissedFor, setAiPromptHintDismissedFor] = useState('')
+  const [aiPromptHintVisible, setAiPromptHintVisible] = useState(false)
+  const [blockPicker, setBlockPicker] = useState<BlockPickerState>({ open: false, blockId: '', placement: 'after', query: '' })
+  const [draggedBlockId, setDraggedBlockId] = useState('')
+  const [blockDropTargets, setBlockDropTargets] = useState<BlockDropTarget[]>([])
+  const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
+  const [formatBlockControls, setFormatBlockControls] = useState<FormatBlockControlRect[]>([])
+  const [imageCropEditing, setImageCropEditing] = useState(false)
+  const [imageCropDragging, setImageCropDragging] = useState(false)
   const [aiMarkingCriteria] = useState(DEFAULT_MARKING_CRITERIA)
-  const [editorHasSelection, setEditorHasSelection] = useState(false)
+  const [aiContextRange, setAiContextRange] = useState<EditorRange | null>(null)
   const [aiRunning, setAiRunning] = useState(false)
   const [aiInstructionUpdating, setAiInstructionUpdating] = useState(false)
   const [aiResult, setAiResult] = useState<AIResult | null>(null)
@@ -1237,17 +2012,32 @@ function App() {
   const selectedNoteIdRef = useRef('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const aiPromptInputRef = useRef<HTMLInputElement>(null)
-  const aiSelectionRangeRef = useRef<EditorRange | null>(null)
+  const flashcardSetTitleInputRef = useRef<HTMLInputElement>(null)
+  const atomsTitleSwitcherRef = useRef<HTMLDivElement | null>(null)
+  const atomProjectFilterRef = useRef<HTMLDivElement | null>(null)
+  const flashcardProjectFilterRef = useRef<HTMLDivElement | null>(null)
+  const aiContextRangeRef = useRef<EditorRange | null>(null)
   const highlighterArmedRef = useRef(false)
   const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
+  const sidebarOpenTimerRef = useRef<number | null>(null)
+  const sidebarCloseTimerRef = useRef<number | null>(null)
+  const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
+  const createBlockAfterActiveRef = useRef<() => boolean>(() => false)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
   const formatDialogRef = useRef<HTMLElement | null>(null)
   const userScrollVetoUntilRef = useRef(0)
   const snapshotDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveStateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const atomSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressEditorPersistRef = useRef(false)
+  const editorRef = useRef<TiptapEditor | null>(null)
+  const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
+  const pendingEnterBlockIndexRef = useRef<number | null>(null)
   const suppressProjectNavUntilRef = useRef(0)
+  const imageCropDragRef = useRef<ImageCropDragState | null>(null)
 
   const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? notes[0]
   const selectedProject = projects.find((project) => project.id === selectedNote?.projectId)
@@ -1255,6 +2045,7 @@ function App() {
   const selectedTemplateData = selectedNote
     ? normalizeTemplateData(selectedNote.templateId ?? 'blank', selectedNote.content ?? emptyDoc, selectedNote.templateData)
     : null
+  const hasExplicitAIContext = Boolean(aiContextRange)
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
   const profileAvatarColor = localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR
@@ -1283,9 +2074,10 @@ function App() {
 
   const loadData = useCallback(async () => {
     await ensureSeedData()
-    const [storedNotes, storedAtoms, storedProjects, storedProfile, storedSettings] = await Promise.all([
+    const [storedNotes, storedAtoms, storedFlashcardSets, storedProjects, storedProfile, storedSettings] = await Promise.all([
       db.notes.orderBy('updatedAt').reverse().toArray(),
       db.atoms.orderBy('updatedAt').reverse().toArray(),
+      db.flashcardSets.orderBy('updatedAt').reverse().toArray(),
       db.projects.orderBy('name').toArray(),
       db.userProfiles.get('local'),
       db.userSettings.get('local'),
@@ -1303,16 +2095,19 @@ function App() {
             : UNASSIGNED_PROJECT_ID
         const templateId = note.templateId ?? 'blank'
         const templateData = normalizeTemplateData(templateId, note.content ?? emptyDoc, note.templateData)
+        const content = templateDataToContent(templateData)
+        const blocks = normalizeBlocksForContent(content, note.blocks)
         const next: Note = {
           ...note,
           tags: [],
           projectId: nextPid,
           templateId,
           templateData,
-          content: templateDataToContent(templateData),
+          blocks,
+          content,
         }
 
-        const changed = nextPid !== note.projectId || (note.tags?.length ?? 0) > 0 || !note.templateId || !note.templateData
+        const changed = nextPid !== note.projectId || (note.tags?.length ?? 0) > 0 || !note.templateId || !note.templateData || !note.blocks
 
         if (changed) await db.notes.put(next)
 
@@ -1322,6 +2117,7 @@ function App() {
 
     setNotes(normalized)
     setAtoms(storedAtoms.map((atom) => ({ ...atom, tags: atom.tags ?? [] })))
+    setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
     const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
     if (storedProjects.some((project) => project.description === undefined)) {
       await db.projects.bulkPut(normalizedProjects)
@@ -1329,6 +2125,7 @@ function App() {
     setProjects(normalizedProjects)
     setLocalProfile(storedProfile ?? null)
     setUserSettings(normalizedSettings)
+    setAtomSubView(normalizedSettings.preferredAtomSubView)
     setProfileLoaded(true)
     setSelectedNoteId((current) => current || normalized[0]?.id || '')
   }, [])
@@ -1341,14 +2138,72 @@ function App() {
     return () => {
       if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
       if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
+      if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
+      if (aiPromptHintTimerRef.current) clearTimeout(aiPromptHintTimerRef.current)
     }
   }, [])
+
+  function setEditorContentFromSync(content: JSONContent) {
+    const currentEditor = editorRef.current
+    if (!currentEditor) return
+    const scrollEl = documentScrollRef.current
+    const scrollTop = scrollEl?.scrollTop
+    suppressEditorPersistRef.current = true
+    currentEditor.commands.setContent(content, { emitUpdate: false })
+    suppressEditorPersistRef.current = false
+    if (scrollEl && scrollTop !== undefined) {
+      requestAnimationFrame(() => {
+        scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
+      })
+    }
+  }
+
+  async function syncAtomMarksForNotes(notesToSync: Note[], atomsToUse = atoms) {
+    if (!notesToSync.length || !atomsToUse.length) return 0
+    const now = nowIso()
+    const updatedNotes: Note[] = []
+    let markCount = 0
+
+    notesToSync.forEach((note) => {
+      const result = applyAtomsToContent(note.content, atomsToUse)
+      if (!result.changed) return
+      const templateData = templateDataFor(note.templateId, result.content)
+      const blocks = normalizeBlocksForContent(result.content, note.blocks)
+      updatedNotes.push({ ...note, content: result.content, templateData, blocks, updatedAt: now })
+      markCount += result.count
+    })
+
+    if (!updatedNotes.length) return 0
+    const updatedById = new Map(updatedNotes.map((note) => [note.id, note]))
+    const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
+    notesRef.current = nextNotes
+    setNotes(nextNotes)
+    await db.notes.bulkPut(updatedNotes)
+    const openNote = updatedById.get(selectedNoteIdRef.current)
+    if (openNote) setEditorContentFromSync(primaryTemplateContent(openNote))
+    return markCount
+  }
+
+  function projectAtomsForNote(note: Note, atomsToUse = atoms) {
+    const projectNotes = notesRef.current.filter((item) => item.projectId === note.projectId)
+    return atomsToUse.filter((atom) => projectNotes.some((item) => contentHasAtom(item.content, atom.id)))
+  }
+
+  async function syncProjectAtomMarks(projectId: string, atomsToUse = atoms) {
+    const projectNotes = notesRef.current.filter((note) => note.projectId === projectId)
+    return syncAtomMarksForNotes(projectNotes, atomsToUse)
+  }
 
   const persistNote = useCallback(async (patch: Partial<Note>, noteId = selectedNoteIdRef.current) => {
     const target = notesRef.current.find((note) => note.id === noteId)
     if (!target) return
 
-    const updated = { ...target, ...patch, updatedAt: nowIso() }
+    const nextPatch = { ...patch }
+    if ((nextPatch.content || nextPatch.templateData) && !nextPatch.blocks) {
+      const content = nextPatch.content ?? (nextPatch.templateData ? templateDataToContent(nextPatch.templateData) : target.content)
+      nextPatch.blocks = normalizeBlocksForContent(content, target.blocks)
+    }
+    const updated = { ...target, ...nextPatch, updatedAt: nowIso() }
     notesRef.current = notesRef.current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated)
     setNotes((current) => current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated))
     setShowSaveState(false)
@@ -1362,6 +2217,21 @@ function App() {
     }, 3000)
 
     if ('title' in patch || 'content' in patch || 'templateData' in patch) {
+      const flashcards = flashcardsFromContent(updated.content)
+      if (flashcards.length) {
+        const changedAtoms = flashcards
+          .map((card) => {
+            const existing = atoms.find((atom) => atom.id === card.atomId)
+            if (!existing || (existing.phrase === card.phrase && existing.definition === card.definition)) return null
+            return { ...existing, phrase: card.phrase, definition: card.definition, updatedAt: nowIso() }
+          })
+          .filter((atom): atom is Atom => Boolean(atom))
+        if (changedAtoms.length) {
+          await db.atoms.bulkPut(changedAtoms)
+          setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
+        }
+      }
+
       if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
       snapshotDebounceRef.current = setTimeout(() => {
         snapshotDebounceRef.current = null
@@ -1371,8 +2241,17 @@ function App() {
           content: updated.content,
         })
       }, 5000)
+      if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
+      atomSyncDebounceRef.current = setTimeout(() => {
+        atomSyncDebounceRef.current = null
+        const latest = notesRef.current.find((note) => note.id === updated.id)
+        if (!latest) return
+        const linkedAtoms = projectAtomsForNote(latest)
+        if (!linkedAtoms.length) return
+        void syncAtomMarksForNotes([latest], linkedAtoms)
+      }, 1200)
     }
-  }, [])
+  }, [atoms])
 
   const handleNoteDropTargetDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
@@ -1435,34 +2314,122 @@ function App() {
       TextStyle,
       Highlight.configure({ multicolor: true }),
       Link.configure({ openOnClick: false }),
-      Image.configure({ inline: false, allowBase64: true }),
+      LociImage.configure({ inline: false, allowBase64: true }),
       TaskList,
       TaskItem.configure({ nested: true }),
+      Table.configure({ resizable: true, renderWrapper: true }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      LociFlashcard,
+      LociQuote,
       AtomMark,
       AISelectionHighlight,
+      BlockControlsExtension,
     ],
     content: primaryTemplateContent(selectedNote),
-    editorProps: { attributes: { class: 'note-editor' } },
+    editorProps: {
+      attributes: { class: 'note-editor' },
+      handleKeyDown: (_view, event) => {
+        if (event.key !== 'Enter') return false
+        pendingEnterBlockIndexRef.current = activeBlockIndex()
+        if (!event.shiftKey) return false
+        event.preventDefault()
+        return createBlockAfterActiveRef.current()
+      },
+    },
     onUpdate: ({ editor: updatedEditor }) => {
+      if (suppressEditorPersistRef.current) return
       const id = selectedNoteIdRef.current
       const note = notesRef.current.find((item) => item.id === id)
       if (!note) return
       const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
-      void persistNote({ templateData, content: templateDataToContent(templateData) }, id)
+      const content = templateDataToContent(templateData)
+      const activeIndex = pendingEnterBlockIndexRef.current ?? activeBlockIndex()
+      pendingEnterBlockIndexRef.current = null
+      const blocks = normalizeBlocksForContent(content, note.blocks, activeIndex)
+      void persistNote({ templateData, content, blocks }, id)
     },
   }, [selectedNoteId])
 
   useEffect(() => {
+    editorRef.current = editor ?? null
+  }, [editor])
+
+  useEffect(() => {
     if (!editor || !selectedNote) return
     const nextContent = primaryTemplateContent(selectedNote)
-    if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) editor.commands.setContent(nextContent)
+    if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) setEditorContentFromSync(nextContent)
   }, [editor, selectedNote])
+
+  useEffect(() => {
+    if (!editor || !selectedNote) return
+    editor.view.dispatch(editor.state.tr.setMeta(blockControlsKey, selectedNote.blocks ?? normalizeBlocksForContent(selectedNote.content)))
+  }, [editor, selectedNote])
+
+  const syncFormatSideControls = useCallback(() => {
+    const shell = blockEditorShellRef.current
+    const editorDom = mountedEditorDom(editor)
+    const activeType: FormatBlockType | null = editor?.isActive('table') ? 'table' : editor?.isActive('lociQuote') ? 'quote' : editor?.isActive('image') ? 'image' : null
+    if (!shell || !editorDom || !activeType) {
+      setFormatSideControls(null)
+      return
+    }
+    const activeElement = document.activeElement instanceof Element ? document.activeElement : null
+    const selectedNode = editor.view.nodeDOM(editor.state.selection.from)
+    const selectedElement = selectedNode instanceof Element ? selectedNode : selectedNode?.parentElement ?? null
+    const selectionNode = activeType === 'table'
+      ? editorDom.querySelector('.selectedCell')?.closest('table')
+      : activeType === 'image'
+        ? selectedElement?.closest('.note-editor .loci-image-frame')
+        : activeElement?.closest('.note-editor .loci-quote')
+    const target = selectionNode ?? (
+      activeType === 'table'
+        ? activeElement?.closest('.note-editor table')
+        : activeType === 'image'
+          ? selectedElement?.closest('.note-editor .loci-image-frame') ?? editorDom.querySelector('.loci-image-frame.ProseMirror-selectednode')
+          : editorDom.querySelector('.loci-quote')
+    )
+    if (!(target instanceof HTMLElement)) {
+      setFormatSideControls(null)
+      return
+    }
+    const shellRect = shell.getBoundingClientRect()
+    const targetRect = target.getBoundingClientRect()
+    setFormatSideControls({
+      blockId: '',
+      type: activeType,
+      top: targetRect.top - shellRect.top,
+      left: Math.max(0, shellRect.width + 8),
+    })
+  }, [editor])
+
+  const clearAIContextRange = useCallback(() => {
+    aiContextRangeRef.current = null
+    setAiContextRange(null)
+  }, [])
+
+  const clearAISelectionHighlight = useCallback(() => {
+    clearAIContextRange()
+    setAiPromptFocused(false)
+    if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range: null }))
+  }, [clearAIContextRange, editor])
+
+  const captureAIContextRange = useCallback(() => {
+    if (!editor) return aiContextRangeRef.current
+    if (editor.state.selection.empty) return aiContextRangeRef.current
+    const range = { from: editor.state.selection.from, to: editor.state.selection.to }
+    aiContextRangeRef.current = range
+    setAiContextRange(range)
+    return range
+  }, [editor])
 
   useEffect(() => {
     setActiveEditorPanel(null)
     setHighlighterArmed(false)
+    clearAIContextRange()
     lastPaintedHighlightRangeRef.current = ''
-  }, [selectedNoteId])
+  }, [clearAIContextRange, selectedNoteId])
 
   useEffect(() => {
     highlighterArmedRef.current = highlighterArmed
@@ -1476,13 +2443,11 @@ function App() {
     if (!editor) return
     const syncSelectionState = () => {
       const { from, to, empty } = editor.state.selection
-      setEditorHasSelection(!empty)
-      if (!empty) aiSelectionRangeRef.current = { from, to }
       if (!empty && highlighterArmedRef.current) {
         const rangeKey = `${from}:${to}:${highlighterColorRef.current}`
         if (lastPaintedHighlightRangeRef.current !== rangeKey) {
           lastPaintedHighlightRangeRef.current = rangeKey
-          editor.chain().focus().setHighlight({ color: highlighterColorRef.current }).run()
+          editor.commands.setHighlight({ color: highlighterColorRef.current })
         }
       }
     }
@@ -1497,9 +2462,9 @@ function App() {
 
   useEffect(() => {
     if (!editor) return
-    const range = aiPromptFocused ? aiSelectionRangeRef.current : aiResult?.selection ?? null
+    const range = aiPromptFocused ? aiContextRange : aiResult?.selection ?? null
     editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-  }, [aiPromptFocused, aiResult?.selection, editor])
+  }, [aiContextRange, aiPromptFocused, aiResult?.selection, editor])
 
   useEffect(() => {
     if (!activeEditorPanel) return
@@ -1518,6 +2483,63 @@ function App() {
     document.addEventListener('mousedown', closeOnOutsidePointer)
     return () => document.removeEventListener('mousedown', closeOnOutsidePointer)
   }, [activeEditorPanel])
+
+  useEffect(() => {
+    if (!atomHeadingMenuOpen) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      if (atomsTitleSwitcherRef.current?.contains(event.target as Node)) return
+      setAtomHeadingMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAtomHeadingMenuOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [atomHeadingMenuOpen])
+
+  useEffect(() => {
+    if (!atomProjectMenuOpen) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (atomProjectFilterRef.current?.contains(target) || flashcardProjectFilterRef.current?.contains(target)) return
+      setAtomProjectMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAtomProjectMenuOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [atomProjectMenuOpen])
+
+  useEffect(() => {
+    if (!flashcardSetTitleEditing) return
+    flashcardSetTitleInputRef.current?.focus()
+    flashcardSetTitleInputRef.current?.select()
+  }, [flashcardSetTitleEditing])
+
+  useEffect(() => {
+    if (!editor) return
+    const clearTransientHighlights = (event: MouseEvent) => {
+      const target = event.target as Node
+      const editorEl = editor.view.dom
+      const toolbarEl = floatingEditorWrapRef.current
+      if (editorEl.contains(target) || toolbarEl?.contains(target)) return
+      setHighlighterArmed(false)
+      setHighlightPaletteOpen(false)
+      clearAIContextRange()
+    }
+
+    document.addEventListener('mousedown', clearTransientHighlights)
+    return () => document.removeEventListener('mousedown', clearTransientHighlights)
+  }, [clearAIContextRange, editor])
 
   useEffect(() => {
     if (!editor || activeView !== 'editor' || searchOpen || atomDialog || noteHistoryOpen)
@@ -1547,12 +2569,15 @@ function App() {
       const sr = scrollEl.getBoundingClientRect()
       const rel = caretMid - sr.top
       const h = sr.height
-      const low = h * 0.3
-      const high = h * 0.4
-      if (rel >= low && rel <= high) return
-      const target = h * 0.34
-      const delta = rel - target
-      scrollEl.scrollTop += delta
+      const topGuard = 92
+      const bottomGuard = Math.min(190, h * 0.24)
+      if (rel < topGuard) {
+        scrollEl.scrollTop += rel - topGuard
+        return
+      }
+      if (rel > h - bottomGuard) {
+        scrollEl.scrollTop += rel - (h - bottomGuard)
+      }
     }
 
     let rafQueued = false
@@ -1609,10 +2634,48 @@ function App() {
       return matchesQuery && matchesProject
     })
   }, [atomCards, atomProjectFilter, atomSearchQuery])
+  const visibleAtomIds = useMemo(() => filteredAtomCards.map((card) => card.atom.id), [filteredAtomCards])
+  const selectedVisibleAtomCount = visibleAtomIds.filter((id) => selectedAtomIds.includes(id)).length
+  const allVisibleAtomsSelected = visibleAtomIds.length > 0 && selectedVisibleAtomCount === visibleAtomIds.length
+  const atomProjectOptions = useMemo(
+    () => [
+      { value: 'all', label: 'All projects' },
+      ...projects.map((project) => ({ value: project.id, label: project.name })),
+      { value: 'none', label: 'No project yet' },
+    ],
+    [projects],
+  )
+  const atomProjectFilterLabel = atomProjectOptions.find((option) => option.value === atomProjectFilter)?.label ?? 'All projects'
+  const editingFlashcardSet = flashcardSets.find((set) => set.id === editingFlashcardSetId) ?? null
+  const studyingFlashcardSet = flashcardSets.find((set) => set.id === studyingFlashcardSetId) ?? null
+  const flashcardSetDraftCards = useMemo(
+    () => atomCards.filter((card) => flashcardSetDraftAtomIds.includes(card.atom.id)),
+    [atomCards, flashcardSetDraftAtomIds],
+  )
+  const flashcardSetPickerCards = useMemo(() => {
+    const query = normalizeSearch(flashcardSetAtomQuery)
+    return atomCards.filter((card) => {
+      if (!query) return true
+      return (
+        card.atom.phrase.toLowerCase().includes(query) ||
+        card.atom.definition.toLowerCase().includes(query) ||
+        card.projectNames.some((name) => name.toLowerCase().includes(query))
+      )
+    })
+  }, [atomCards, flashcardSetAtomQuery])
+  const studyAtoms = useMemo(() => {
+    const atomById = new Map(atoms.map((atom) => [atom.id, atom]))
+    return studyAtomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom))
+  }, [atoms, studyAtomIds])
+  const activeStudyAtom = studyAtoms[studyIndex] ?? null
+  const studyKnownCount = studyKnownAtomIds.length
+  const studyLearningCount = studyLearningAtomIds.length
+  const studyTotalCount = studyKnownCount + studyAtoms.length
+  const studyRoundComplete = studyTotalCount > 0 && studyAtoms.length === 0
 
   const aiCommands = useMemo(
     () => {
-      const base: Array<{ id: AICommandId; label: string; description: string; contextual?: boolean }> = editorHasSelection
+      const base: Array<{ id: AICommandId; label: string; description: string; contextual?: boolean }> = hasExplicitAIContext
         ? [
         { id: 'custom', label: 'Custom', description: 'Run a custom instruction' },
         { id: 'rewrite', label: 'Rewrite', description: 'Improve the selected text', contextual: true },
@@ -1629,12 +2692,14 @@ function App() {
       ]
       return base
     },
-    [editorHasSelection],
+    [hasExplicitAIContext],
   )
 
   useEffect(() => {
     if (aiCommands.some((command) => command.id === activeAICommand)) return
-    setActiveAICommand(aiCommands[0]?.id ?? 'custom')
+    const nextCommand = aiCommands[0]?.id ?? 'custom'
+    setActiveAICommand(nextCommand)
+    if (nextCommand === 'custom') setAiModePillVisible(false)
   }, [activeAICommand, aiCommands])
 
   const cycleAICommand = (direction: 1 | -1 = 1) => {
@@ -1642,7 +2707,40 @@ function App() {
     const currentIndex = Math.max(0, aiCommands.findIndex((command) => command.id === activeAICommand))
     const nextIndex = (currentIndex + direction + aiCommands.length) % aiCommands.length
     setActiveAICommand(aiCommands[nextIndex].id)
+    setAiModePillVisible(aiCommands[nextIndex].id !== 'custom')
   }
+
+  const activeAICommandMeta = aiCommands.find((command) => command.id === activeAICommand)
+  const visibleAICommand = aiModePillVisible && activeAICommand !== 'custom' ? activeAICommandMeta : null
+  const aiPromptHint =
+    /\batomi[sz]e\b/i.test(aiPrompt)
+      ? 'Press Shift+Tab to switch to Atomise'
+      : /\bmark\b/i.test(aiPrompt)
+        ? 'Press Shift+Tab to switch to Mark'
+        : /\bsummari[sz]e|summarise|summarize\b/i.test(aiPrompt)
+          ? 'Press Shift+Tab to switch to Summarise'
+          : /\brewrite\b/i.test(aiPrompt)
+            ? 'Press Shift+Tab to switch to Rewrite'
+            : /\bcontinue\b/i.test(aiPrompt)
+              ? 'Press Shift+Tab to switch to Continue'
+              : ''
+
+  useEffect(() => {
+    if (aiPromptHintTimerRef.current) {
+      clearTimeout(aiPromptHintTimerRef.current)
+      aiPromptHintTimerRef.current = null
+    }
+    const promptKey = aiPrompt.trim().toLowerCase()
+    if (!aiPromptHint || !promptKey || promptKey === aiPromptHintDismissedFor) {
+      setAiPromptHintVisible(false)
+      return
+    }
+    setAiPromptHintVisible(true)
+    aiPromptHintTimerRef.current = setTimeout(() => {
+      setAiPromptHintVisible(false)
+      aiPromptHintTimerRef.current = null
+    }, 4200)
+  }, [aiPrompt, aiPromptHint, aiPromptHintDismissedFor])
 
   const dashboardStats = useMemo(() => {
     const recentNote = [...notes].sort(sortByUpdated)[0]
@@ -1807,6 +2905,22 @@ function App() {
     void saveUserSettings({ ...userSettings, aiProviders: nextProviders })
   }
 
+  const switchAtomWorkspace = (nextView: 'atoms' | 'sets') => {
+    setAtomSubView(nextView)
+    setAtomHeadingMenuOpen(false)
+    if (nextView === 'atoms') {
+      setEditingFlashcardSetId(null)
+      setStudyingFlashcardSetId(null)
+      setStudyFlipped(false)
+    } else {
+      setAtomSelectionMode(false)
+      setSelectedAtomIds([])
+    }
+    if (userSettings.preferredAtomSubView !== nextView) {
+      updateUserSettings({ preferredAtomSubView: nextView })
+    }
+  }
+
   const requestAIText = async (taskInstruction: string, userContent: string, signal: AbortSignal) => {
     const providerId = userSettings.defaultAIProvider
     const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
@@ -1893,7 +3007,7 @@ function App() {
     return { providerId, providerMeta, responseText, usage }
   }
 
-  const buildAIContext = (taskType: AITaskType) => {
+  const buildAIContext = (taskType: AITaskType, selection?: EditorRange) => {
     const appParts = [`Current view: ${activeView}`]
     if (selectedNote) appParts.push(`Note title: ${selectedNote.title}`)
     if (selectedProject) appParts.push(`Project: ${selectedProject.name}`)
@@ -1925,8 +3039,8 @@ function App() {
       }
     }
     if (editor) {
-      const { from, to, empty } = editor.state.selection
-      const selectedText = empty ? '' : editor.state.doc.textBetween(from, to, ' ').trim()
+      const { from, to } = selection ?? editor.state.selection
+      const selectedText = selection ? editor.state.doc.textBetween(from, to, ' ').trim() : ''
       if (selectedText) parts.push(`Selected text:\n${selectedText}`)
       const nearbyStart = Math.max(0, from - 900)
       const nearbyEnd = Math.min(editor.state.doc.content.size, to + 900)
@@ -1939,6 +3053,20 @@ function App() {
       const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' || taskType === 'ai_atomise' || taskType === 'mark_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
       const excerpt = collectText(selectedNote.content).slice(0, excerptLimit)
       if (excerpt) parts.push(`${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}`)
+    }
+    const highlighted = selection ? highlightedFormatBlock(selection) : null
+    if (highlighted?.block.type === 'table') {
+      const tableNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'table')
+      if (tableNode) {
+        const table = tableDataFromNode(tableNode)
+        parts.push(`Highlighted table block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, columns: table.columns, rows: table.rows })}`)
+      }
+    }
+    if (highlighted?.block.type === 'quote') {
+      const quoteNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociQuote' || node.type === 'blockquote')
+      if (quoteNode) {
+        parts.push(`Highlighted quote block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...quoteDataFromNode(quoteNode) })}`)
+      }
     }
     return parts.join('\n\n')
   }
@@ -1961,10 +3089,7 @@ function App() {
       return
     }
 
-    const selection =
-      editor && !editor.state.selection.empty
-        ? { from: editor.state.selection.from, to: editor.state.selection.to }
-        : undefined
+    const selection = editor ? aiContextRangeRef.current ?? undefined : undefined
     const taskType = routeAITask(prompt, !!selection, command)
     const selectionOriginalText =
       selection && editor && taskType === 'edit_selection'
@@ -1972,7 +3097,7 @@ function App() {
         : undefined
     const actionConfig = aiActionConfig(taskType, !!selection)
     const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Marking criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
-    const context = buildAIContext(taskType)
+    const context = buildAIContext(taskType, selection)
     const userContent = `${context ? `Context:\n${context}\n\n` : ''}User request:\n${prompt.trim()}`
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
     const controller = new AbortController()
@@ -2057,12 +3182,28 @@ function App() {
 
       if (!responseText) throw new Error(`${providerMeta.name} returned an empty response.`)
       const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
+      const highlighted = selection ? highlightedFormatBlock(selection) : null
+      const blockPayload: AIBlockPayload | undefined =
+        taskType === 'table_block'
+          ? {
+              kind: 'table',
+              data: parseAITablePayload(responseText),
+              targetBlockId: highlighted?.block.type === 'table' ? highlighted.block.id : undefined,
+            }
+          : taskType === 'quote_block'
+            ? {
+                kind: 'quote',
+                data: parseAIQuotePayload(responseText),
+                targetBlockId: highlighted?.block.type === 'quote' ? highlighted.block.id : undefined,
+              }
+            : undefined
       setAiResult({
         prompt,
         taskType,
         response: responseText,
         insertableResponse,
         draftText: insertableResponse || responseText,
+        blockPayload,
         provider: providerId,
         selection,
         selectionOriginalText,
@@ -2103,7 +3244,7 @@ function App() {
   }
 
   const submitAIPrompt = (command: AICommandId = activeAICommand) => {
-    const fallbackPrompt = defaultPromptForCommand(command, editorHasSelection)
+    const fallbackPrompt = defaultPromptForCommand(command, hasExplicitAIContext)
     const prompt = aiPrompt.trim() || fallbackPrompt
     if (!prompt || aiRunning) return
     void requestAICompletion(prompt, command)
@@ -2129,8 +3270,10 @@ function App() {
     }))
     await db.atoms.bulkPut(created)
     setAtoms((current) => [...created, ...current])
+    const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, created) : editor ? applyAtomMarksToEditor(editor, created) : 0
     setAiResult(null)
-    setNotice(`Created ${created.length} atom${created.length === 1 ? '' : 's'}.`)
+    clearAISelectionHighlight()
+    setNotice(`Created ${created.length} atom${created.length === 1 ? '' : 's'}${markCount ? ` and linked ${markCount} note match${markCount === 1 ? '' : 'es'}` : ''}.`)
   }
 
   const draftProjectInstructionsFromAIResult = async () => {
@@ -2202,6 +3345,11 @@ function App() {
     }
   }
 
+  const closeAIResult = () => {
+    setAiResult(null)
+    clearAISelectionHighlight()
+  }
+
   const openProjectQuickNote = useCallback((noteId: string) => {
     setSelectedNoteId(noteId)
     setActiveView('editor')
@@ -2255,9 +3403,15 @@ function App() {
         setActiveEditorPanel(null)
         return
       }
+      if (event.key === 'Escape' && imageCropEditing) {
+        event.preventDefault()
+        setImageCropEditing(false)
+        return
+      }
       if (event.key === 'Escape' && aiPromptFocused) {
         event.preventDefault()
         setAiPromptFocused(false)
+        clearAIContextRange()
         aiPromptInputRef.current?.blur()
         return
       }
@@ -2277,7 +3431,7 @@ function App() {
     }
     document.addEventListener('keydown', onDocKeyDown)
     return () => document.removeEventListener('keydown', onDocKeyDown)
-  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, closeAppDialog, closeSearch, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchProjectQuickNote, templateProjectId])
+  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchProjectQuickNote, templateProjectId])
 
   
   useEffect(() => {
@@ -2363,15 +3517,18 @@ function App() {
     if (!template.available) return
     const projectId = projectOverrideId || templateProjectId || UNASSIGNED_PROJECT_ID
     const templateData = templateDataFor(templateId, template.content)
-    const note: Note = {
+      const content = templateDataToContent(templateData)
+      const blocks = templateBlocksFor(templateId, templateData)
+      const note: Note = {
       id: createId('note'),
       title: template.title,
       projectId,
       templateId,
       templateData,
+        blocks,
       author: profileDisplayName,
       tags: [],
-      content: templateDataToContent(templateData),
+        content,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     }
@@ -2388,6 +3545,549 @@ function App() {
   const persistTemplateData = (templateData: NoteTemplateData) => {
     void persistNote({ templateData, content: templateDataToContent(templateData) })
   }
+
+  const persistBlocks = (blocks: LociBlock[]) => {
+    if (!selectedNote) return
+    const content = contentFromBlocks(blocks)
+    const templateData = updatePrimaryTemplateContent(selectedNote, content)
+    void persistNote({ blocks, templateData, content: templateDataToContent(templateData) })
+    if (editor) {
+      const scrollEl = documentScrollRef.current
+      const scrollTop = scrollEl?.scrollTop
+      suppressEditorPersistRef.current = true
+      editor.commands.setContent(content, { emitUpdate: false })
+      editor.view.dispatch(editor.state.tr.setMeta(blockControlsKey, blocks))
+      suppressEditorPersistRef.current = false
+      if (scrollEl && scrollTop !== undefined) {
+        requestAnimationFrame(() => {
+          scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
+        })
+      }
+    }
+  }
+
+  const selectedBlocks = selectedNote?.blocks ?? (selectedNote ? normalizeBlocksForContent(selectedNote.content) : [])
+  const selectedBlocksKey = JSON.stringify(selectedBlocks)
+  const visibleBlockPickerOptions = blockPickerOptions.filter((option) => {
+    const query = blockPicker.query.trim().toLowerCase()
+    if (!query) return true
+    return `${option.label} ${option.description} ${option.type}`.toLowerCase().includes(query)
+  })
+
+  const highlightedFormatBlock = useCallback((range: EditorRange): { block: LociBlock; index: number } | null => {
+    if (!editor) return null
+    let runningPos = 1
+    for (let index = 0; index < selectedBlocks.length; index += 1) {
+      const block = selectedBlocks[index]
+      const blockSize = blockContentNodes(block.content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
+      const blockFrom = runningPos
+      const blockTo = runningPos + blockSize
+      runningPos = blockTo
+      const formatType = formatBlockTypeForBlock(block)
+      if (!formatType) continue
+      const touchesBlock = range.from < blockTo && range.to > blockFrom
+      if (touchesBlock) return { block, index }
+    }
+    return null
+  }, [editor, selectedBlocksKey])
+
+  const measureFormatBlockControls = useCallback(() => {
+    const shell = blockEditorShellRef.current
+    const editorDom = mountedEditorDom(editor)
+    if (!shell || !editorDom) {
+      setFormatBlockControls([])
+      return
+    }
+    const shellRect = shell.getBoundingClientRect()
+    const children = Array.from(editorDom.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
+    let childIndex = 0
+    const controls: FormatBlockControlRect[] = []
+    selectedBlocks.forEach((block) => {
+      const count = Math.max(1, blockContentNodes(block.content).length)
+      const blockChildren = children.slice(childIndex, childIndex + count)
+      childIndex += count
+      const formatType = formatBlockTypeForBlock(block)
+      if (!formatType || !blockChildren.length) return
+      const rects = blockChildren.map((child) => child.getBoundingClientRect())
+      const top = Math.min(...rects.map((rect) => rect.top))
+      controls.push({
+        blockId: block.id,
+        type: formatType,
+        top: top - shellRect.top + 3,
+        left: -82,
+      })
+    })
+    setFormatBlockControls((current) => (JSON.stringify(current) === JSON.stringify(controls) ? current : controls))
+  }, [editor, selectedBlocksKey])
+
+  useLayoutEffect(() => {
+    measureFormatBlockControls()
+  }, [measureFormatBlockControls])
+
+  useEffect(() => {
+    if (!editor) return
+    syncFormatSideControls()
+    measureFormatBlockControls()
+    editor.on('selectionUpdate', syncFormatSideControls)
+    editor.on('transaction', syncFormatSideControls)
+    editor.on('transaction', measureFormatBlockControls)
+    window.addEventListener('resize', syncFormatSideControls)
+    window.addEventListener('resize', measureFormatBlockControls)
+    documentScrollRef.current?.addEventListener('scroll', syncFormatSideControls)
+    documentScrollRef.current?.addEventListener('scroll', measureFormatBlockControls)
+    return () => {
+      editor.off('selectionUpdate', syncFormatSideControls)
+      editor.off('transaction', syncFormatSideControls)
+      editor.off('transaction', measureFormatBlockControls)
+      window.removeEventListener('resize', syncFormatSideControls)
+      window.removeEventListener('resize', measureFormatBlockControls)
+      documentScrollRef.current?.removeEventListener('scroll', syncFormatSideControls)
+      documentScrollRef.current?.removeEventListener('scroll', measureFormatBlockControls)
+    }
+  }, [editor, measureFormatBlockControls, syncFormatSideControls])
+
+  const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
+    if (!selectedBlocks.length) return
+    const index = selectedBlocks.findIndex((block) => block.id === blockId)
+    const insertIndex = index < 0 ? selectedBlocks.length : index + (placement === 'after' ? 1 : 0)
+    const nextBlocks = [...selectedBlocks]
+    nextBlocks.splice(insertIndex, 0, createLociBlock(blankBlockNode(type), type))
+    persistBlocks(nextBlocks)
+    setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
+  }
+
+  const insertFlashcardAfterActive = () => {
+    if (!selectedNote || !selectedBlocks.length) return
+    const now = nowIso()
+    const atom: Atom = {
+      id: createId('atom'),
+      phrase: 'Question',
+      definition: 'Answer',
+      tags: ['Flashcard'],
+      createdAt: now,
+      updatedAt: now,
+      reviewCount: 0,
+      knownCount: 0,
+    }
+    const insertIndex = activeBlockIndex() + 1
+    const block = createLociBlock(flashcardBlockDoc(atom.id), 'flashcard')
+    block.attrs = { atomId: atom.id }
+    const nextBlocks = [...selectedBlocks]
+    nextBlocks.splice(insertIndex, 0, block)
+    void db.atoms.put(atom)
+    setAtoms((current) => [atom, ...current])
+    persistBlocks(nextBlocks)
+    setNotice('Flashcard block added and linked as an atom.')
+  }
+
+  const insertImageAfterActive = (src: string) => {
+    if (!src) return
+    if (!selectedBlocks.length) {
+      editor?.chain().focus().insertContent(imageBlockDoc(src).content?.[0] ?? { type: 'image', attrs: { src } }).run()
+      return
+    }
+    const insertIndex = Math.min(selectedBlocks.length, activeBlockIndex() + 1)
+    const nextBlocks = [...selectedBlocks]
+    nextBlocks.splice(insertIndex, 0, createLociBlock(imageBlockDoc(src), 'image'))
+    persistBlocks(nextBlocks)
+    setNotice('Image block added.')
+  }
+
+  const applyAIBlockPayload = (payload: AIBlockPayload) => {
+    if (!selectedBlocks.length) return
+    const content = payload.kind === 'table'
+      ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
+      : quoteBlockDocFromData(payload.data.quote, payload.data.author)
+    const type: LociBlockType = payload.kind === 'table' ? 'table' : 'quote'
+    const targetIndex = payload.targetBlockId ? selectedBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
+    const nextBlocks = [...selectedBlocks]
+    if (targetIndex >= 0 && nextBlocks[targetIndex].type === type) {
+      nextBlocks[targetIndex] = {
+        ...nextBlocks[targetIndex],
+        content,
+        updatedAt: nowIso(),
+      }
+    } else {
+      const insertIndex = Math.min(selectedBlocks.length, activeBlockIndex() + 1)
+      nextBlocks.splice(insertIndex, 0, createLociBlock(content, type))
+    }
+    persistBlocks(nextBlocks)
+  }
+
+  const activeBlockIndex = () => {
+    if (!editor) return Math.max(0, selectedBlocks.length - 1)
+    const selectionFrom = editor.state.selection.from
+    let runningPos = 1
+    for (let index = 0; index < selectedBlocks.length; index += 1) {
+      const blockSize = blockContentNodes(selectedBlocks[index].content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
+      if (selectionFrom <= runningPos + blockSize) return index
+      runningPos += blockSize
+    }
+    return Math.max(0, selectedBlocks.length - 1)
+  }
+
+  const createBlockAfterActive = () => {
+    if (!selectedBlocks.length) return false
+    const insertIndex = activeBlockIndex() + 1
+    const nextBlocks = [...selectedBlocks]
+    nextBlocks.splice(insertIndex, 0, createLociBlock(blankBlockNode('paragraph'), 'paragraph'))
+    persistBlocks(nextBlocks)
+    requestAnimationFrame(() => {
+      if (!editorRef.current) return
+      const scrollEl = documentScrollRef.current
+      const scrollTop = scrollEl?.scrollTop
+      const pos = 1 + nextBlocks.slice(0, insertIndex).reduce(
+        (total, block) => total + blockContentNodes(block.content).reduce((sum, node) => sum + editorRef.current!.schema.nodeFromJSON(node).nodeSize, 0),
+        0,
+      )
+      editorRef.current.commands.setTextSelection(Math.max(1, pos + 1))
+      editorRef.current.commands.focus(undefined, { scrollIntoView: false })
+      if (scrollEl && scrollTop !== undefined) scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
+    })
+    return true
+  }
+
+  const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn') => {
+    if (!editor) return
+    const chain = editor.chain().focus()
+    if (command === 'addRow') chain.addRowAfter().run()
+    if (command === 'removeRow') chain.deleteRow().run()
+    if (command === 'addColumn') chain.addColumnAfter().run()
+    if (command === 'removeColumn') chain.deleteColumn().run()
+    requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const updateImageAttributes = (attrs: Partial<{
+    width: number
+    align: ImageAlignPreset
+    cropMode: ImageCropMode
+    aspect: ImageAspectPreset
+    offsetX: number
+    offsetY: number
+    zoom: number
+  }>) => {
+    if (!editor) return
+    editor.chain().focus().updateAttributes('image', attrs).run()
+    requestAnimationFrame(() => {
+      syncFormatSideControls()
+      measureFormatBlockControls()
+    })
+  }
+
+  const currentImageAttrs = () => {
+    const attrs = editor?.getAttributes('image') ?? {}
+    return {
+      width: clampImageNumber(attrs.width, 25, 100, 78),
+      cropMode: attrs.cropMode === 'cover' ? 'cover' as ImageCropMode : 'contain' as ImageCropMode,
+      aspect: ['auto', 'square', 'wide', 'portrait'].includes(String(attrs.aspect)) ? attrs.aspect as ImageAspectPreset : 'auto',
+      offsetX: clampImageNumber(attrs.offsetX, 0, 100, 50),
+      offsetY: clampImageNumber(attrs.offsetY, 0, 100, 50),
+      zoom: clampImageNumber(attrs.zoom, 100, 240, 100),
+    }
+  }
+
+  const cycleImageAspect = () => {
+    const order: ImageAspectPreset[] = ['auto', 'wide', 'square', 'portrait']
+    const current = currentImageAttrs().aspect
+    updateImageAttributes({ aspect: order[(order.indexOf(current) + 1) % order.length] })
+  }
+
+  const zoomImage = (delta: number) => {
+    const attrs = currentImageAttrs()
+    updateImageAttributes({ zoom: clampImageNumber(attrs.zoom + delta, 100, 240, 100), cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect })
+  }
+
+  const selectImageFrame = (frame: HTMLElement) => {
+    if (!editor) return false
+    const pos = editor.view.posAtDOM(frame, 0)
+    const node = editor.state.doc.nodeAt(pos)
+    if (!node || node.type.name !== 'image') return false
+    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, pos)))
+    return true
+  }
+
+  const handleImageCropPointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    if (!imageCropEditing || !editor) return
+    const frame = event.target instanceof Element ? event.target.closest<HTMLElement>('.loci-image-frame') : null
+    if (!frame) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!selectImageFrame(frame)) return
+    const attrs = currentImageAttrs()
+    const rect = frame.getBoundingClientRect()
+    imageCropDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startOffsetX: attrs.offsetX,
+      startOffsetY: attrs.offsetY,
+      frameWidth: Math.max(1, rect.width),
+      frameHeight: Math.max(1, rect.height),
+    }
+    setImageCropDragging(true)
+    frame.setPointerCapture(event.pointerId)
+  }
+
+  const handleImageCropPointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (!imageCropEditing || !imageCropDragRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    const drag = imageCropDragRef.current
+    updateImageAttributes({
+      offsetX: clampImageNumber(drag.startOffsetX - ((event.clientX - drag.startX) / drag.frameWidth) * 100, 0, 100, 50),
+      offsetY: clampImageNumber(drag.startOffsetY - ((event.clientY - drag.startY) / drag.frameHeight) * 100, 0, 100, 50),
+    })
+  }
+
+  const handleImageCropPointerEnd = (event: React.PointerEvent<HTMLElement>) => {
+    if (!imageCropDragRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    imageCropDragRef.current = null
+    setImageCropDragging(false)
+  }
+
+  const toggleQuoteAuthor = () => {
+    if (!editor) return
+    const { state } = editor
+    let updated = false
+    state.doc.descendants((node, pos) => {
+      if (updated || node.type.name !== 'lociQuote') return false
+      const hasAuthor = node.content.childCount > 1
+      const insertPos = pos + node.nodeSize - 1
+      if (hasAuthor) {
+        const author = node.child(node.content.childCount - 1)
+        editor.chain().focus().deleteRange({ from: insertPos - author.nodeSize, to: insertPos }).run()
+      } else {
+        editor.chain().focus().insertContentAt(insertPos, quoteAuthorNode()).run()
+      }
+      updated = true
+      return false
+    })
+    requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const renderFormatSideControls = () => {
+    if (!editor || !formatSideControls) return null
+    return (
+      <div className="format-side-controls" style={{ top: formatSideControls.top, left: formatSideControls.left }} onMouseDown={(event) => event.preventDefault()}>
+        {formatSideControls.type === 'table' && (
+          <>
+            <button type="button" aria-label="Add table row" onClick={() => runTableCommand('addRow')}><span aria-hidden>R+</span></button>
+            <button type="button" aria-label="Remove table row" onClick={() => runTableCommand('removeRow')}><span aria-hidden>R-</span></button>
+            <button type="button" aria-label="Add table column" onClick={() => runTableCommand('addColumn')}><span aria-hidden>C+</span></button>
+            <button type="button" aria-label="Remove table column" onClick={() => runTableCommand('removeColumn')}><span aria-hidden>C-</span></button>
+          </>
+        )}
+        {formatSideControls.type === 'quote' && (
+          <button type="button" aria-label="Toggle quote author" onClick={toggleQuoteAuthor}><span aria-hidden>Au</span></button>
+        )}
+        {formatSideControls.type === 'image' && (
+          <>
+            <button type="button" aria-label="Fit image to page width" onClick={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}><span aria-hidden>Fit</span></button>
+            <button
+              type="button"
+              aria-label={imageCropEditing ? 'Finish cropping image' : 'Crop image'}
+              onClick={() => {
+                if (imageCropEditing) {
+                  setImageCropEditing(false)
+                  return
+                }
+                const attrs = currentImageAttrs()
+                updateImageAttributes({ cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect, zoom: Math.max(120, attrs.zoom) })
+                setImageCropEditing(true)
+              }}
+            >
+              <span aria-hidden>{imageCropEditing ? 'Done' : 'Crop'}</span>
+            </button>
+            <button className="format-side-control-wide" type="button" aria-label="Cycle crop aspect ratio" onClick={cycleImageAspect}><span aria-hidden>Aspect Ratio</span></button>
+            {imageCropEditing && (
+              <>
+                <button type="button" aria-label="Zoom crop out" onClick={() => zoomImage(-10)}><span aria-hidden>Z-</span></button>
+                <button type="button" aria-label="Zoom crop in" onClick={() => zoomImage(10)}><span aria-hidden>Z+</span></button>
+              </>
+            )}
+            <button type="button" aria-label="Align image left" onClick={() => updateImageAttributes({ align: 'left' })}><span aria-hidden>L</span></button>
+            <button type="button" aria-label="Align image center" onClick={() => updateImageAttributes({ align: 'center' })}><span aria-hidden>C</span></button>
+            <button type="button" aria-label="Align image right" onClick={() => updateImageAttributes({ align: 'right' })}><span aria-hidden>R</span></button>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  const renderFormatBlockControls = () => {
+    if (!formatBlockControls.length) return null
+    return (
+      <div className="format-block-controls-layer" aria-hidden={false}>
+        {formatBlockControls.map((control) => (
+          <span
+            key={control.blockId}
+            className="block-hover-controls format-block-hover-controls"
+            style={{ top: control.top, left: control.left }}
+            data-block-id={control.blockId}
+            data-block-type={control.type}
+            contentEditable={false}
+          >
+            <button className="block-control-button block-control-delete" type="button" aria-label="Delete format block" data-block-action="delete" data-block-id={control.blockId}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
+            </button>
+            <button className="block-control-button" type="button" aria-label="Insert block after format block" data-block-action="insert" data-block-id={control.blockId}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+            </button>
+            <button className="block-control-button block-control-handle" type="button" aria-label="Move format block" draggable data-block-action="drag" data-block-id={control.blockId}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="9" cy="7.5" r="1.25" /><circle cx="15" cy="7.5" r="1.25" />
+                <circle cx="9" cy="12" r="1.25" /><circle cx="15" cy="12" r="1.25" />
+                <circle cx="9" cy="16.5" r="1.25" /><circle cx="15" cy="16.5" r="1.25" />
+              </svg>
+            </button>
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  useEffect(() => {
+    createBlockAfterActiveRef.current = createBlockAfterActive
+  }, [createBlockAfterActive])
+
+  const measureBlockDropTargets = () => {
+    const shell = blockEditorShellRef.current
+    const editorDom = editor?.view.dom
+    if (!shell || !editorDom) return []
+    const shellRect = shell.getBoundingClientRect()
+    const children = Array.from(editorDom.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
+    if (!children.length) return []
+    let childIndex = 0
+    return selectedBlocks.flatMap((block): BlockDropTarget[] => {
+      const count = Math.max(1, blockContentNodes(block.content).length)
+      const blockChildren = children.slice(childIndex, childIndex + count)
+      childIndex += count
+      if (!blockChildren.length) return []
+      const rects = blockChildren.map((child) => child.getBoundingClientRect())
+      const top = Math.min(...rects.map((rect) => rect.top))
+      const bottom = Math.max(...rects.map((rect) => rect.bottom))
+      const left = Math.min(...rects.map((rect) => rect.left))
+      const right = Math.max(...rects.map((rect) => rect.right))
+      return [{
+        blockId: block.id,
+        top: top - shellRect.top,
+        left: Math.max(0, left - shellRect.left),
+        width: Math.min(shellRect.width, right - left),
+        height: bottom - top,
+      }]
+    })
+  }
+
+  const deleteBlock = (blockId: string) => {
+    if (selectedBlocks.length <= 1) return
+    if (selectedNote) {
+      blockUndoStackRef.current = [
+        ...blockUndoStackRef.current.slice(-19),
+        { noteId: selectedNote.id, blocks: cloneTemplateValue(selectedBlocks) },
+      ]
+    }
+    persistBlocks(selectedBlocks.filter((block) => block.id !== blockId))
+  }
+
+  const moveBlockToIndex = (blockId: string, dropIndex: number) => {
+    const sourceIndex = selectedBlocks.findIndex((block) => block.id === blockId)
+    if (sourceIndex < 0) return
+    const boundedDropIndex = Math.max(0, Math.min(dropIndex, selectedBlocks.length))
+    if (boundedDropIndex === sourceIndex || boundedDropIndex === sourceIndex + 1) return
+    const nextBlocks = [...selectedBlocks]
+    const [block] = nextBlocks.splice(sourceIndex, 1)
+    const adjustedIndex = boundedDropIndex > sourceIndex ? boundedDropIndex - 1 : boundedDropIndex
+    nextBlocks.splice(adjustedIndex, 0, block)
+    persistBlocks(nextBlocks)
+  }
+
+  const moveBlockBelowTarget = (blockId: string, targetBlockId: string) => {
+    const targetIndex = selectedBlocks.findIndex((block) => block.id === targetBlockId)
+    if (targetIndex < 0) return
+    moveBlockToIndex(blockId, targetIndex + 1)
+  }
+
+  const handleBlockControlsClick = (event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-block-action]') : null
+    if (!target) return
+    event.preventDefault()
+    event.stopPropagation()
+    const blockId = target.dataset.blockId ?? ''
+    const action = target.dataset.blockAction ?? ''
+    if (!blockId) return
+    if (action === 'insert') setBlockPicker({ open: true, blockId, placement: 'after', query: '' })
+    if (action === 'delete') deleteBlock(blockId)
+  }
+
+  const handleBlockDragStart = (event: React.DragEvent<HTMLElement>) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-block-action="drag"]') : null
+    if (!target?.dataset.blockId) {
+      event.preventDefault()
+      return
+    }
+    event.stopPropagation()
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('application/x-loci-block', target.dataset.blockId)
+    event.dataTransfer.setDragImage(target, 11, 11)
+    setDraggedBlockId(target.dataset.blockId)
+    requestAnimationFrame(() => setBlockDropTargets(measureBlockDropTargets()))
+  }
+
+  const handleBlockDropTargetDragOver = (event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  const handleBlockDropTargetDrop = (event: React.DragEvent<HTMLElement>, targetBlockId: string) => {
+    const blockId = event.dataTransfer.getData('application/x-loci-block') || draggedBlockId
+    if (!blockId) return
+    event.preventDefault()
+    event.stopPropagation()
+    moveBlockBelowTarget(blockId, targetBlockId)
+    setDraggedBlockId('')
+    setBlockDropTargets([])
+  }
+
+  const handleBlockDragEnd = () => {
+    setDraggedBlockId('')
+    setBlockDropTargets([])
+  }
+
+  const renderBlockDropOverlay = () =>
+    draggedBlockId ? (
+      <div className="block-drop-overlay" aria-hidden>
+        {blockDropTargets
+          .filter((target) => target.blockId !== draggedBlockId)
+          .map((target) => (
+          <span
+            key={target.blockId}
+            className="block-drop-target"
+            style={{ top: target.top, left: target.left, width: target.width, height: target.height }}
+            onDragOver={handleBlockDropTargetDragOver}
+            onDrop={(event) => handleBlockDropTargetDrop(event, target.blockId)}
+          />
+        ))}
+      </div>
+    ) : null
+
+  useEffect(() => {
+    const restoreDeletedBlock = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z' || event.shiftKey) return
+      const activeElement = document.activeElement
+      if (!editor?.isFocused && !editor?.view.dom.contains(activeElement)) return
+      const latest = blockUndoStackRef.current.at(-1)
+      if (!latest || latest.noteId !== selectedNoteIdRef.current) return
+      event.preventDefault()
+      event.stopPropagation()
+      blockUndoStackRef.current = blockUndoStackRef.current.slice(0, -1)
+      persistBlocks(cloneTemplateValue(latest.blocks))
+    }
+
+    document.addEventListener('keydown', restoreDeletedBlock, true)
+    return () => document.removeEventListener('keydown', restoreDeletedBlock, true)
+  }, [editor, persistBlocks])
 
   const updatePlannerTask = (taskId: string, patch: Partial<TemplateTask>) => {
     if (!selectedTemplateData || selectedTemplateData.kind !== 'planner') return
@@ -2512,13 +4212,22 @@ function App() {
         const touchedNotes = notes
           .filter((note) => collectAtomIds(note.content).some((atomId) => atomIdSet.has(atomId)))
           .map((note) => ({ ...note, content: stripAtomMarks(note.content, atomIdSet), updatedAt: nowIso() }))
+        const updatedSets = flashcardSets
+          .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => !atomIdSet.has(atomId)), updatedAt: nowIso() }))
+          .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
 
-        await db.transaction('rw', db.atoms, db.notes, async () => {
+        await db.transaction('rw', db.atoms, db.notes, db.flashcardSets, async () => {
           await db.atoms.bulkDelete(atomIds)
           if (touchedNotes.length) await db.notes.bulkPut(touchedNotes)
+          if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
         })
 
         setAtoms((current) => current.filter((item) => !atomIdSet.has(item.id)))
+        if (updatedSets.length) {
+          setFlashcardSets((current) =>
+            current.map((set) => updatedSets.find((updated) => updated.id === set.id) ?? set),
+          )
+        }
         setFlippedAtomIds((current) => current.filter((id) => !atomIdSet.has(id)))
         setSelectedAtomIds([])
         setAtomSelectionMode(false)
@@ -2529,6 +4238,146 @@ function App() {
         )
       },
     })
+  }
+
+  const toggleSelectVisibleAtoms = () => {
+    setAtomSelectionMode(true)
+    setSelectedAtomIds((current) => {
+      if (allVisibleAtomsSelected) return current.filter((id) => !visibleAtomIds.includes(id))
+      return Array.from(new Set([...current, ...visibleAtomIds]))
+    })
+  }
+
+  const openCreateFlashcardSet = (atomIds = selectedAtomIds) => {
+    setEditingFlashcardSetId(null)
+    setFlashcardSetTitleEditing(false)
+    setFlashcardSetDraftName('')
+    setFlashcardSetDraftDescription('')
+    setFlashcardSetDraftAtomIds(Array.from(new Set(atomIds.filter((id) => atoms.some((atom) => atom.id === id)))))
+    setFlashcardSetAtomQuery('')
+    setAtomSelectionMode(false)
+    setSelectedAtomIds([])
+    setAtomSubView('set-edit')
+  }
+
+  const openEditFlashcardSet = (set: FlashcardSet) => {
+    setEditingFlashcardSetId(set.id)
+    setFlashcardSetTitleEditing(false)
+    setFlashcardSetDraftName(set.name)
+    setFlashcardSetDraftDescription(set.description ?? '')
+    setFlashcardSetDraftAtomIds(set.atomIds.filter((id) => atoms.some((atom) => atom.id === id)))
+    setFlashcardSetAtomQuery('')
+    setAtomSubView('set-edit')
+  }
+
+  const saveFlashcardSet = async () => {
+    const name = flashcardSetDraftName.trim()
+    if (!name || !flashcardSetDraftAtomIds.length) return
+    const now = nowIso()
+    const existing = editingFlashcardSet
+    const next: FlashcardSet = {
+      id: existing?.id ?? createId('set'),
+      name,
+      description: flashcardSetDraftDescription.trim(),
+      atomIds: Array.from(new Set(flashcardSetDraftAtomIds)),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      lastStudiedAt: existing?.lastStudiedAt,
+    }
+    await db.flashcardSets.put(next)
+    setFlashcardSets((current) =>
+      [next, ...current.filter((set) => set.id !== next.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    )
+    setEditingFlashcardSetId(null)
+    setAtomSubView('sets')
+  }
+
+  const deleteFlashcardSet = async (set: FlashcardSet) => {
+    setAppDialog({
+      kind: 'confirm',
+      title: 'Delete flashcard set',
+      message: `Delete "${set.name}"? The atoms will stay in your library.`,
+      confirmLabel: 'Delete',
+      intent: 'danger',
+      onConfirm: async () => {
+        await db.flashcardSets.delete(set.id)
+        setFlashcardSets((current) => current.filter((item) => item.id !== set.id))
+        if (studyingFlashcardSetId === set.id) {
+          setStudyingFlashcardSetId(null)
+          setAtomSubView('sets')
+        }
+      },
+    })
+  }
+
+  const toggleFlashcardSetAtom = (atomId: string) => {
+    setFlashcardSetDraftAtomIds((current) =>
+      current.includes(atomId) ? current.filter((id) => id !== atomId) : [...current, atomId],
+    )
+  }
+
+  const startFlashcardStudy = async (set: FlashcardSet) => {
+    const availableIds = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
+    const nextIds = studyShuffle ? shuffleList(availableIds) : availableIds
+    if (!nextIds.length) return
+    const now = nowIso()
+    const updatedSet = { ...set, lastStudiedAt: now }
+    await db.flashcardSets.put(updatedSet)
+    setFlashcardSets((current) => current.map((item) => (item.id === set.id ? updatedSet : item)))
+    setStudyingFlashcardSetId(set.id)
+    setStudyAtomIds(nextIds)
+    setStudyIndex(0)
+    setStudyFlipped(false)
+    setStudyKnownAtomIds([])
+    setStudyLearningAtomIds([])
+    setAtomSubView('study')
+  }
+
+  const moveStudyCard = (direction: 1 | -1) => {
+    setStudyIndex((current) => {
+      if (!studyAtoms.length) return 0
+      return (current + direction + studyAtoms.length) % studyAtoms.length
+    })
+    setStudyFlipped(false)
+  }
+
+  const markStudyCardAgain = () => {
+    if (!activeStudyAtom) return
+    const atomId = activeStudyAtom.id
+    setStudyLearningAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
+    setStudyAtomIds((current) => {
+      if (current.length <= 1) return current
+      const withoutCurrent = current.filter((id) => id !== atomId)
+      return [...withoutCurrent, atomId]
+    })
+    setStudyIndex((current) => {
+      if (studyAtoms.length <= 1) return 0
+      return Math.min(current, studyAtoms.length - 2)
+    })
+    setStudyFlipped(false)
+  }
+
+  const markStudyCardKnown = () => {
+    if (!activeStudyAtom) return
+    const atomId = activeStudyAtom.id
+    setStudyKnownAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
+    setStudyLearningAtomIds((current) => current.filter((id) => id !== atomId))
+    setStudyAtomIds((current) => current.filter((id) => id !== atomId))
+    setStudyIndex((current) => {
+      if (studyAtoms.length <= 1) return 0
+      return Math.min(current, studyAtoms.length - 2)
+    })
+    setStudyFlipped(false)
+  }
+
+  const restartStudyRound = () => {
+    if (!studyingFlashcardSet) return
+    const availableIds = studyingFlashcardSet.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
+    setStudyAtomIds(studyShuffle ? shuffleList(availableIds) : availableIds)
+    setStudyKnownAtomIds([])
+    setStudyLearningAtomIds([])
+    setStudyIndex(0)
+    setStudyFlipped(false)
   }
 
   const deleteProject = async (projectId: string) => {
@@ -2551,16 +4400,27 @@ function App() {
         const snapshots = await db.noteSnapshots.toArray()
         const snapshotIdsToDelete = snapshots.filter((snapshot) => projectNoteIds.has(snapshot.noteId)).map((snapshot) => snapshot.id)
 
-        await db.transaction('rw', db.projects, db.notes, db.atoms, db.noteSnapshots, async () => {
+        const deletedAtomIdSet = new Set(atomIdsToDelete)
+        const updatedSets = flashcardSets
+          .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => !deletedAtomIdSet.has(atomId)), updatedAt: nowIso() }))
+          .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
+
+        await db.transaction('rw', [db.projects, db.notes, db.atoms, db.noteSnapshots, db.flashcardSets], async () => {
           await db.projects.delete(projectId)
           if (projectNotes.length) await db.notes.bulkDelete(projectNotes.map((note) => note.id))
           if (snapshotIdsToDelete.length) await db.noteSnapshots.bulkDelete(snapshotIdsToDelete)
           if (atomIdsToDelete.length) await db.atoms.bulkDelete(atomIdsToDelete)
+          if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
         })
 
         setProjects((current) => current.filter((item) => item.id !== projectId))
         setNotes(keptNotes.sort(sortByUpdated))
         setAtoms((current) => current.filter((atom) => !atomIdsToDelete.includes(atom.id)))
+        if (updatedSets.length) {
+          setFlashcardSets((current) =>
+            current.map((set) => updatedSets.find((updated) => updated.id === set.id) ?? set),
+          )
+        }
         setFlippedAtomIds((current) => current.filter((id) => !atomIdsToDelete.includes(id)))
         setSelectedProjectId('')
         if (selectedNote && projectNoteIds.has(selectedNote.id)) {
@@ -2590,9 +4450,31 @@ function App() {
     })
   }
 
+  const duplicateProject = async (project: Project) => {
+    const duplicatedProject: Project = {
+      ...project,
+      id: createId('project'),
+      name: `${project.name} Copy`,
+      createdAt: nowIso(),
+    }
+    await db.projects.put(duplicatedProject)
+    setProjects((current) => [...current, duplicatedProject].sort((a, b) => a.name.localeCompare(b.name)))
+  }
+
   const updateProjectDescription = async (projectId: string, description: string) => {
     await db.projects.update(projectId, { description })
     setProjects((current) => current.map((project) => (project.id === projectId ? { ...project, description } : project)))
+  }
+
+  const updateProjectName = async (projectId: string, name: string) => {
+    const nextName = name.trim()
+    if (!nextName) return
+    await db.projects.update(projectId, { name: nextName })
+    setProjects((current) =>
+      current
+        .map((project) => (project.id === projectId ? { ...project, name: nextName } : project))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    )
   }
 
   const atomiseSelection = () => {
@@ -2652,17 +4534,8 @@ function App() {
 
     await db.atoms.put(atom)
     setAtoms((current) => [atom, ...current.filter((item) => item.id !== atom.id)])
-    const ranges = findPhraseRanges(editor.state.doc, atom.phrase)
-    if (ranges.length) {
-      const chain = editor.chain().focus()
-      ranges.forEach((range) => {
-        chain
-          .setTextSelection(range)
-          .setAtom({ atomId: atom.id, phrase: atom.phrase, definition: atom.definition })
-      })
-      chain.run()
-    }
-    setNotice(ranges.length > 1 ? `Atomised ${ranges.length} matches.` : '')
+    const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, [atom]) : applyAtomMarksToEditor(editor, [atom])
+    setNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
     setAtomDialog(null)
   }
 
@@ -2691,7 +4564,7 @@ function App() {
       placeholder: 'https://example.com/image.jpg',
       confirmLabel: 'Add image',
       onConfirm: (src) => {
-        editor.chain().focus().setImage({ src }).run()
+        insertImageAfterActive(src.trim())
       },
     })
   }
@@ -2720,6 +4593,26 @@ function App() {
     lastPaintedHighlightRangeRef.current = ''
     editor?.chain().focus().run()
   }
+
+  const clearFormatting = useCallback(() => {
+    if (!editor) return
+    editor.chain().focus().unsetAllMarks().clearNodes().run()
+    setHighlighterArmed(false)
+    setHighlightPaletteOpen(false)
+    lastPaintedHighlightRangeRef.current = ''
+  }, [editor])
+
+  useEffect(() => {
+    if (!editor) return
+    const handleClearFormattingShortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key !== '\\' || !editor.isFocused) return
+      event.preventDefault()
+      clearFormatting()
+    }
+
+    document.addEventListener('keydown', handleClearFormattingShortcut)
+    return () => document.removeEventListener('keydown', handleClearFormattingShortcut)
+  }, [clearFormatting, editor])
 
   const formatOptions: FormatOption[] = [
     {
@@ -2759,6 +4652,45 @@ function App() {
       action: () => editor?.chain().focus().toggleTaskList().run(),
     },
     {
+      id: 'table',
+      label: 'Table',
+      icon: Table2,
+      description: 'Add a structured study grid.',
+      group: 'Structure',
+      enabled: true,
+      action: () => {
+        if (!editor) return
+        editor.chain().focus().insertTable({ rows: 4, cols: 2, withHeaderRow: true }).run()
+      },
+    },
+    {
+      id: 'flashcard',
+      label: 'Flashcard',
+      icon: Brain,
+      description: 'Add a question and answer atom card.',
+      group: 'Structure',
+      enabled: true,
+      action: () => insertFlashcardAfterActive(),
+    },
+    {
+      id: 'highlight',
+      label: 'Highlight',
+      icon: Keyboard,
+      description: 'Highlight selected text with the current colour.',
+      group: 'Text',
+      enabled: true,
+      action: () => toggleHighlight(),
+    },
+    {
+      id: 'clear-formatting',
+      label: 'Clear formatting',
+      icon: RemoveFormatting,
+      description: 'Remove marks, links, highlight, headings, and list formatting. Shortcut: Ctrl+\\.',
+      group: 'Text',
+      enabled: true,
+      action: clearFormatting,
+    },
+    {
       id: 'columns',
       label: 'Columns',
       icon: Columns3,
@@ -2795,15 +4727,6 @@ function App() {
       comingSoonLabel: 'Coming soon',
     },
     {
-      id: 'table',
-      label: 'Table',
-      icon: Table2,
-      description: 'Future: choose a small grid and edit cells inline.',
-      group: 'Advanced blocks',
-      enabled: false,
-      comingSoonLabel: 'Coming soon',
-    },
-    {
       id: 'chart',
       label: 'Chart',
       icon: ChartNoAxesColumn,
@@ -2823,19 +4746,59 @@ function App() {
     },
   ]
 
-  const formatGroups: Array<FormatOption['group']> = ['Structure', 'Insert', 'Advanced blocks']
+  const formatGroups: Array<FormatOption['group']> = ['Structure', 'Text', 'Insert', 'Advanced blocks']
 
   const startWindowDrag = () => {
+    if (!window.__TAURI_INTERNALS__) return
     void getCurrentWindow().startDragging()
   }
   const minimizeWindow = () => {
+    if (!window.__TAURI_INTERNALS__) return
     void getCurrentWindow().minimize()
   }
   const toggleMaximizeWindow = () => {
+    if (!window.__TAURI_INTERNALS__) return
     void getCurrentWindow().toggleMaximize()
   }
   const closeWindow = () => {
+    if (!window.__TAURI_INTERNALS__) return
     void getCurrentWindow().close()
+  }
+
+  const clearSidebarOpenTimer = () => {
+    if (!sidebarOpenTimerRef.current) return
+    clearTimeout(sidebarOpenTimerRef.current)
+    sidebarOpenTimerRef.current = null
+  }
+
+  const clearSidebarCloseTimer = () => {
+    if (!sidebarCloseTimerRef.current) return
+    clearTimeout(sidebarCloseTimerRef.current)
+    sidebarCloseTimerRef.current = null
+  }
+
+  const handleSidebarPointerEnter = () => {
+    clearSidebarCloseTimer()
+    if (sidebarPinned || sidebarHovered || sidebarOpenTimerRef.current) return
+    sidebarOpenTimerRef.current = window.setTimeout(() => {
+      sidebarOpenTimerRef.current = null
+      setSidebarHovered(true)
+    }, 40)
+  }
+
+  const handleSidebarPointerLeave = () => {
+    clearSidebarOpenTimer()
+    if (sidebarPinned || sidebarCloseTimerRef.current) return
+    sidebarCloseTimerRef.current = window.setTimeout(() => {
+      sidebarCloseTimerRef.current = null
+      setSidebarHovered(false)
+    }, 180)
+  }
+
+  const toggleSidebarPinned = () => {
+    clearSidebarOpenTimer()
+    clearSidebarCloseTimer()
+    setSidebarPinned((value) => !value)
   }
 
   const sidebarOpen = sidebarPinned || sidebarHovered
@@ -2869,8 +4832,8 @@ function App() {
       <section className={shellClassName} aria-label="Loci Notes">
         <aside
           className={sidebarClassName}
-          onMouseEnter={() => setSidebarHovered(true)}
-          onMouseLeave={() => setSidebarHovered(false)}
+          onPointerEnter={handleSidebarPointerEnter}
+          onPointerLeave={handleSidebarPointerLeave}
         >
           <div className="sidebar-actions">
             <button
@@ -2898,7 +4861,7 @@ function App() {
               <span className="nav-label">Home</span>
             </button>
             <button
-              className={`${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
+              className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
               type="button"
               onDragOver={handleNoteDropTargetDragOver}
               onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
@@ -2907,14 +4870,13 @@ function App() {
               onClick={() => setActiveView('projects')}
             >
               <Layers3 size={18} />
-              <span className="nav-label">Projects</span>
+              <span className="nav-label">{activeProjectForQuickNav?.name ?? 'Projects'}</span>
+              {activeProjectForQuickNav && projectQuickNotes.length > 1 && (
+                <kbd aria-label="Ctrl Page Up or Down">Ctrl Pg</kbd>
+              )}
             </button>
             {sidebarOpen && activeProjectForQuickNav && projectQuickNotes.length > 0 && (
               <div className="project-quick-nav" aria-label={`${activeProjectForQuickNav.name} documents`}>
-                <div className="project-quick-nav-head">
-                  <span>{activeProjectForQuickNav.name}</span>
-                  <kbd>Ctrl Pg</kbd>
-                </div>
                 {projectQuickNotes.map((note) => (
                   <div
                     className={note.id === selectedNote?.id ? 'is-active' : ''}
@@ -2932,7 +4894,7 @@ function App() {
             )}
             <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => setActiveView('atoms')}>
               <Brain size={18} />
-              <span className="nav-label">Atoms</span>
+              <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
             </button>
           </nav>
 
@@ -2951,7 +4913,7 @@ function App() {
                 type="button"
                 aria-label={sidebarPinned ? 'Collapse sidebar' : 'Pin sidebar open'}
                 aria-pressed={sidebarPinned}
-                onClick={() => setSidebarPinned((value) => !value)}
+                onClick={toggleSidebarPinned}
               >
                 {sidebarPinned ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
               </button>
@@ -3105,7 +5067,7 @@ function App() {
                   <div className="widget-actions stacked">
                     <button type="button" onClick={() => openTemplateChooser()}><Plus size={16} /> New note</button>
                     <button type="button" onClick={() => { setSelectedProjectId(''); setActiveView('projects') }}><Layers3 size={16} /> Projects</button>
-                    <button type="button" onClick={() => setActiveView('atoms')}><Brain size={16} /> Atoms</button>
+                    <button type="button" onClick={() => setActiveView('atoms')}><Brain size={16} /> {atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</button>
                   </div>
                 </DashboardPanel>
               </div>
@@ -3167,7 +5129,7 @@ function App() {
                 </button>
               </div>
 
-              <article className="document-card">
+              <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'}`}>
                 <input className="title-input" value={selectedNote.title} onChange={(event) => void persistNote({ title: event.target.value })} />
                 {notice && <div className="notice">{notice}</div>}
                 {selectedTemplateData?.kind === 'report' && (
@@ -3192,9 +5154,12 @@ function App() {
                         <textarea value={selectedTemplateData.recommendations} onChange={(event) => persistTemplateData({ ...selectedTemplateData, recommendations: event.target.value })} />
                       </label>
                     </div>
-                    <section className="template-rich-section">
+                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                       <span>Appendix / body</span>
                       <EditorContent editor={editor} />
+                      {renderFormatBlockControls()}
+                      {renderFormatSideControls()}
+                      {renderBlockDropOverlay()}
                     </section>
                   </div>
                 )}
@@ -3247,9 +5212,12 @@ function App() {
                       </div>
                       <button className="template-soft-action" type="button" onClick={addPlannerSchedule}>Add schedule block</button>
                     </section>
-                    <section className="template-rich-section">
+                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                       <span>Notes</span>
                       <EditorContent editor={editor} />
+                      {renderFormatBlockControls()}
+                      {renderFormatSideControls()}
+                      {renderBlockDropOverlay()}
                     </section>
                   </div>
                 )}
@@ -3275,7 +5243,12 @@ function App() {
                       return (
                         <section className="slide-stage">
                           <input value={slide.title} onChange={(event) => updateSlide(slide.id, { title: event.target.value })} placeholder="Slide title" />
-                          <EditorContent editor={editor} />
+                          <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                            <EditorContent editor={editor} />
+                            {renderFormatBlockControls()}
+                            {renderFormatSideControls()}
+                            {renderBlockDropOverlay()}
+                          </div>
                           <label>
                             Speaker notes
                             <textarea value={slide.speakerNotes} onChange={(event) => updateSlide(slide.id, { speakerNotes: event.target.value })} />
@@ -3286,8 +5259,49 @@ function App() {
                     })()}
                   </div>
                 )}
-                {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && <EditorContent editor={editor} />}
+                {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && (
+                  <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                    <EditorContent editor={editor} />
+                    {renderFormatBlockControls()}
+                    {renderFormatSideControls()}
+                    {renderBlockDropOverlay()}
+                  </div>
+                )}
               </article>
+              {blockPicker.open && (
+                <div className="block-picker-backdrop" role="presentation" onMouseDown={() => setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })}>
+                  <div className="block-picker-dialog" role="dialog" aria-label="Insert block" onMouseDown={(event) => event.stopPropagation()}>
+                    <label className="block-picker-search">
+                      <Search size={15} aria-hidden />
+                      <input
+                        value={blockPicker.query}
+                        onChange={(event) => setBlockPicker((current) => ({ ...current, query: event.target.value }))}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
+                          if (event.key === 'Enter' && visibleBlockPickerOptions[0]) insertBlock(blockPicker.blockId, visibleBlockPickerOptions[0].type, blockPicker.placement)
+                        }}
+                        placeholder="Search blocks..."
+                        autoFocus
+                      />
+                    </label>
+                    <div className="block-picker-list">
+                      {visibleBlockPickerOptions.map((option) => {
+                        const Icon = option.icon
+                        return (
+                          <button key={option.type} type="button" onClick={() => insertBlock(blockPicker.blockId, option.type, blockPicker.placement)}>
+                            <Icon size={16} aria-hidden />
+                            <span>
+                              <strong>{option.label}</strong>
+                              <small>{option.description}</small>
+                            </span>
+                          </button>
+                        )
+                      })}
+                      {!visibleBlockPickerOptions.length && <p>No blocks found.</p>}
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="floating-editor-wrap" ref={floatingEditorWrapRef}>
                 {activeEditorPanel === 'more' && (
                   <div className="floating-editor-panel">
@@ -3295,6 +5309,15 @@ function App() {
                       <>
                         <span className="panel-kicker">More options</span>
                         <div className="more-option-grid">
+                          <button
+                            type="button"
+                            className="more-toggle-row"
+                            aria-pressed={atomUnderlinesVisible}
+                            onClick={() => setAtomUnderlinesVisible((visible) => !visible)}
+                          >
+                            <span><Info size={16} /> Atom underlines</span>
+                            <strong>{atomUnderlinesVisible ? 'On' : 'Off'}</strong>
+                          </button>
                           <button type="button" onClick={() => void openNoteHistory()}><History size={16} /> Note history</button>
                           <button type="button" onClick={() => void exportNotePdf(selectedNote, selectedProject)}><Download size={16} /> PDF</button>
                           <button type="button" onClick={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}><FileText size={16} /> DOCX</button>
@@ -3304,7 +5327,7 @@ function App() {
                     )}
                   </div>
                 )}
-                <div className="floating-editor-bar" role="toolbar" aria-label="Editor tools">
+                <div className={`floating-editor-bar ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`} role="toolbar" aria-label="Editor tools">
                   <button type="button" onClick={atomiseSelection}><Sparkles size={16} /> Atomise</button>
                   <button type="button" onClick={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}><Heading2 size={16} /> Format</button>
                   <div className="highlight-tool">
@@ -3343,24 +5366,39 @@ function App() {
                       </div>
                     )}
                   </div>
-                  <label className={`floating-ai-prompt ${aiPromptFocused ? 'is-open' : ''}`}>
+                  <label
+                    className={`floating-ai-prompt ${aiPromptFocused ? 'is-open' : ''}`}
+                    onMouseDown={() => {
+                      const range = captureAIContextRange()
+                      if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+                    }}
+                  >
                     <Sparkles size={16} aria-hidden />
+                    {visibleAICommand && (
+                      <span className={`ai-mode-pill ai-mode-pill--${activeAICommand}`}>
+                        <span aria-hidden />
+                        {visibleAICommand.label}
+                      </span>
+                    )}
                     <input
                       ref={aiPromptInputRef}
                       value={aiPrompt}
                       onFocus={() => {
-                        if (editor && !editor.state.selection.empty) {
-                          aiSelectionRangeRef.current = {
-                            from: editor.state.selection.from,
-                            to: editor.state.selection.to,
-                          }
-                          editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range: aiSelectionRangeRef.current }))
-                        }
+                        const range = captureAIContextRange()
+                        if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
                         setAiPromptFocused(true)
                         setActiveEditorPanel(null)
                       }}
-                      onBlur={() => setAiPromptFocused(false)}
-                      onChange={(event) => setAiPrompt(event.target.value)}
+                      onBlur={() => {
+                        setAiPromptFocused(false)
+                        if (!aiRunning) clearAIContextRange()
+                      }}
+                      onChange={(event) => {
+                        setAiPrompt(event.target.value)
+                        if (event.target.value.trim().toLowerCase() !== aiPromptHintDismissedFor) {
+                          setAiPromptHintDismissedFor('')
+                        }
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === 'Tab' && event.shiftKey) {
                           event.preventDefault()
@@ -3370,6 +5408,7 @@ function App() {
                         if (event.key === 'Escape') {
                           event.preventDefault()
                           setAiPromptFocused(false)
+                          clearAIContextRange()
                           aiPromptInputRef.current?.blur()
                           return
                         }
@@ -3379,8 +5418,24 @@ function App() {
                         }
                       }}
                       disabled={aiRunning}
-                      placeholder={aiRunning ? 'Working...' : defaultPromptForCommand(activeAICommand, editorHasSelection) || 'Tell AI what to do...'}
+                      placeholder={aiRunning ? 'Working...' : defaultPromptForCommand(activeAICommand, hasExplicitAIContext) || 'Tell AI what to do...'}
                     />
+                    {aiPromptHintVisible && aiPromptHint && (
+                      <span className="ai-prompt-hint">
+                        {aiPromptHint}
+                        <button
+                          type="button"
+                          aria-label="Dismiss prompt hint"
+                          onClick={(event) => {
+                            event.preventDefault()
+                            setAiPromptHintVisible(false)
+                            setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    )}
                   </label>
                   <span className={`floating-save-state ${showSaveState ? 'is-visible' : ''}`}>{showSaveState ? (saving ? 'Saving...' : 'Saved') : ''}</span>
                   <button type="button" aria-label="More options" onClick={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}><MoreHorizontal size={18} /></button>
@@ -3469,6 +5524,7 @@ function App() {
                 newNote={() => openTemplateChooser(openedProject.id)}
                 deleteProject={() => void deleteProject(openedProject.id)}
                 updateDescription={(description) => void updateProjectDescription(openedProject.id, description)}
+                updateName={(name) => void updateProjectName(openedProject.id, name)}
                 back={() => setSelectedProjectId('')}
               />
             ) : (
@@ -3479,18 +5535,25 @@ function App() {
                     const projectNotes = notes.filter((note) => note.projectId === project.id)
                     const recentNote = [...projectNotes].sort(sortByUpdated)[0]
                     const isDropActive = dragOverProjectId === project.id
+                    const openProject = () => {
+                      if (Date.now() < suppressProjectNavUntilRef.current) return
+                      setSelectedProjectId(project.id)
+                    }
                     return (
-                      <button
-                        type="button"
+                      <div
                         key={project.id}
                         className={`project-row ${draggedNoteIds.length ? 'is-drop-target' : ''} ${isDropActive ? 'is-drop-active' : ''}`}
+                        role="button"
+                        tabIndex={0}
                         onDragOver={handleNoteDropTargetDragOver}
                         onDragEnter={() => setDragOverProjectId(project.id)}
                         onDragLeave={() => setDragOverProjectId((current) => (current === project.id ? '' : current))}
                         onDrop={(event) => assignNoteToProjectDrop(event, project.id)}
-                        onClick={() => {
-                          if (Date.now() < suppressProjectNavUntilRef.current) return
-                          setSelectedProjectId(project.id)
+                        onClick={openProject}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return
+                          event.preventDefault()
+                          openProject()
                         }}
                       >
                         <span className="project-row-main">
@@ -3498,10 +5561,23 @@ function App() {
                           <p>{project.description?.trim() || 'No description yet'}</p>
                           {recentNote && <small>Recent: {recentNote.title}</small>}
                         </span>
-                        <span className="project-card-type-icon" aria-label="Project">
-                          <Layers3 size={22} />
+                        <span className="project-row-actions">
+                          <span className="project-card-type-icon" aria-label="Project">
+                            <Layers3 size={22} />
+                          </span>
+                          <button
+                            type="button"
+                            className="project-duplicate-button"
+                            aria-label={`Duplicate ${project.name}`}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void duplicateProject(project)
+                            }}
+                          >
+                            Duplicate
+                          </button>
                         </span>
-                      </button>
+                      </div>
                     )
                   })}
                   {unassignedNotes.map((note) => {
@@ -3572,105 +5648,477 @@ function App() {
         {activeView === 'atoms' && (
           <section className="main-pane compact-pane">
             <PageHeader
-              title="Atoms"
+              title={
+                <div className="atoms-title-switcher" ref={atomsTitleSwitcherRef}>
+                  <button
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={atomHeadingMenuOpen}
+                    onClick={() => setAtomHeadingMenuOpen((open) => !open)}
+                  >
+                    {atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}
+                    <ChevronDown size={18} aria-hidden />
+                  </button>
+                  {atomHeadingMenuOpen && (
+                    <div className="atoms-title-menu" role="menu">
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={atomSubView === 'atoms'}
+                        className={atomSubView === 'atoms' ? 'is-active' : ''}
+                        onClick={() => switchAtomWorkspace('atoms')}
+                      >
+                        <span>Atoms</span>
+                        <small>Browse and flip atom cards</small>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={atomSubView !== 'atoms'}
+                        className={atomSubView !== 'atoms' ? 'is-active' : ''}
+                        onClick={() => switchAtomWorkspace('sets')}
+                      >
+                        <span>Sets</span>
+                        <small>Create and study atom flashcard sets</small>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              }
               action={
                 <div className="atoms-header-controls">
-                  <label className="atoms-search">
-                    <Search size={15} />
-                    <input
-                      value={atomSearchQuery}
-                      onChange={(event) => setAtomSearchQuery(event.target.value)}
-                      placeholder="Search atoms..."
-                    />
-                  </label>
-                  <select
-                    className="atoms-project-filter"
-                    value={atomProjectFilter}
-                    onChange={(event) => setAtomProjectFilter(event.target.value)}
-                  >
-                    <option value="all">All projects</option>
-                    {projects.map((project) => (
-                      <option key={project.id} value={project.id}>{project.name}</option>
-                    ))}
-                    <option value="none">No project yet</option>
-                  </select>
-                  <button
-                    className={atomSelectionMode ? 'atoms-select-action is-active' : 'atoms-select-action'}
-                    type="button"
-                    aria-pressed={atomSelectionMode}
-                    onClick={() => {
-                      setAtomSelectionMode((current) => {
-                        if (current) setSelectedAtomIds([])
-                        return !current
-                      })
-                    }}
-                  >
-                    {atomSelectionMode ? 'Done' : 'Select'}
-                  </button>
-                  {atomSelectionMode && selectedAtomIds.length > 0 && (
-                    <button className="atoms-delete-action" type="button" onClick={deleteSelectedAtoms}>
-                      <Trash2 size={15} />
-                      Delete {selectedAtomIds.length}
+                  {atomSubView === 'atoms' && (
+                    <>
+                      <label className="atoms-search">
+                        <Search size={15} />
+                        <input
+                          value={atomSearchQuery}
+                          onChange={(event) => setAtomSearchQuery(event.target.value)}
+                          placeholder="Search atoms..."
+                        />
+                      </label>
+                      <div className="atoms-project-filter" ref={atomProjectFilterRef}>
+                        <button
+                          type="button"
+                          aria-haspopup="listbox"
+                          aria-expanded={atomProjectMenuOpen}
+                          onClick={() => setAtomProjectMenuOpen((open) => !open)}
+                        >
+                          <span>{atomProjectFilterLabel}</span>
+                          <ChevronDown size={15} aria-hidden />
+                        </button>
+                        {atomProjectMenuOpen && (
+                          <div className="atoms-project-menu" role="listbox" aria-label="Filter atoms by project">
+                            {atomProjectOptions.map((option) => (
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={atomProjectFilter === option.value}
+                                className={atomProjectFilter === option.value ? 'is-active' : ''}
+                                key={option.value}
+                                onClick={() => {
+                                  setAtomProjectFilter(option.value)
+                                  setAtomProjectMenuOpen(false)
+                                }}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="atoms-selection-actions">
+                        {atomSelectionMode && (
+                          <button className="atoms-select-action atoms-select-action--soft" type="button" onClick={toggleSelectVisibleAtoms}>
+                            {allVisibleAtomsSelected ? 'Clear' : 'All'}
+                          </button>
+                        )}
+                        <button
+                          className={atomSelectionMode ? 'atoms-select-action atoms-select-action--done is-active' : 'atoms-select-action'}
+                          type="button"
+                          aria-pressed={atomSelectionMode}
+                          onClick={() => {
+                            setAtomSelectionMode((current) => {
+                              if (current) setSelectedAtomIds([])
+                              return !current
+                            })
+                          }}
+                        >
+                          {atomSelectionMode ? 'Done' : 'Select'}
+                        </button>
+                        {atomSelectionMode && selectedAtomIds.length > 0 && (
+                          <>
+                            <button className="atoms-select-action atoms-select-action--create" type="button" onClick={() => openCreateFlashcardSet()}>
+                              Create set
+                            </button>
+                            <button className="atoms-delete-action" type="button" onClick={deleteSelectedAtoms}>
+                              <Trash2 size={15} />
+                              Delete {selectedAtomIds.length}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  {atomSubView === 'sets' && (
+                    <button className="atoms-select-action" type="button" onClick={() => openCreateFlashcardSet([])}>
+                      <Plus size={15} />
+                      Create set
+                    </button>
+                  )}
+                  {(atomSubView === 'set-edit' || atomSubView === 'study') && (
+                    <button className="atoms-select-action" type="button" onClick={() => setAtomSubView('sets')}>
+                      <ArrowLeft size={15} />
+                      Back to sets
                     </button>
                   )}
                 </div>
               }
             />
             <div className="atoms-page">
-              <div className="atom-card-grid">
-                {filteredAtomCards.map((card) => {
-                  const isFlipped = flippedAtomIds.includes(card.atom.id)
-                  const isSelected = selectedAtomIds.includes(card.atom.id)
-                  return (
-                    <button
-                      className={`atom-panel-card ${isFlipped ? 'is-flipped' : ''} ${atomSelectionMode ? 'is-selecting' : ''} ${isSelected ? 'is-selected' : ''}`}
-                      type="button"
-                      key={card.atom.id}
-                      aria-pressed={atomSelectionMode ? isSelected : isFlipped}
-                      onClick={() => {
-                        if (atomSelectionMode) {
-                          setSelectedAtomIds((current) =>
+              {atomSubView === 'atoms' && (
+                <div className="atom-card-grid">
+                  {filteredAtomCards.map((card) => {
+                    const isFlipped = flippedAtomIds.includes(card.atom.id)
+                    const isSelected = selectedAtomIds.includes(card.atom.id)
+                    return (
+                      <button
+                        className={`atom-panel-card ${isFlipped ? 'is-flipped' : ''} ${atomSelectionMode ? 'is-selecting' : ''} ${isSelected ? 'is-selected' : ''}`}
+                        type="button"
+                        key={card.atom.id}
+                        aria-pressed={atomSelectionMode ? isSelected : isFlipped}
+                        onClick={() => {
+                          if (atomSelectionMode) {
+                            setSelectedAtomIds((current) =>
+                              current.includes(card.atom.id)
+                                ? current.filter((id) => id !== card.atom.id)
+                                : [...current, card.atom.id],
+                            )
+                            return
+                          }
+                          setFlippedAtomIds((current) =>
                             current.includes(card.atom.id)
                               ? current.filter((id) => id !== card.atom.id)
                               : [...current, card.atom.id],
                           )
-                          return
-                        }
-                        setFlippedAtomIds((current) =>
-                          current.includes(card.atom.id)
-                            ? current.filter((id) => id !== card.atom.id)
-                            : [...current, card.atom.id],
-                        )
-                      }}
-                    >
-                      <div className="atom-card-inner">
-                        <div className="atom-card-face atom-card-front">
-                          {atomSelectionMode && <span className="atom-card-check" aria-hidden />}
-                          <div>
-                            <strong>{card.atom.phrase}</strong>
-                            <p>{truncateOneLine(card.atom.definition, 90)}</p>
+                        }}
+                      >
+                        {atomSelectionMode && <span className="atom-card-check" aria-hidden />}
+                        <div className="atom-card-inner">
+                          <div className="atom-card-face atom-card-front">
+                            <div>
+                              <strong>{card.atom.phrase}</strong>
+                            </div>
                           </div>
-                          <footer>
-                            <span>{card.projectNames.join(', ') || 'No project yet'}</span>
-                            <span>{card.noteCount} note{card.noteCount === 1 ? '' : 's'}</span>
-                          </footer>
+                          <div className="atom-card-face atom-card-back">
+                            <div>
+                              <span>Definition</span>
+                              <p>{card.atom.definition}</p>
+                            </div>
+                            <footer>
+                              <span>{card.projectNames.join(', ') || 'No project yet'}</span>
+                              <span>Click to flip back</span>
+                            </footer>
+                          </div>
                         </div>
-                        <div className="atom-card-face atom-card-back">
-                          {atomSelectionMode && <span className="atom-card-check" aria-hidden />}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {atomSubView === 'sets' && (
+                <div className="flashcard-set-grid">
+                  {flashcardSets.length === 0 ? (
+                    <section className="flashcard-empty-state">
+                      <Brain size={24} aria-hidden />
+                      <h3>Create your first flashcard set</h3>
+                      <p>Group atoms into a study deck, then review them one card at a time.</p>
+                      <button type="button" onClick={() => openCreateFlashcardSet([])}>Create set</button>
+                    </section>
+                  ) : (
+                    flashcardSets.map((set) => {
+                      const setAtoms = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
+                      return (
+                        <article
+                          className={`flashcard-set-card ${setAtoms.length ? '' : 'is-disabled'}`}
+                          key={set.id}
+                          role="button"
+                          tabIndex={setAtoms.length ? 0 : -1}
+                          aria-disabled={!setAtoms.length}
+                          onClick={() => {
+                            if (setAtoms.length) void startFlashcardStudy(set)
+                          }}
+                          onKeyDown={(event) => {
+                            if (!setAtoms.length) return
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              void startFlashcardStudy(set)
+                            }
+                          }}
+                        >
                           <div>
-                            <span>Definition</span>
-                            <p>{card.atom.definition}</p>
+                            <h3>{set.name}</h3>
+                            {set.description?.trim() && <p>{set.description.trim()}</p>}
                           </div>
                           <footer>
-                            <span>{card.projectNames.join(', ') || 'No project yet'}</span>
-                            <span>Click to flip back</span>
+                            <span>{setAtoms.length} card{setAtoms.length === 1 ? '' : 's'}</span>
+                            {set.lastStudiedAt && <span>Studied {formatDay(set.lastStudiedAt)}</span>}
+                            <span className="flashcard-set-actions">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openEditFlashcardSet(set)
+                                }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  void deleteFlashcardSet(set)
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </span>
                           </footer>
+                        </article>
+                      )
+                    })
+                  )}
+                </div>
+              )}
+
+              {atomSubView === 'set-edit' && (
+                <div className="flashcard-set-editor">
+                  <section className="flashcard-set-form">
+                    {flashcardSetTitleEditing ? (
+                      <input
+                        ref={flashcardSetTitleInputRef}
+                        className="flashcard-set-title-input"
+                        value={flashcardSetDraftName}
+                        onChange={(event) => setFlashcardSetDraftName(event.target.value)}
+                        onBlur={() => setFlashcardSetTitleEditing(false)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === 'Escape') {
+                            event.preventDefault()
+                            setFlashcardSetTitleEditing(false)
+                          }
+                        }}
+                        placeholder="Untitled set"
+                        aria-label="Set name"
+                      />
+                    ) : (
+                      <button
+                        className="flashcard-set-title"
+                        type="button"
+                        onClick={() => setFlashcardSetTitleEditing(true)}
+                        title="Rename set"
+                      >
+                        {flashcardSetDraftName.trim() || 'Untitled set'}
+                      </button>
+                    )}
+                    <label>
+                      Description
+                      <textarea
+                        value={flashcardSetDraftDescription}
+                        onChange={(event) => setFlashcardSetDraftDescription(event.target.value)}
+                        placeholder="What this set helps you remember"
+                      />
+                    </label>
+                    <div className="flashcard-set-form-actions">
+                      <button type="button" onClick={() => setAtomSubView('sets')}>Cancel</button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={!flashcardSetDraftName.trim() || !flashcardSetDraftAtomIds.length}
+                        onClick={() => void saveFlashcardSet()}
+                      >
+                        Save set
+                      </button>
+                    </div>
+                  </section>
+                  <section className="flashcard-atom-picker">
+                    <div className="flashcard-atom-picker-header">
+                      <div>
+                        <h3>Choose atoms <span>{flashcardSetDraftAtomIds.length} selected</span></h3>
+                      </div>
+                      <div className="flashcard-atom-picker-tools">
+                        <label className="atoms-search">
+                          <Search size={15} />
+                          <input
+                            value={flashcardSetAtomQuery}
+                            onChange={(event) => setFlashcardSetAtomQuery(event.target.value)}
+                            placeholder="Search atoms..."
+                          />
+                        </label>
+                        <div className="atoms-project-filter" ref={flashcardProjectFilterRef}>
+                          <button
+                            type="button"
+                            aria-haspopup="listbox"
+                            aria-expanded={atomProjectMenuOpen}
+                            onClick={() => setAtomProjectMenuOpen((open) => !open)}
+                          >
+                            <span>{atomProjectFilterLabel}</span>
+                            <ChevronDown size={15} aria-hidden />
+                          </button>
+                          {atomProjectMenuOpen && (
+                            <div className="atoms-project-menu" role="listbox" aria-label="Filter atoms by project">
+                              {atomProjectOptions.map((option) => (
+                                <button
+                                  type="button"
+                                  role="option"
+                                  aria-selected={atomProjectFilter === option.value}
+                                  className={atomProjectFilter === option.value ? 'is-active' : ''}
+                                  key={option.value}
+                                  onClick={() => {
+                                    setAtomProjectFilter(option.value)
+                                    setAtomProjectMenuOpen(false)
+                                  }}
+                                >
+                                  {option.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </button>
-                  )
-                })}
-              </div>
+                    </div>
+                    <div className="flashcard-atom-picker-list">
+                      {flashcardSetPickerCards.map((card) => {
+                        const isSelected = flashcardSetDraftAtomIds.includes(card.atom.id)
+                        return (
+                          <button
+                            type="button"
+                            key={card.atom.id}
+                            className={isSelected ? 'is-selected' : ''}
+                            onClick={() => toggleFlashcardSetAtom(card.atom.id)}
+                          >
+                            <span>
+                              <strong>{card.atom.phrase}</strong>
+                              <small>{truncateOneLine(card.atom.definition, 110)}</small>
+                            </span>
+                            <em>{isSelected ? 'Selected' : 'Add'}</em>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {flashcardSetDraftCards.length > 0 && (
+                      <div className="flashcard-set-preview">
+                        <span>Set preview</span>
+                        {flashcardSetDraftCards.slice(0, 5).map((card) => (
+                          <strong key={card.atom.id}>{card.atom.phrase}</strong>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              )}
+
+              {atomSubView === 'study' && (
+                <div className="flashcard-study">
+                  <header>
+                    <div>
+                      <span>{studyingFlashcardSet?.name ?? 'Study set'}</span>
+                      <h3>{studyRoundComplete ? 'Round complete' : studyAtoms.length ? `${studyIndex + 1} of ${studyAtoms.length}` : 'No cards to study'}</h3>
+                    </div>
+                    <div className="flashcard-study-options">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStudyDirection((current) => (current === 'term' ? 'definition' : 'term'))
+                          setStudyFlipped(false)
+                        }}
+                      >
+                        {studyDirection === 'term' ? 'Term first' : 'Definition first'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`flashcard-study-icon-button ${studyShuffle ? 'is-active' : ''}`}
+                        aria-label="Shuffle cards"
+                        title="Shuffle"
+                        onClick={() => {
+                          setStudyShuffle((current) => !current)
+                          setStudyAtomIds((current) => shuffleList(current))
+                          setStudyIndex(0)
+                          setStudyFlipped(false)
+                        }}
+                      >
+                        <ShuffleIcon size={15} aria-hidden />
+                      </button>
+                    </div>
+                  </header>
+                  {studyTotalCount > 0 && (
+                    <div className="flashcard-study-progress" aria-label="Study progress">
+                      <span>{studyAtoms.length} in round</span>
+                      <span>{studyLearningCount} learning</span>
+                      <span>{studyKnownCount} known</span>
+                    </div>
+                  )}
+                  {activeStudyAtom ? (
+                    <>
+                      <button
+                        type="button"
+                        className={`flashcard-study-card atom-panel-card ${studyFlipped ? 'is-flipped' : ''}`}
+                        aria-pressed={studyFlipped}
+                        onClick={() => setStudyFlipped((current) => !current)}
+                        onKeyDown={(event) => {
+                          if (event.key === ' ' || event.key === 'Enter') {
+                            event.preventDefault()
+                            setStudyFlipped((current) => !current)
+                          }
+                          if (event.key === 'ArrowRight') {
+                            event.preventDefault()
+                            moveStudyCard(1)
+                          }
+                          if (event.key === 'ArrowLeft') {
+                            event.preventDefault()
+                            moveStudyCard(-1)
+                          }
+                        }}
+                      >
+                        <div className="atom-card-inner">
+                          <div className="atom-card-face atom-card-front">
+                            <span>{studyDirection === 'term' ? 'Term' : 'Definition'}</span>
+                            <strong>{studyDirection === 'term' ? activeStudyAtom.phrase : activeStudyAtom.definition}</strong>
+                            <small>Click or press Space to flip</small>
+                          </div>
+                          <div className="atom-card-face atom-card-back">
+                            <span>{studyDirection === 'term' ? 'Definition' : 'Term'}</span>
+                            <strong>{studyDirection === 'term' ? activeStudyAtom.definition : activeStudyAtom.phrase}</strong>
+                            <small>Click to flip back</small>
+                          </div>
+                        </div>
+                      </button>
+                      <div className="flashcard-study-controls">
+                        <button type="button" aria-label="Previous card" onClick={() => moveStudyCard(-1)}>{'<'}</button>
+                        <button type="button" onClick={markStudyCardAgain}>Again</button>
+                        <button type="button" className="primary" onClick={markStudyCardKnown}>Know</button>
+                        <button type="button" aria-label="Next card" onClick={() => moveStudyCard(1)}>{'>'}</button>
+                      </div>
+                    </>
+                  ) : studyRoundComplete ? (
+                    <section className="flashcard-study-complete">
+                      <span>Session</span>
+                      <h3>All cards known</h3>
+                      <p>
+                        You cleared this round. Restart the set whenever you want another pass.
+                      </p>
+                      <button type="button" onClick={restartStudyRound}>Restart round</button>
+                    </section>
+                  ) : (
+                    <section className="flashcard-empty-state">
+                      <h3>This set has no available cards</h3>
+                      <p>Add atoms to the set before studying.</p>
+                      {studyingFlashcardSet && <button type="button" onClick={() => openEditFlashcardSet(studyingFlashcardSet)}>Edit set</button>}
+                    </section>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -3815,6 +6263,7 @@ function App() {
                   <span><kbd>Ctrl</kbd> + <kbd>K</kbd> Search</span>
                   <span><kbd>⌘</kbd> + <kbd>K</kbd> Search</span>
                   <span><kbd>Ctrl</kbd> + <kbd>Page Up/Down</kbd> Switch project documents</span>
+                  <span><kbd>Ctrl</kbd> + <kbd>\</kbd> Clear formatting</span>
                 </div>
               </section>
 
@@ -3843,7 +6292,7 @@ function App() {
           className="modal-backdrop ai-result-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setAiResult(null)
+            if (event.target === event.currentTarget) closeAIResult()
           }}
         >
           <section
@@ -3856,7 +6305,7 @@ function App() {
               type="button"
               className="ai-result-close"
               aria-label="Close AI result"
-              onClick={() => setAiResult(null)}
+              onClick={closeAIResult}
             >
               <X size={18} />
             </button>
@@ -3901,7 +6350,11 @@ function App() {
                 <details className="ai-draft-preview-details" open>
                   <summary>Formatted preview</summary>
                   <div className="ai-draft-preview-panel">
-                    <AiDraftFormattedPreview text={aiResult.draftText} />
+                    {aiResult.blockPayload ? (
+                      <AIBlockFormattedPreview payload={aiResult.blockPayload} />
+                    ) : (
+                      <AiDraftFormattedPreview text={aiResult.draftText} />
+                    )}
                   </div>
                 </details>
               )}
@@ -3915,13 +6368,18 @@ function App() {
               </label>
             )}
             <footer>
-              {(aiResult.canCreateAtoms || aiResult.canReplaceSelection || aiResult.canInsert || aiResult.taskType === 'answer_with_context' || aiResult.taskType === 'app_help' || aiResult.taskType === 'mark_writing') && (
+              {(aiResult.canCreateAtoms || aiResult.canApplyBlock || aiResult.canReplaceSelection || aiResult.canInsert || aiResult.taskType === 'answer_with_context' || aiResult.taskType === 'app_help' || aiResult.taskType === 'mark_writing') && (
                 <button
                   type="button"
                   className="primary"
                   onClick={() => {
                     if (aiResult.canCreateAtoms) {
                       void createAtomsFromAIResult()
+                      return
+                    }
+                    if (aiResult.canApplyBlock && aiResult.blockPayload) {
+                      applyAIBlockPayload(aiResult.blockPayload)
+                      closeAIResult()
                       return
                     }
                     if (aiResult.canReplaceSelection && aiResult.selection) {
@@ -3932,11 +6390,11 @@ function App() {
                         .deleteSelection()
                         .insertContent(textToEditorContent(aiResult.draftText).content ?? [])
                         .run()
-                      setAiResult(null)
+                      closeAIResult()
                       return
                     }
                     if (editor) insertDraftText(editor, aiResult.draftText)
-                    setAiResult(null)
+                    closeAIResult()
                   }}
                 >
                   {aiPrimaryActionLabel(aiResult)}
@@ -4386,11 +6844,11 @@ function App() {
   )
 }
 
-function PageHeader({ title, action }: { title: string; action?: React.ReactNode }) {
+function PageHeader({ title, action }: { title: React.ReactNode; action?: React.ReactNode }) {
   return (
     <header className="pane-header">
       <div>
-        <h2>{title}</h2>
+        {typeof title === 'string' ? <h2>{title}</h2> : title}
       </div>
       {action}
     </header>
@@ -4449,7 +6907,7 @@ function ProjectMemoryTextarea({
   )
 }
 
-function ProjectDetail({ project, notes, atomCards, draggedNoteIds, selectedNoteIds, onNoteDragStart, onNoteDragEnd, onNoteSelect, deleteNote, openNote, newNote, deleteProject, updateDescription, back }: {
+function ProjectDetail({ project, notes, atomCards, draggedNoteIds, selectedNoteIds, onNoteDragStart, onNoteDragEnd, onNoteSelect, deleteNote, openNote, newNote, deleteProject, updateDescription, updateName, back }: {
   project: Project
   notes: Note[]
   atomCards: ReturnType<typeof buildAtomCards>
@@ -4463,17 +6921,69 @@ function ProjectDetail({ project, notes, atomCards, draggedNoteIds, selectedNote
   newNote: () => void
   deleteProject: () => void
   updateDescription: (description: string) => void
+  updateName: (name: string) => void
   back: () => void
 }) {
   const projectNotes = notes.filter((note) => note.projectId === project.id)
   const projectAtoms = atomCards.filter((card) => card.projectIds.includes(project.id))
   const projectMemory = parseProjectMemory(project.description ?? '')
   const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
+  const [projectTitleEditing, setProjectTitleEditing] = useState(false)
+  const [projectTitleDraft, setProjectTitleDraft] = useState(project.name)
+  const projectTitleInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (projectTitleEditing) return
+    setProjectTitleDraft(project.name)
+  }, [project.name, projectTitleEditing])
+
+  useEffect(() => {
+    if (!projectTitleEditing) return
+    projectTitleInputRef.current?.focus()
+    projectTitleInputRef.current?.select()
+  }, [projectTitleEditing])
+
+  const commitProjectTitle = () => {
+    const nextName = projectTitleDraft.trim()
+    if (nextName && nextName !== project.name) updateName(nextName)
+    else setProjectTitleDraft(project.name)
+    setProjectTitleEditing(false)
+  }
 
   return (
     <>
       <PageHeader
-        title={project.name}
+        title={
+          projectTitleEditing ? (
+            <input
+              ref={projectTitleInputRef}
+              className="project-title-input"
+              value={projectTitleDraft}
+              onChange={(event) => setProjectTitleDraft(event.target.value)}
+              onBlur={commitProjectTitle}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commitProjectTitle()
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setProjectTitleDraft(project.name)
+                  setProjectTitleEditing(false)
+                }
+              }}
+              aria-label="Project name"
+            />
+          ) : (
+            <h2
+              className="project-title-editable"
+              onDoubleClick={() => setProjectTitleEditing(true)}
+              title="Double-click to rename"
+            >
+              {project.name}
+            </h2>
+          )
+        }
         action={
           <div className="project-header-actions">
             <button type="button" onClick={newNote}><Plus size={17} /> New note in this project</button>
@@ -4610,15 +7120,17 @@ function buildAtomCards(atoms: Atom[], notes: Note[], projects: Project[]) {
 }
 
 function contentHasAtom(content: JSONContent, atomId: string): boolean {
+  if (content.attrs?.atomId === atomId) return true
   if (content.marks?.some((mark) => mark.type === 'atom' && mark.attrs?.atomId === atomId)) return true
   return (content.content ?? []).some((child) => contentHasAtom(child, atomId))
 }
 
 function collectAtomIds(content: JSONContent): string[] {
+  const attrAtomId = typeof content.attrs?.atomId === 'string' ? [content.attrs.atomId] : []
   const own = (content.marks ?? [])
     .filter((mark) => mark.type === 'atom' && typeof mark.attrs?.atomId === 'string')
     .map((mark) => mark.attrs?.atomId as string)
-  return [...own, ...(content.content ?? []).flatMap(collectAtomIds)]
+  return [...attrAtomId, ...own, ...(content.content ?? []).flatMap(collectAtomIds)]
 }
 
 function stripAtomMarks(content: JSONContent, atomIds: Set<string>): JSONContent {
@@ -4709,6 +7221,10 @@ function collectNotePreviewLines(content: JSONContent | undefined | null, maxLin
       for (const child of node.content ?? []) walk(child)
       return
     }
+    if (type === 'lociQuote') {
+      for (const child of node.content ?? []) walk(child)
+      return
+    }
     if (type === 'bulletList') {
       walkList(node, false)
       return
@@ -4771,6 +7287,31 @@ function collectText(content: JSONContent): string {
   return (content.content ?? []).map(collectText).join(' ').replace(/\s+/g, ' ').trim()
 }
 
+function flashcardsFromContent(content: JSONContent): Array<{ atomId: string; phrase: string; definition: string }> {
+  const cards: Array<{ atomId: string; phrase: string; definition: string }> = []
+  const visit = (node: JSONContent) => {
+    if (node.type === 'lociFlashcard' && typeof node.attrs?.atomId === 'string') {
+      const parts = node.content ?? []
+      const phrase = collectText(parts[0] ?? { type: 'paragraph' }).trim()
+      const definition = collectText({ type: 'doc', content: parts.slice(1) }).trim()
+      if (phrase && definition) cards.push({ atomId: node.attrs.atomId, phrase, definition })
+      return
+    }
+    ;(node.content ?? []).forEach(visit)
+  }
+  visit(content)
+  return cards
+}
+
+function mountedEditorDom(editor: TiptapEditor | null): HTMLElement | null {
+  if (!editor || editor.isDestroyed) return null
+  try {
+    return editor.view.dom
+  } catch {
+    return null
+  }
+}
+
 function truncateOneLine(value: string, max: number) {
   const t = value.replace(/\s+/g, ' ').trim()
   if (t.length <= max) return t
@@ -4805,6 +7346,15 @@ function sortByCreated(a: Note, b: Note) {
   if (createdDelta !== 0) return createdDelta
   const titleDelta = a.title.localeCompare(b.title)
   return titleDelta || a.id.localeCompare(b.id)
+}
+
+function shuffleList<T>(items: T[]) {
+  const shuffled = [...items]
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1))
+    ;[shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]]
+  }
+  return shuffled
 }
 
 function initialsFromName(name: string) {

@@ -223,6 +223,39 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
       return
     }
 
+    if (node.type === 'table') {
+      renderTableNode(node)
+      return
+    }
+
+    if (node.type === 'taskList') {
+      ;(node.content ?? []).forEach((item) => renderNode(item))
+      y += 2
+      return
+    }
+
+    if (node.type === 'taskItem') {
+      const checked = node.attrs?.checked === true
+      renderSegments(inlineSegments(node), { fontSize: 11.5, lineHeight: 6.2, gapAfter: 2, indent: 8, bullet: checked ? '[x]' : '[ ]' })
+      return
+    }
+
+    if (node.type === 'lociFlashcard') {
+      renderSegments([{ text: 'Flashcard', bold: true }], { fontSize: 13, lineHeight: 6, gapAfter: 2 })
+      ;(node.content ?? []).forEach((child) => renderNode(child))
+      y += 2
+      return
+    }
+
+    if (node.type === 'lociQuote' || node.type === 'blockquote') {
+      const [quote, author] = node.content ?? []
+      renderSegments(inlineSegments(quote ?? node).map((segment) => ({ ...segment, italic: true })), { fontSize: 12.5, lineHeight: 6.8, gapAfter: 2, indent: 6 })
+      if (author && collectText(author).trim()) {
+        renderSegments([{ text: collectText(author).trim(), bold: true }], { fontSize: 10.5, lineHeight: 5.5, gapAfter: 5, indent: 6 })
+      }
+      return
+    }
+
     if (node.type === 'bulletList' || node.type === 'orderedList') {
       ;(node.content ?? []).forEach((item, index) => {
         renderNode(item, { type: node.type === 'orderedList' ? 'ordered' : 'bullet', index: index + 1 })
@@ -243,6 +276,30 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
     }
 
     ;(node.content ?? []).forEach((child) => renderNode(child))
+  }
+
+  const renderTableNode = (node: JSONContent) => {
+    const rows = tableRows(node)
+    if (!rows.length) return
+    const columnCount = Math.max(...rows.map((row) => row.length))
+    const cellWidth = contentWidth / Math.max(1, columnCount)
+    rows.forEach((row, rowIndex) => {
+      const rowLines = row.map((cell) => pdf.splitTextToSize(cell, cellWidth - 4) as string[])
+      const rowHeight = Math.max(8, ...rowLines.map((lines) => lines.length * 5 + 4))
+      ensurePage(rowHeight)
+      rowLines.forEach((lines, cellIndex) => {
+        const x = margin + cellIndex * cellWidth
+        pdf.setDrawColor(218, 214, 205)
+        pdf.setFillColor(rowIndex === 0 ? 247 : 255, rowIndex === 0 ? 245 : 255, rowIndex === 0 ? 240 : 255)
+        pdf.rect(x, y, cellWidth, rowHeight, 'FD')
+        pdf.setFont('helvetica', rowIndex === 0 ? 'bold' : 'normal')
+        pdf.setFontSize(9.5)
+        pdf.setTextColor(34, 34, 34)
+        pdf.text(lines.length ? lines : [''], x + 2, y + 5)
+      })
+      y += rowHeight
+    })
+    y += 5
   }
 
   renderSegments([{ text: note.title, bold: true }], { fontSize: 22, lineHeight: 10, gapAfter: 5 })
@@ -408,9 +465,42 @@ function nodeToParagraph(node: JSONContent): Paragraph[] {
     return (node.content ?? []).flatMap((item) => nodeToParagraph(item))
   }
 
+  if (node.type === 'taskList') {
+    return (node.content ?? []).flatMap((item) => nodeToParagraph(item))
+  }
+
   if (node.type === 'listItem') {
     const text = collectText(node)
     return [new Paragraph({ text: `- ${text}` })]
+  }
+
+  if (node.type === 'taskItem') {
+    const text = collectText(node)
+    return [new Paragraph({ text: `${node.attrs?.checked === true ? '[x]' : '[ ]'} ${text}` })]
+  }
+
+  if (node.type === 'table') {
+    return [
+      new Paragraph({ text: 'Table', heading: HeadingLevel.HEADING_2 }),
+      ...tableRows(node).map((row) => new Paragraph({ text: row.join(' | ') })),
+    ]
+  }
+
+  if (node.type === 'lociFlashcard') {
+    const [question, ...answerParts] = node.content ?? []
+    return [
+      new Paragraph({ text: 'Flashcard', heading: HeadingLevel.HEADING_2 }),
+      new Paragraph({ children: [new TextRun({ text: collectText(question ?? { type: 'paragraph' }), bold: true })] }),
+      new Paragraph({ text: answerParts.map(collectText).join(' ').trim() }),
+    ]
+  }
+
+  if (node.type === 'lociQuote' || node.type === 'blockquote') {
+    const [quote, author] = node.content ?? []
+    return [
+      new Paragraph({ children: [new TextRun({ text: collectText(quote ?? node), italics: true })] }),
+      ...(author && collectText(author).trim() ? [new Paragraph({ children: [new TextRun({ text: collectText(author).trim(), bold: true })] })] : []),
+    ]
   }
 
   if (node.type === 'paragraph') {
@@ -438,6 +528,12 @@ function inlineContent(node: JSONContent): TextRun[] {
 function collectText(node: JSONContent): string {
   if (node.text) return node.text
   return (node.content ?? []).map(collectText).join(' ')
+}
+
+function tableRows(node: JSONContent): string[][] {
+  return (node.content ?? [])
+    .filter((row) => row.type === 'tableRow')
+    .map((row) => (row.content ?? []).map((cell) => collectText(cell).replace(/\s+/g, ' ').trim()))
 }
 
 function noteHasAtom(content: JSONContent, atomId: string): boolean {
