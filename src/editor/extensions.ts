@@ -100,7 +100,7 @@ export const LociImage = Image.extend({
     const { src, alt, title } = HTMLAttributes
     const safeSrc = typeof src === 'string' ? sanitizeImageUrl(src) : null
     const imageChildren = safeSrc
-      ? [['img', { src: safeSrc, alt, title }]]
+      ? [['img', { src: safeSrc, alt, title, loading: 'lazy', decoding: 'async' }]]
       : [['span', { 'data-invalid-image': 'true' }, 'Unsupported image URL']]
     return [
       'figure',

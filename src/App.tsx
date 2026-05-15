@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -100,6 +100,7 @@ import { AIResultDialog } from './components/dialogs/AIResultDialog'
 import { PageHeader } from './components/layout/PageHeader'
 import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
+import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
 import {
   AISelectionHighlight,
   BlockControlsExtension,
@@ -119,7 +120,6 @@ import {
   collectNotePreviewLines,
   collectText,
   contentFromBlocks,
-  contentHasAtom,
   createLociBlock,
   cloneTemplateValue,
   flashcardBlockDoc,
@@ -156,6 +156,7 @@ import { flashcardSetsStore } from './stores/flashcardSetsStore'
 import { loadLocalAppData } from './stores/appDataStore'
 import { noteSnapshotsStore } from './stores/noteSnapshotsStore'
 import { notesStore } from './stores/notesStore'
+import { mediaStore } from './stores/mediaStore'
 import { profileStore } from './stores/profileStore'
 import { projectsStore } from './stores/projectsStore'
 import { settingsStore } from './stores/settingsStore'
@@ -180,6 +181,48 @@ type SearchHit =
   | { kind: 'note'; note: Note }
   | { kind: 'project'; project: Project }
   | { kind: 'atom'; atom: Atom }
+
+type SearchRow =
+  | { kind: 'section'; id: string; label: string }
+  | { kind: 'hit'; id: string; hit: SearchHit; hitIndex: number }
+
+type NoteIndexes = {
+  noteTextById: Map<string, string>
+  notePreviewLinesById: Map<string, string[]>
+  notesByProjectId: Map<string, Note[]>
+  noteIdsByAtomId: Map<string, Set<string>>
+  atomIdsByProjectId: Map<string, Set<string>>
+  projectIdsByAtomId: Map<string, Set<string>>
+}
+
+type NoteIndexCacheEntry = {
+  content: JSONContent
+  text: string
+  previewLines: string[]
+  atomIds: string[]
+}
+
+type AtomCard = {
+  atom: Atom
+  noteCount: number
+  projectIds: string[]
+  projectNames: string[]
+}
+
+type LociWorkerRequest =
+  | { id: string; type: 'index-notes'; notes: Array<{ id: string; title: string; updatedAt: string; content: JSONContent }> }
+  | { id: string; type: 'search'; query: string }
+  | { id: string; type: 'preview'; noteId: string; content: JSONContent }
+
+type LociWorkerJob =
+  | { type: 'index-notes'; notes: Array<{ id: string; title: string; updatedAt: string; content: JSONContent }> }
+  | { type: 'search'; query: string }
+  | { type: 'preview'; noteId: string; content: JSONContent }
+
+type LociWorkerResponse =
+  | { id: string; type: 'index-ready'; indexVersion: number; noteCount: number }
+  | { id: string; type: 'search-results'; noteIds: string[]; indexVersion: number }
+  | { id: string; type: 'preview-ready'; noteId: string; preview: string }
 
 type EditorPanel = 'format' | 'more'
 
@@ -325,6 +368,55 @@ function hitKey(hit: SearchHit): string {
 
 function normalizeSearch(query: string) {
   return query.trim().toLowerCase()
+}
+
+function createNoteIndexes(notes: Note[], cache = new Map<string, NoteIndexCacheEntry>(), maxPreviewLines = 6): NoteIndexes {
+  const noteTextById = new Map<string, string>()
+  const notePreviewLinesById = new Map<string, string[]>()
+  const notesByProjectId = new Map<string, Note[]>()
+  const noteIdsByAtomId = new Map<string, Set<string>>()
+  const atomIdsByProjectId = new Map<string, Set<string>>()
+  const projectIdsByAtomId = new Map<string, Set<string>>()
+  const liveNoteIds = new Set(notes.map((note) => note.id))
+
+  notes.forEach((note) => {
+    const cached = cache.get(note.id)
+    const entry = cached?.content === note.content
+      ? cached
+      : {
+          content: note.content,
+          text: collectText(note.content ?? emptyDoc),
+          previewLines: collectNotePreviewLines(note.content, maxPreviewLines),
+          atomIds: collectAtomIds(note.content),
+        }
+    cache.set(note.id, entry)
+    noteTextById.set(note.id, entry.text)
+    notePreviewLinesById.set(note.id, entry.previewLines)
+
+    const projectNotes = notesByProjectId.get(note.projectId) ?? []
+    projectNotes.push(note)
+    notesByProjectId.set(note.projectId, projectNotes)
+
+    entry.atomIds.forEach((atomId) => {
+      const atomNoteIds = noteIdsByAtomId.get(atomId) ?? new Set<string>()
+      atomNoteIds.add(note.id)
+      noteIdsByAtomId.set(atomId, atomNoteIds)
+
+      const projectAtomIds = atomIdsByProjectId.get(note.projectId) ?? new Set<string>()
+      projectAtomIds.add(atomId)
+      atomIdsByProjectId.set(note.projectId, projectAtomIds)
+
+      const atomProjectIds = projectIdsByAtomId.get(atomId) ?? new Set<string>()
+      atomProjectIds.add(note.projectId)
+      projectIdsByAtomId.set(atomId, atomProjectIds)
+    })
+  })
+
+  cache.forEach((_, noteId) => {
+    if (!liveNoteIds.has(noteId)) cache.delete(noteId)
+  })
+  notesByProjectId.forEach((projectNotes) => projectNotes.sort(sortByCreated))
+  return { noteTextById, notePreviewLinesById, notesByProjectId, noteIdsByAtomId, atomIdsByProjectId, projectIdsByAtomId }
 }
 
 function escapeRegExp(value: string) {
@@ -492,6 +584,8 @@ const UNASSIGNED_PROJECT_ID = '__unassigned__'
 
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
 const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
+const NOTE_SAVE_DEBOUNCE_MS = 650
+const OPTIMISTIC_UNDO_MS = 6000
 
 const DEFAULT_PROFILE_COLOR = '#4c4439'
 
@@ -510,6 +604,207 @@ type UpdateState = {
   message: string
   version?: string
 }
+
+type SidebarProps = {
+  activeView: View
+  activeProject: Project | undefined
+  activeNoteId: string | undefined
+  atomSubView: AtomSubView
+  draggedNoteIds: string[]
+  dragOverProjectId: string
+  profileAvatarColor: string
+  profileDisplayName: string
+  profileInitials: string
+  projectQuickNotes: Note[]
+  onAssignNoteToProjectDrop: (event: React.DragEvent<HTMLElement>, targetProjectId: string) => void
+  onDeleteNote: (note: Note) => void
+  onDragEnterProject: (projectId: string) => void
+  onDragLeaveProject: (projectId: string) => void
+  onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
+  onNewNote: () => void
+  onOpenNote: (noteId: string) => void
+  onOpenProfile: () => void
+  onOpenSearch: () => void
+  onSetActiveView: (view: View) => void
+}
+
+const Sidebar = memo(function Sidebar({
+  activeView,
+  activeProject,
+  activeNoteId,
+  atomSubView,
+  draggedNoteIds,
+  dragOverProjectId,
+  profileAvatarColor,
+  profileDisplayName,
+  profileInitials,
+  projectQuickNotes,
+  onAssignNoteToProjectDrop,
+  onDeleteNote,
+  onDragEnterProject,
+  onDragLeaveProject,
+  onDragOverProject,
+  onNewNote,
+  onOpenNote,
+  onOpenProfile,
+  onOpenSearch,
+  onSetActiveView,
+}: SidebarProps) {
+  const [sidebarPinned, setSidebarPinned] = useState(false)
+  const [sidebarHovered, setSidebarHovered] = useState(false)
+  const sidebarOpenTimerRef = useRef<number | null>(null)
+  const sidebarCloseTimerRef = useRef<number | null>(null)
+
+  const clearSidebarOpenTimer = useCallback(() => {
+    if (!sidebarOpenTimerRef.current) return
+    clearTimeout(sidebarOpenTimerRef.current)
+    sidebarOpenTimerRef.current = null
+  }, [])
+
+  const clearSidebarCloseTimer = useCallback(() => {
+    if (!sidebarCloseTimerRef.current) return
+    clearTimeout(sidebarCloseTimerRef.current)
+    sidebarCloseTimerRef.current = null
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      clearSidebarOpenTimer()
+      clearSidebarCloseTimer()
+    }
+  }, [clearSidebarCloseTimer, clearSidebarOpenTimer])
+
+  const handleSidebarPointerEnter = () => {
+    clearSidebarCloseTimer()
+    if (sidebarPinned || sidebarHovered || sidebarOpenTimerRef.current) return
+    sidebarOpenTimerRef.current = window.setTimeout(() => {
+      sidebarOpenTimerRef.current = null
+      setSidebarHovered(true)
+    }, 40)
+  }
+
+  const handleSidebarPointerLeave = () => {
+    clearSidebarOpenTimer()
+    if (sidebarPinned || sidebarCloseTimerRef.current) return
+    sidebarCloseTimerRef.current = window.setTimeout(() => {
+      sidebarCloseTimerRef.current = null
+      setSidebarHovered(false)
+    }, 180)
+  }
+
+  const toggleSidebarPinned = () => {
+    clearSidebarOpenTimer()
+    clearSidebarCloseTimer()
+    setSidebarPinned((value) => !value)
+  }
+
+  const sidebarOpen = sidebarPinned || sidebarHovered
+  const sidebarClassName = [
+    'sidebar',
+    sidebarOpen ? 'is-open' : 'is-collapsed',
+    sidebarPinned ? 'is-pinned' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return (
+    <aside
+      className={sidebarClassName}
+      onPointerEnter={handleSidebarPointerEnter}
+      onPointerLeave={handleSidebarPointerLeave}
+    >
+      <div className="sidebar-actions">
+        <button className="nav-action" type="button" onClick={onOpenSearch}>
+          <Search size={18} />
+          <span className="nav-label">Search</span>
+        </button>
+
+        <button className="nav-action" type="button" onClick={onNewNote}>
+          <Plus size={18} />
+          <span className="nav-label">New Note</span>
+        </button>
+      </div>
+
+      <nav className="primary-nav" aria-label="Primary">
+        <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => onSetActiveView('home')}>
+          <Home size={18} />
+          <span className="nav-label">Home</span>
+        </button>
+        <button
+          className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
+          type="button"
+          onDragOver={onDragOverProject}
+          onDragEnter={() => onDragEnterProject(UNASSIGNED_PROJECT_ID)}
+          onDragLeave={() => onDragLeaveProject(UNASSIGNED_PROJECT_ID)}
+          onDrop={(event) => onAssignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
+          onClick={() => onSetActiveView('projects')}
+        >
+          <Layers3 size={18} />
+          <span className="nav-label">{activeProject?.name ?? 'Projects'}</span>
+          {activeProject && projectQuickNotes.length > 1 && (
+            <kbd aria-label="Ctrl Page Up or Down">Ctrl Pg</kbd>
+          )}
+        </button>
+        {sidebarOpen && activeProject && projectQuickNotes.length > 0 && (
+          <VirtualList
+            className="project-quick-nav"
+            items={projectQuickNotes}
+            rowHeight={37}
+            overscan={6}
+            ariaLabel={`${activeProject.name} documents`}
+            renderItem={(note) => (
+              <div className={`quick-note-row ${note.id === activeNoteId ? 'is-active' : ''}`}>
+                <button type="button" onClick={() => onOpenNote(note.id)}>
+                  <span>{note.title || 'Untitled Note'}</span>
+                </button>
+                <button type="button" className="quick-note-delete" aria-label={`Delete ${note.title || 'Untitled Note'}`} onClick={() => onDeleteNote(note)}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            )}
+          />
+        )}
+        <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => onSetActiveView('atoms')}>
+          <Brain size={18} />
+          <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
+        </button>
+      </nav>
+
+      <div className="sidebar-bottom">
+        <button className="profile-row" type="button" onClick={onOpenProfile} aria-label="Open profile">
+          <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
+          <div className="profile-text">
+            <strong>{profileDisplayName}</strong>
+            <span>Loci Notes</span>
+          </div>
+        </button>
+
+        <div className="sidebar-bottom-controls">
+          <button
+            className="sidebar-pin"
+            type="button"
+            aria-label={sidebarPinned ? 'Collapse sidebar' : 'Pin sidebar open'}
+            aria-pressed={sidebarPinned}
+            onClick={toggleSidebarPinned}
+          >
+            {sidebarPinned ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+          </button>
+          {sidebarOpen && (
+            <button
+              className={`sidebar-settings ${activeView === 'settings' ? 'active' : ''}`}
+              type="button"
+              aria-label="Settings"
+              onClick={() => onSetActiveView('settings')}
+            >
+              <Settings size={18} />
+              <span>Settings</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </aside>
+  )
+})
 
 function createNoteDragPreview(title: string) {
   const preview = document.createElement('div')
@@ -535,8 +830,6 @@ function App() {
   })
   const [selectedNoteId, setSelectedNoteId] = useState('')
   const [activeView, setActiveView] = useState<View>('home')
-  const [sidebarPinned, setSidebarPinned] = useState(false)
-  const [sidebarHovered, setSidebarHovered] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [flippedAtomIds, setFlippedAtomIds] = useState<string[]>([])
   const [atomSelectionMode, setAtomSelectionMode] = useState(false)
@@ -567,6 +860,7 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
   const [notice, setNotice] = useState('')
+  const [undoNotice, setUndoNotice] = useState<{ message: string; action: () => void } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchActiveIndex, setSearchActiveIndex] = useState(0)
@@ -603,6 +897,8 @@ function App() {
   const [showSaveState, setShowSaveState] = useState(true)
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
+  const atomsRef = useRef<Atom[]>([])
+  const noteIndexCacheRef = useRef<Map<string, NoteIndexCacheEntry>>(new Map())
   const selectedNoteIdRef = useRef('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const aiPromptInputRef = useRef<HTMLInputElement>(null)
@@ -616,8 +912,6 @@ function App() {
   const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
-  const sidebarOpenTimerRef = useRef<number | null>(null)
-  const sidebarCloseTimerRef = useRef<number | null>(null)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const createBlockAfterActiveRef = useRef<() => boolean>(() => false)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
@@ -625,14 +919,25 @@ function App() {
   const userScrollVetoUntilRef = useRef(0)
   const snapshotDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveStateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const noteSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const atomSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const formatSideFrameRef = useRef<number | null>(null)
+  const formatBlockFrameRef = useRef<number | null>(null)
   const suppressEditorPersistRef = useRef(false)
+  const lastLocalEditorContentRef = useRef<{ noteId: string; content: JSONContent } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
   const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
   const pendingEnterBlockIndexRef = useRef<number | null>(null)
   const suppressProjectNavUntilRef = useRef(0)
   const imageCropDragRef = useRef<ImageCropDragState | null>(null)
+  const pendingNoteSavesRef = useRef<Map<string, { note: Note; maintainContent: boolean }>>(new Map())
+  const lociWorkerRef = useRef<Worker | null>(null)
+  const workerJobIdRef = useRef(0)
+  const latestSearchJobRef = useRef('')
+  const [workerReady, setWorkerReady] = useState(false)
+  const [workerSearchNoteIds, setWorkerSearchNoteIds] = useState<string[] | null>(null)
 
   const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? notes[0]
   const selectedProject = projects.find((project) => project.id === selectedNote?.projectId)
@@ -640,6 +945,9 @@ function App() {
   const selectedTemplateData = selectedNote
     ? normalizeTemplateData(selectedNote.templateId ?? 'blank', selectedNote.content ?? emptyDoc, selectedNote.templateData)
     : null
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
+  const atomById = useMemo(() => new Map(atoms.map((atom) => [atom.id, atom])), [atoms])
+  const noteIndexes = useMemo(() => createNoteIndexes(notes, noteIndexCacheRef.current), [notes])
   const hasExplicitAIContext = Boolean(aiContextRange)
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
@@ -648,9 +956,9 @@ function App() {
   const projectQuickNotes = useMemo(
     () =>
       activeProjectForQuickNav
-        ? notes.filter((note) => note.projectId === activeProjectForQuickNav.id).sort(sortByCreated)
+        ? noteIndexes.notesByProjectId.get(activeProjectForQuickNav.id) ?? []
         : [],
-    [activeProjectForQuickNav, notes],
+    [activeProjectForQuickNav, noteIndexes],
   )
   const unassignedNotes = useMemo(() => {
     const projectIds = new Set(projects.map((project) => project.id))
@@ -664,8 +972,28 @@ function App() {
   }, [notes])
 
   useEffect(() => {
+    atomsRef.current = atoms
+  }, [atoms])
+
+  useEffect(() => {
     selectedNoteIdRef.current = selectedNoteId
   }, [selectedNoteId])
+
+  const runWorkerJob = useCallback(<T extends LociWorkerResponse>(message: LociWorkerJob): Promise<T> | null => {
+    const worker = lociWorkerRef.current
+    if (!worker) return null
+    const id = `job_${workerJobIdRef.current += 1}`
+    const payload = { ...message, id } as LociWorkerRequest
+    return new Promise((resolve) => {
+      const onMessage = (event: MessageEvent<LociWorkerResponse>) => {
+        if (event.data.id !== id) return
+        worker.removeEventListener('message', onMessage as EventListener)
+        resolve(event.data as T)
+      }
+      worker.addEventListener('message', onMessage as EventListener)
+      worker.postMessage(payload)
+    })
+  }, [])
 
   const loadData = useCallback(async () => {
     const {
@@ -727,6 +1055,31 @@ function App() {
   useEffect(() => {
     void loadData()
   }, [loadData])
+
+  useEffect(() => {
+    if (typeof Worker === 'undefined') return
+    const worker = new Worker(new URL('./workers/lociWorker.ts', import.meta.url), { type: 'module' })
+    lociWorkerRef.current = worker
+    return () => {
+      worker.terminate()
+      lociWorkerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const job = runWorkerJob<{ id: string; type: 'index-ready'; indexVersion: number; noteCount: number }>({
+      type: 'index-notes',
+      notes: notes.map((note) => ({ id: note.id, title: note.title, updatedAt: note.updatedAt, content: note.content })),
+    })
+    if (!job) return
+    let cancelled = false
+    job.then(() => {
+      if (!cancelled) setWorkerReady(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [notes, runWorkerJob])
 
   const checkForUpdates = useCallback(async (manual = false) => {
     if (!window.__TAURI_INTERNALS__) {
@@ -804,12 +1157,98 @@ function App() {
     void checkForUpdates()
   }, [checkForUpdates])
 
+  async function runSavedNoteMaintenance(savedNotes: Note[]) {
+    const contentNotes = savedNotes.filter((note) => note.content)
+    if (!contentNotes.length) return
+
+    const changedAtoms = contentNotes.flatMap((note) =>
+      flashcardsFromContent(note.content)
+        .map((card) => {
+          const existing = atomsRef.current.find((atom) => atom.id === card.atomId)
+          if (!existing || (existing.phrase === card.phrase && existing.definition === card.definition)) return null
+          return { ...existing, phrase: card.phrase, definition: card.definition, updatedAt: nowIso() }
+        })
+        .filter((atom): atom is Atom => Boolean(atom)),
+    )
+    if (changedAtoms.length) {
+      await atomsStore.saveMany(changedAtoms)
+      setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
+    }
+
+    const latestContentNote = contentNotes[contentNotes.length - 1]
+    if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
+    snapshotDebounceRef.current = setTimeout(() => {
+      snapshotDebounceRef.current = null
+      void appendNoteSnapshot({
+        id: latestContentNote.id,
+        title: latestContentNote.title,
+        content: latestContentNote.content,
+      })
+    }, 5000)
+
+    if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
+    atomSyncDebounceRef.current = setTimeout(() => {
+      atomSyncDebounceRef.current = null
+      const latest = notesRef.current.find((note) => note.id === latestContentNote.id)
+      if (!latest) return
+      const linkedAtoms = projectAtomsForNote(latest)
+      if (!linkedAtoms.length) return
+      void syncAtomMarksForNotes([latest], linkedAtoms)
+    }, 1200)
+  }
+
+  async function flushPendingNoteSaves() {
+    if (noteSaveDebounceRef.current) {
+      clearTimeout(noteSaveDebounceRef.current)
+      noteSaveDebounceRef.current = null
+    }
+    const pending = Array.from(pendingNoteSavesRef.current.values())
+    pendingNoteSavesRef.current.clear()
+    if (!pending.length) return
+
+    const notesToSave = pending.map((item) => item.note)
+    if (notesToSave.length === 1) await notesStore.save(notesToSave[0])
+    else await notesStore.saveMany(notesToSave)
+
+    setSaving(false)
+    if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
+    saveStateDelayRef.current = setTimeout(() => {
+      setShowSaveState(true)
+      saveStateDelayRef.current = null
+    }, 3000)
+
+    await runSavedNoteMaintenance(pending.filter((item) => item.maintainContent).map((item) => item.note))
+  }
+
+  function scheduleNoteSave(note: Note, maintainContent: boolean) {
+    const existing = pendingNoteSavesRef.current.get(note.id)
+    pendingNoteSavesRef.current.set(note.id, {
+      note,
+      maintainContent: maintainContent || existing?.maintainContent || false,
+    })
+    setShowSaveState(false)
+    if (saveStateDelayRef.current) {
+      clearTimeout(saveStateDelayRef.current)
+      saveStateDelayRef.current = null
+    }
+    setSaving(true)
+    if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
+    noteSaveDebounceRef.current = setTimeout(() => {
+      void flushPendingNoteSaves()
+    }, NOTE_SAVE_DEBOUNCE_MS)
+  }
+
   useEffect(() => {
     return () => {
       if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
       if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
+      if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
       if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
       if (aiPromptHintTimerRef.current) clearTimeout(aiPromptHintTimerRef.current)
+      optimisticDeleteTimersRef.current.forEach((timer) => clearTimeout(timer))
+      if (formatSideFrameRef.current) cancelAnimationFrame(formatSideFrameRef.current)
+      if (formatBlockFrameRef.current) cancelAnimationFrame(formatBlockFrameRef.current)
+      void flushPendingNoteSaves()
     }
   }, [])
 
@@ -828,7 +1267,7 @@ function App() {
     }
   }
 
-  async function syncAtomMarksForNotes(notesToSync: Note[], atomsToUse = atoms) {
+  async function syncAtomMarksForNotes(notesToSync: Note[], atomsToUse = atomsRef.current) {
     if (!notesToSync.length || !atomsToUse.length) return 0
     const now = nowIso()
     const updatedNotes: Note[] = []
@@ -854,12 +1293,13 @@ function App() {
     return markCount
   }
 
-  function projectAtomsForNote(note: Note, atomsToUse = atoms) {
-    const projectNotes = notesRef.current.filter((item) => item.projectId === note.projectId)
-    return atomsToUse.filter((atom) => projectNotes.some((item) => contentHasAtom(item.content, atom.id)))
+  function projectAtomsForNote(note: Note, atomsToUse = atomsRef.current) {
+    const projectAtomIds = createNoteIndexes(notesRef.current, noteIndexCacheRef.current).atomIdsByProjectId.get(note.projectId)
+    if (!projectAtomIds?.size) return []
+    return atomsToUse.filter((atom) => projectAtomIds.has(atom.id))
   }
 
-  async function syncProjectAtomMarks(projectId: string, atomsToUse = atoms) {
+  async function syncProjectAtomMarks(projectId: string, atomsToUse = atomsRef.current) {
     const projectNotes = notesRef.current.filter((note) => note.projectId === projectId)
     return syncAtomMarksForNotes(projectNotes, atomsToUse)
   }
@@ -876,56 +1316,28 @@ function App() {
     const updated = { ...target, ...nextPatch, updatedAt: nowIso() }
     notesRef.current = notesRef.current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated)
     setNotes((current) => current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated))
-    setShowSaveState(false)
-    if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
-    setSaving(true)
-    await notesStore.save(updated)
-    setSaving(false)
-    saveStateDelayRef.current = setTimeout(() => {
-      setShowSaveState(true)
-      saveStateDelayRef.current = null
-    }, 3000)
-
-    if ('title' in patch || 'content' in patch || 'templateData' in patch) {
-      const flashcards = flashcardsFromContent(updated.content)
-      if (flashcards.length) {
-        const changedAtoms = flashcards
-          .map((card) => {
-            const existing = atoms.find((atom) => atom.id === card.atomId)
-            if (!existing || (existing.phrase === card.phrase && existing.definition === card.definition)) return null
-            return { ...existing, phrase: card.phrase, definition: card.definition, updatedAt: nowIso() }
-          })
-          .filter((atom): atom is Atom => Boolean(atom))
-        if (changedAtoms.length) {
-          await atomsStore.saveMany(changedAtoms)
-          setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
-        }
-      }
-
-      if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
-      snapshotDebounceRef.current = setTimeout(() => {
-        snapshotDebounceRef.current = null
-        void appendNoteSnapshot({
-          id: updated.id,
-          title: updated.title,
-          content: updated.content,
-        })
-      }, 5000)
-      if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
-      atomSyncDebounceRef.current = setTimeout(() => {
-        atomSyncDebounceRef.current = null
-        const latest = notesRef.current.find((note) => note.id === updated.id)
-        if (!latest) return
-        const linkedAtoms = projectAtomsForNote(latest)
-        if (!linkedAtoms.length) return
-        void syncAtomMarksForNotes([latest], linkedAtoms)
-      }, 1200)
-    }
-  }, [atoms])
+    scheduleNoteSave(updated, 'title' in patch || 'content' in patch || 'templateData' in patch)
+  }, [])
 
   const handleNoteDropTargetDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.dataTransfer.dropEffect = 'move'
+  }, [])
+
+  const openNote = useCallback((noteId: string) => {
+    setSelectedNoteId(noteId)
+    setActiveView('editor')
+    void notesStore.getBody(noteId).then((body) => {
+      if (!body) return
+      setNotes((current) =>
+        current.map((note) =>
+          note.id === noteId && note.updatedAt <= body.updatedAt
+            ? { ...note, content: body.content, templateData: body.templateData, blocks: body.blocks, updatedAt: body.updatedAt }
+            : note,
+        ),
+      )
+    })
+    void mediaStore.preloadForNote(noteId, { priority: 'visible' })
   }, [])
 
   const persistNotesProject = useCallback(async (noteIds: string[], targetProjectId: string) => {
@@ -1021,6 +1433,7 @@ function App() {
       const activeIndex = pendingEnterBlockIndexRef.current ?? activeBlockIndex()
       pendingEnterBlockIndexRef.current = null
       const blocks = normalizeBlocksForContent(content, note.blocks, activeIndex)
+      lastLocalEditorContentRef.current = { noteId: id, content }
       void persistNote({ templateData, content, blocks }, id)
     },
   }, [selectedNoteId])
@@ -1031,6 +1444,8 @@ function App() {
 
   useEffect(() => {
     if (!editor || !selectedNote) return
+    const latestLocalContent = lastLocalEditorContentRef.current
+    if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.content === selectedNote.content) return
     const nextContent = primaryTemplateContent(selectedNote)
     if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) setEditorContentFromSync(nextContent)
   }, [editor, selectedNote])
@@ -1045,7 +1460,7 @@ function App() {
     const editorDom = mountedEditorDom(editor)
     const activeType: FormatBlockType | null = editor?.isActive('table') ? 'table' : editor?.isActive('lociQuote') ? 'quote' : editor?.isActive('image') ? 'image' : null
     if (!shell || !editorDom || !activeType) {
-      setFormatSideControls(null)
+      setFormatSideControls((current) => (current ? null : current))
       return
     }
     const activeElement = document.activeElement instanceof Element ? document.activeElement : null
@@ -1064,17 +1479,26 @@ function App() {
           : editorDom.querySelector('.loci-quote')
     )
     if (!(target instanceof HTMLElement)) {
-      setFormatSideControls(null)
+      setFormatSideControls((current) => (current ? null : current))
       return
     }
     const shellRect = shell.getBoundingClientRect()
     const targetRect = target.getBoundingClientRect()
-    setFormatSideControls({
+    const next = {
       blockId: '',
       type: activeType,
       top: targetRect.top - shellRect.top,
       left: Math.max(0, shellRect.width + 8),
-    })
+    }
+    setFormatSideControls((current) =>
+      current &&
+      current.blockId === next.blockId &&
+      current.type === next.type &&
+      current.top === next.top &&
+      current.left === next.left
+        ? current
+        : next,
+    )
   }, [editor])
 
   const clearAIContextRange = useCallback(() => {
@@ -1291,7 +1715,7 @@ function App() {
     noteHistoryOpen,
   ])
 
-  const atomCards = useMemo(() => buildAtomCards(atoms, notes, projects), [atoms, notes, projects])
+  const atomCards = useMemo(() => buildAtomCards(atoms, noteIndexes, projectById), [atoms, noteIndexes, projectById])
   const filteredAtomCards = useMemo(() => {
     const query = normalizeSearch(atomSearchQuery)
     return atomCards.filter((card) => {
@@ -1337,9 +1761,8 @@ function App() {
     })
   }, [atomCards, flashcardSetAtomQuery])
   const studyAtoms = useMemo(() => {
-    const atomById = new Map(atoms.map((atom) => [atom.id, atom]))
     return studyAtomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom))
-  }, [atoms, studyAtomIds])
+  }, [atomById, studyAtomIds])
   const activeStudyAtom = studyAtoms[studyIndex] ?? null
   const studyKnownCount = studyKnownAtomIds.length
   const studyLearningCount = studyLearningAtomIds.length
@@ -1416,16 +1839,29 @@ function App() {
   }, [aiPrompt, aiPromptHint, aiPromptHintDismissedFor])
 
   const dashboardStats = useMemo(() => {
-    const recentNote = [...notes].sort(sortByUpdated)[0]
+    const recentNote = notes[0]
     const projectIds = new Set(projects.map((project) => project.id))
     const sevenDaysAgo = dashboardNow.getTime() - 6 * 24 * 60 * 60 * 1000
-    const notesUpdatedThisWeek = notes.filter((note) => new Date(note.updatedAt).getTime() >= sevenDaysAgo).length
+    let notesUpdatedThisWeek = 0
+    let looseFileCount = 0
+    const activityCounts = new Map<string, number>()
+    const activeDayKeys = new Set<string>()
+    notes.forEach((note) => {
+      const updatedTime = new Date(note.updatedAt).getTime()
+      if (updatedTime >= sevenDaysAgo) notesUpdatedThisWeek += 1
+      if (note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId)) looseFileCount += 1
+      const date = new Date(note.updatedAt)
+      date.setHours(0, 0, 0, 0)
+      const key = date.toISOString().slice(0, 10)
+      activeDayKeys.add(key)
+      activityCounts.set(key, (activityCounts.get(key) ?? 0) + 1)
+    })
     const recentAtomCount = atoms.filter((atom) => new Date(atom.createdAt).getTime() >= sevenDaysAgo).length
     const topProjects = projects
       .map((project) => ({
         project,
-        fileCount: notes.filter((note) => note.projectId === project.id).length,
-        atomCount: atomCards.filter((card) => card.projectIds.includes(project.id)).length,
+        fileCount: noteIndexes.notesByProjectId.get(project.id)?.length ?? 0,
+        atomCount: noteIndexes.atomIdsByProjectId.get(project.id)?.size ?? 0,
       }))
       .sort((a, b) => b.fileCount - a.fileCount || a.project.name.localeCompare(b.project.name))
       .slice(0, 3)
@@ -1434,25 +1870,13 @@ function App() {
     const activity = Array.from({ length: 7 }, (_, index) => {
       const date = new Date(today)
       date.setDate(today.getDate() - (6 - index))
-      const next = new Date(date)
-      next.setDate(date.getDate() + 1)
-      const count = notes.filter((note) => {
-        const updated = new Date(note.updatedAt)
-        return updated >= date && updated < next
-      }).length
+      const count = activityCounts.get(date.toISOString().slice(0, 10)) ?? 0
       return {
         label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 1),
         count,
       }
     })
     const maxActivity = Math.max(1, ...activity.map((day) => day.count))
-    const activeDayKeys = new Set(
-      notes.map((note) => {
-        const date = new Date(note.updatedAt)
-        date.setHours(0, 0, 0, 0)
-        return date.toISOString().slice(0, 10)
-      }),
-    )
     const todayKey = today.toISOString().slice(0, 10)
     const streakCursor = new Date(today)
     if (!activeDayKeys.has(todayKey)) streakCursor.setDate(streakCursor.getDate() - 1)
@@ -1463,15 +1887,15 @@ function App() {
     }
     const wroteToday = activeDayKeys.has(todayKey)
 
-    const recentNotePreviewLines = recentNote ? collectNotePreviewLines(recentNote.content, 6) : []
+    const recentNotePreviewLines = recentNote ? noteIndexes.notePreviewLinesById.get(recentNote.id) ?? [] : []
 
     return {
       recentNote,
       recentNotePreviewLines,
       recentProjectName: recentNote
-        ? projects.find((project) => project.id === recentNote.projectId)?.name ?? 'Loose file'
+        ? projectById.get(recentNote.projectId)?.name ?? 'Loose file'
         : 'No project yet',
-      looseFileCount: notes.filter((note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId)).length,
+      looseFileCount,
       dailyStreak,
       wroteToday,
       notesUpdatedThisWeek,
@@ -1480,18 +1904,36 @@ function App() {
       activity,
       maxActivity,
     }
-  }, [atomCards, atoms, dashboardNow, notes, projects])
+  }, [atoms, dashboardNow, noteIndexes, notes, projectById, projects])
 
   const searchNormalized = useMemo(() => normalizeSearch(searchQuery), [searchQuery])
 
+  useEffect(() => {
+    if (!searchNormalized || !workerReady) {
+      setWorkerSearchNoteIds(null)
+      return
+    }
+    const job = runWorkerJob<{ id: string; type: 'search-results'; noteIds: string[]; indexVersion: number }>({
+      type: 'search',
+      query: searchNormalized,
+    })
+    if (!job) return
+    const jobKey = `search_${workerJobIdRef.current}`
+    latestSearchJobRef.current = jobKey
+    job.then((result) => {
+      if (latestSearchJobRef.current !== jobKey) return
+      setWorkerSearchNoteIds(result.noteIds)
+    })
+  }, [runWorkerJob, searchNormalized, workerReady])
+
   const searchHits = useMemo((): SearchHit[] => {
     if (!searchNormalized) return []
-    const matchedNotes = notes.filter((note) => {
-      const contentLower = collectText(note.content ?? emptyDoc).toLowerCase()
-      return (
-        note.title.toLowerCase().includes(searchNormalized) ||
-        contentLower.includes(searchNormalized)
-      )
+    const workerMatchedNotes = workerSearchNoteIds
+      ? workerSearchNoteIds.map((id) => notes.find((note) => note.id === id)).filter((note): note is Note => Boolean(note))
+      : null
+    const matchedNotes = workerMatchedNotes ?? notes.filter((note) => {
+      const contentLower = (noteIndexes.noteTextById.get(note.id) ?? '').toLowerCase()
+      return note.title.toLowerCase().includes(searchNormalized) || contentLower.includes(searchNormalized)
     })
     const matchedProjects = projects.filter((project) => project.name.toLowerCase().includes(searchNormalized))
     const matchedAtoms = atoms.filter(
@@ -1505,7 +1947,23 @@ function App() {
       ...matchedProjects.map((project): SearchHit => ({ kind: 'project', project })),
       ...matchedAtoms.map((atom): SearchHit => ({ kind: 'atom', atom })),
     ]
-  }, [atoms, notes, projects, searchNormalized])
+  }, [atoms, noteIndexes, notes, projects, searchNormalized, workerSearchNoteIds])
+
+  const searchRows = useMemo(() => {
+    const rows: SearchRow[] = []
+    searchHits.forEach((hit, index) => {
+      const prev = searchHits[index - 1]
+      if (index === 0 || hit.kind !== prev.kind) {
+        rows.push({
+          kind: 'section',
+          id: `section-${hit.kind}-${index}`,
+          label: hit.kind === 'note' ? 'Notes' : hit.kind === 'project' ? 'Projects' : 'Atoms',
+        })
+      }
+      rows.push({ kind: 'hit', id: hitKey(hit), hit, hitIndex: index })
+    })
+    return rows
+  }, [searchHits])
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false)
@@ -1887,12 +2345,11 @@ function App() {
   }
 
   const openProjectQuickNote = useCallback((noteId: string) => {
-    setSelectedNoteId(noteId)
-    setActiveView('editor')
+    openNote(noteId)
     setActiveEditorPanel(null)
     setNoteHistoryOpen(false)
     setNotice('')
-  }, [])
+  }, [openNote])
 
   const switchProjectQuickNote = useCallback(
     (direction: 1 | -1) => {
@@ -1993,9 +2450,8 @@ function App() {
     (hit: SearchHit) => {
       switch (hit.kind) {
         case 'note':
-          setSelectedNoteId(hit.note.id)
           setSelectedProjectId('')
-          setActiveView('editor')
+          openNote(hit.note.id)
           break
         case 'project':
           setSelectedProjectId(hit.project.id)
@@ -2008,7 +2464,7 @@ function App() {
       }
       closeSearch()
     },
-    [closeSearch],
+    [closeSearch, openNote],
   )
 
   const openNoteHistory = useCallback(async () => {
@@ -2033,6 +2489,7 @@ function App() {
         intent: 'danger',
       onConfirm: async () => {
           await persistNote({ title: snap.title, templateId: 'blank', templateData: { kind: 'blank', body: snap.content }, content: snap.content }, id)
+          await flushPendingNoteSaves()
           editor?.commands.setContent(snap.content)
           const rows = await loadNoteSnapshots(id)
           setNoteSnapshots(rows)
@@ -2072,10 +2529,9 @@ function App() {
     await notesStore.save(note)
     setTemplateProjectId(null)
     setNotes((current) => [note, ...current])
-    setSelectedNoteId(note.id)
+    openNote(note.id)
     setSelectedNoteIds([])
     setSelectedProjectId(projectId === UNASSIGNED_PROJECT_ID ? '' : projectId)
-    setActiveView('editor')
   }
 
   const persistTemplateData = (templateData: NoteTemplateData) => {
@@ -2085,6 +2541,7 @@ function App() {
   const persistBlocks = (blocks: LociBlock[]) => {
     if (!selectedNote) return
     const content = contentFromBlocks(blocks)
+    lastLocalEditorContentRef.current = { noteId: selectedNote.id, content }
     const templateData = updatePrimaryTemplateContent(selectedNote, content)
     void persistNote({ blocks, templateData, content: templateDataToContent(templateData) })
     if (editor) {
@@ -2103,7 +2560,7 @@ function App() {
   }
 
   const selectedBlocks = selectedNote?.blocks ?? (selectedNote ? normalizeBlocksForContent(selectedNote.content) : [])
-  const selectedBlocksKey = JSON.stringify(selectedBlocks)
+  const selectedBlocksKey = selectedBlocks.map((block) => `${block.id}:${block.type}:${block.updatedAt}:${blockContentNodes(block.content).length}`).join('|')
   const visibleBlockPickerOptions = blockPickerOptions.filter((option) => {
     const query = blockPicker.query.trim().toLowerCase()
     if (!query) return true
@@ -2155,8 +2612,24 @@ function App() {
         left: -82,
       })
     })
-    setFormatBlockControls((current) => (JSON.stringify(current) === JSON.stringify(controls) ? current : controls))
+    setFormatBlockControls((current) => (sameFormatBlockControls(current, controls) ? current : controls))
   }, [editor, selectedBlocksKey])
+
+  const scheduleFormatSideControls = useCallback(() => {
+    if (formatSideFrameRef.current) return
+    formatSideFrameRef.current = requestAnimationFrame(() => {
+      formatSideFrameRef.current = null
+      syncFormatSideControls()
+    })
+  }, [syncFormatSideControls])
+
+  const scheduleFormatBlockControls = useCallback(() => {
+    if (formatBlockFrameRef.current) return
+    formatBlockFrameRef.current = requestAnimationFrame(() => {
+      formatBlockFrameRef.current = null
+      measureFormatBlockControls()
+    })
+  }, [measureFormatBlockControls])
 
   useLayoutEffect(() => {
     measureFormatBlockControls()
@@ -2166,23 +2639,23 @@ function App() {
     if (!editor) return
     syncFormatSideControls()
     measureFormatBlockControls()
-    editor.on('selectionUpdate', syncFormatSideControls)
-    editor.on('transaction', syncFormatSideControls)
-    editor.on('transaction', measureFormatBlockControls)
-    window.addEventListener('resize', syncFormatSideControls)
-    window.addEventListener('resize', measureFormatBlockControls)
-    documentScrollRef.current?.addEventListener('scroll', syncFormatSideControls)
-    documentScrollRef.current?.addEventListener('scroll', measureFormatBlockControls)
+    editor.on('selectionUpdate', scheduleFormatSideControls)
+    editor.on('transaction', scheduleFormatSideControls)
+    editor.on('transaction', scheduleFormatBlockControls)
+    window.addEventListener('resize', scheduleFormatSideControls)
+    window.addEventListener('resize', scheduleFormatBlockControls)
+    documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
+    documentScrollRef.current?.addEventListener('scroll', scheduleFormatBlockControls)
     return () => {
-      editor.off('selectionUpdate', syncFormatSideControls)
-      editor.off('transaction', syncFormatSideControls)
-      editor.off('transaction', measureFormatBlockControls)
-      window.removeEventListener('resize', syncFormatSideControls)
-      window.removeEventListener('resize', measureFormatBlockControls)
-      documentScrollRef.current?.removeEventListener('scroll', syncFormatSideControls)
-      documentScrollRef.current?.removeEventListener('scroll', measureFormatBlockControls)
+      editor.off('selectionUpdate', scheduleFormatSideControls)
+      editor.off('transaction', scheduleFormatSideControls)
+      editor.off('transaction', scheduleFormatBlockControls)
+      window.removeEventListener('resize', scheduleFormatSideControls)
+      window.removeEventListener('resize', scheduleFormatBlockControls)
+      documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
+      documentScrollRef.current?.removeEventListener('scroll', scheduleFormatBlockControls)
     }
-  }, [editor, measureFormatBlockControls, syncFormatSideControls])
+  }, [editor, measureFormatBlockControls, scheduleFormatBlockControls, scheduleFormatSideControls, syncFormatSideControls])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
@@ -2722,9 +3195,10 @@ function App() {
       message: `Delete "${note.title}"? This cannot be undone.`,
       confirmLabel: 'Delete',
       intent: 'danger',
-      onConfirm: async () => {
-        await notesStore.deleteWithSnapshots(note.id)
-        const remaining = notesRef.current.filter((item) => item.id !== note.id)
+      onConfirm: () => {
+        pendingNoteSavesRef.current.delete(note.id)
+        const previousNotes = notesRef.current
+        const remaining = previousNotes.filter((item) => item.id !== note.id)
         notesRef.current = remaining
         setNotes(remaining)
         if (selectedNoteIdRef.current === note.id) {
@@ -2733,6 +3207,28 @@ function App() {
         setActiveEditorPanel(null)
         setNoteHistoryOpen(false)
         setNotice('')
+        const restore = () => {
+          const timer = optimisticDeleteTimersRef.current.get(note.id)
+          if (timer) clearTimeout(timer)
+          optimisticDeleteTimersRef.current.delete(note.id)
+          notesRef.current = previousNotes
+          setNotes(previousNotes)
+          setSelectedNoteId(note.id)
+          setActiveView('editor')
+          setUndoNotice(null)
+          setNotice('Note restored.')
+        }
+        setUndoNotice({ message: 'Note deleted.', action: restore })
+        const timer = setTimeout(() => {
+          optimisticDeleteTimersRef.current.delete(note.id)
+          setUndoNotice((current) => (current?.message === 'Note deleted.' ? null : current))
+          void notesStore.deleteWithSnapshots(note.id).catch(() => {
+            notesRef.current = previousNotes
+            setNotes(previousNotes)
+            setNotice('Could not delete the note. It has been restored.')
+          })
+        }, OPTIMISTIC_UNDO_MS)
+        optimisticDeleteTimersRef.current.set(note.id, timer)
         if (selectedNoteIdRef.current === note.id) setActiveView(remaining.length ? 'editor' : 'home')
       },
     })
@@ -3305,58 +3801,6 @@ function App() {
     void getCurrentWindow().close()
   }
 
-  const clearSidebarOpenTimer = () => {
-    if (!sidebarOpenTimerRef.current) return
-    clearTimeout(sidebarOpenTimerRef.current)
-    sidebarOpenTimerRef.current = null
-  }
-
-  const clearSidebarCloseTimer = () => {
-    if (!sidebarCloseTimerRef.current) return
-    clearTimeout(sidebarCloseTimerRef.current)
-    sidebarCloseTimerRef.current = null
-  }
-
-  const handleSidebarPointerEnter = () => {
-    clearSidebarCloseTimer()
-    if (sidebarPinned || sidebarHovered || sidebarOpenTimerRef.current) return
-    sidebarOpenTimerRef.current = window.setTimeout(() => {
-      sidebarOpenTimerRef.current = null
-      setSidebarHovered(true)
-    }, 40)
-  }
-
-  const handleSidebarPointerLeave = () => {
-    clearSidebarOpenTimer()
-    if (sidebarPinned || sidebarCloseTimerRef.current) return
-    sidebarCloseTimerRef.current = window.setTimeout(() => {
-      sidebarCloseTimerRef.current = null
-      setSidebarHovered(false)
-    }, 180)
-  }
-
-  const toggleSidebarPinned = () => {
-    clearSidebarOpenTimer()
-    clearSidebarCloseTimer()
-    setSidebarPinned((value) => !value)
-  }
-
-  const sidebarOpen = sidebarPinned || sidebarHovered
-  const shellClassName = [
-    'app-shell',
-    sidebarPinned ? 'sidebar-is-pinned' : '',
-    sidebarOpen ? 'sidebar-is-open' : '',
-  ]
-    .filter(Boolean)
-    .join(' ')
-  const sidebarClassName = [
-    'sidebar',
-    sidebarOpen ? 'is-open' : 'is-collapsed',
-    sidebarPinned ? 'is-pinned' : '',
-  ]
-    .filter(Boolean)
-    .join(' ')
-
   return (
     <main className="app-stage">
       <header className="custom-titlebar" onMouseDown={startWindowDrag}>
@@ -3369,108 +3813,33 @@ function App() {
           <button type="button" className="is-close" aria-label="Close window" onClick={closeWindow}>×</button>
         </div>
       </header>
-      <section className={shellClassName} aria-label="Loci Notes">
-        <aside
-          className={sidebarClassName}
-          onPointerEnter={handleSidebarPointerEnter}
-          onPointerLeave={handleSidebarPointerLeave}
-        >
-          <div className="sidebar-actions">
-            <button
-              className="nav-action"
-              type="button"
-              onClick={() => {
-                setSearchQuery('')
-                setSearchActiveIndex(0)
-                setSearchOpen(true)
-              }}
-            >
-              <Search size={18} />
-              <span className="nav-label">Search</span>
-            </button>
-
-            <button className="nav-action" type="button" onClick={() => openTemplateChooser()}>
-              <Plus size={18} />
-              <span className="nav-label">New Note</span>
-            </button>
-          </div>
-
-          <nav className="primary-nav" aria-label="Primary">
-            <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => setActiveView('home')}>
-              <Home size={18} />
-              <span className="nav-label">Home</span>
-            </button>
-            <button
-              className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
-              type="button"
-              onDragOver={handleNoteDropTargetDragOver}
-              onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
-              onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
-              onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-              onClick={() => setActiveView('projects')}
-            >
-              <Layers3 size={18} />
-              <span className="nav-label">{activeProjectForQuickNav?.name ?? 'Projects'}</span>
-              {activeProjectForQuickNav && projectQuickNotes.length > 1 && (
-                <kbd aria-label="Ctrl Page Up or Down">Ctrl Pg</kbd>
-              )}
-            </button>
-            {sidebarOpen && activeProjectForQuickNav && projectQuickNotes.length > 0 && (
-              <div className="project-quick-nav" aria-label={`${activeProjectForQuickNav.name} documents`}>
-                {projectQuickNotes.map((note) => (
-                  <div
-                    className={note.id === selectedNote?.id ? 'is-active' : ''}
-                    key={note.id}
-                  >
-                    <button type="button" onClick={() => openProjectQuickNote(note.id)}>
-                      <span>{note.title || 'Untitled Note'}</span>
-                    </button>
-                    <button type="button" className="quick-note-delete" aria-label={`Delete ${note.title || 'Untitled Note'}`} onClick={() => void deleteNote(note)}>
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => setActiveView('atoms')}>
-              <Brain size={18} />
-              <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
-            </button>
-          </nav>
-
-          <div className="sidebar-bottom">
-            <button className="profile-row" type="button" onClick={openProfileModal} aria-label="Open profile">
-              <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
-              <div className="profile-text">
-                <strong>{profileDisplayName}</strong>
-                <span>Loci Notes</span>
-              </div>
-            </button>
-
-            <div className="sidebar-bottom-controls">
-              <button
-                className="sidebar-pin"
-                type="button"
-                aria-label={sidebarPinned ? 'Collapse sidebar' : 'Pin sidebar open'}
-                aria-pressed={sidebarPinned}
-                onClick={toggleSidebarPinned}
-              >
-                {sidebarPinned ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-              </button>
-              {sidebarOpen && (
-                <button
-                  className={`sidebar-settings ${activeView === 'settings' ? 'active' : ''}`}
-                  type="button"
-                  aria-label="Settings"
-                  onClick={() => setActiveView('settings')}
-                >
-                  <Settings size={18} />
-                  <span>Settings</span>
-                </button>
-              )}
-            </div>
-          </div>
-        </aside>
+      <section className="app-shell" aria-label="Loci Notes">
+        <Sidebar
+          activeView={activeView}
+          activeProject={activeProjectForQuickNav}
+          activeNoteId={selectedNote?.id}
+          atomSubView={atomSubView}
+          draggedNoteIds={draggedNoteIds}
+          dragOverProjectId={dragOverProjectId}
+          profileAvatarColor={profileAvatarColor}
+          profileDisplayName={profileDisplayName}
+          profileInitials={profileInitials}
+          projectQuickNotes={projectQuickNotes}
+          onAssignNoteToProjectDrop={assignNoteToProjectDrop}
+          onDeleteNote={(note) => void deleteNote(note)}
+          onDragEnterProject={setDragOverProjectId}
+          onDragLeaveProject={(projectId) => setDragOverProjectId((current) => (current === projectId ? '' : current))}
+          onDragOverProject={handleNoteDropTargetDragOver}
+          onNewNote={() => openTemplateChooser()}
+          onOpenNote={openProjectQuickNote}
+          onOpenProfile={openProfileModal}
+          onOpenSearch={() => {
+            setSearchQuery('')
+            setSearchActiveIndex(0)
+            setSearchOpen(true)
+          }}
+          onSetActiveView={setActiveView}
+        />
 
         {activeView === 'home' && (
           <section className="main-pane dashboard-pane">
@@ -3503,10 +3872,7 @@ function App() {
                   <button
                     className="continue-note-card"
                     type="button"
-                    onClick={() => {
-                      setSelectedNoteId(dashboardStats.recentNote.id)
-                      setActiveView('editor')
-                    }}
+                    onClick={() => openNote(dashboardStats.recentNote.id)}
                   >
                     <div className="continue-note-card-head">
                       <span className="continue-note-project">{dashboardStats.recentProjectName}</span>
@@ -3672,6 +4038,12 @@ function App() {
               <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'}`}>
                 <input className="title-input" value={selectedNote.title} onChange={(event) => void persistNote({ title: event.target.value })} />
                 {notice && <div className="notice">{notice}</div>}
+                {undoNotice && (
+                  <div className="notice notice-with-action">
+                    <span>{undoNotice.message}</span>
+                    <button type="button" onClick={undoNotice.action}>Undo</button>
+                  </div>
+                )}
                 {selectedTemplateData?.kind === 'report' && (
                   <div className="template-editor report-editor">
                     <input
@@ -4057,10 +4429,7 @@ function App() {
                 onNoteDragEnd={handleNoteDragEnd}
                 onNoteSelect={setSelectedNoteIds}
                 deleteNote={(note) => void deleteNote(note)}
-                openNote={(noteId) => {
-                  setSelectedNoteId(noteId)
-                  setActiveView('editor')
-                }}
+                openNote={openNote}
                 newNote={() => openTemplateChooser(openedProject.id)}
                 deleteProject={() => void deleteProject(openedProject.id)}
                 updateDescription={(description) => void updateProjectDescription(openedProject.id, description)}
@@ -4138,8 +4507,7 @@ function App() {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault()
-                            setSelectedNoteId(note.id)
-                            setActiveView('editor')
+                            openNote(note.id)
                           }
                         }}
                         onClick={(event) => {
@@ -4152,8 +4520,7 @@ function App() {
                             return
                           }
                           setSelectedNoteIds([])
-                          setSelectedNoteId(note.id)
-                          setActiveView('editor')
+                          openNote(note.id)
                         }}
                       >
                         <span className="project-row-main">
@@ -4318,8 +4685,14 @@ function App() {
             />
             <div className="atoms-page">
               {atomSubView === 'atoms' && (
-                <div className="atom-card-grid">
-                  {filteredAtomCards.map((card) => {
+                <VirtualGrid
+                  className="atom-card-grid atom-card-grid--virtual"
+                  items={filteredAtomCards}
+                  minItemWidth={220}
+                  rowHeight={230}
+                  overscan={4}
+                  ariaLabel="Atoms"
+                  renderItem={(card) => {
                     const isFlipped = flippedAtomIds.includes(card.atom.id)
                     const isSelected = selectedAtomIds.includes(card.atom.id)
                     return (
@@ -4364,8 +4737,8 @@ function App() {
                         </div>
                       </button>
                     )
-                  })}
-                </div>
+                  }}
+                />
               )}
 
               {atomSubView === 'sets' && (
@@ -4954,16 +5327,22 @@ function App() {
             </div>
             <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
               {searchNormalized && searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
-              {searchHits.map((hit, index) => {
-                const prev = searchHits[index - 1]
-                const showSection = index === 0 || hit.kind !== prev.kind
-                return (
-                  <Fragment key={hitKey(hit)}>
-                    {showSection && (
+              <VirtualList
+                className="global-search-results-virtual"
+                items={searchRows}
+                rowHeight={58}
+                overscan={6}
+                renderItem={(row) => {
+                  if (row.kind === 'section') {
+                    return (
                       <div className="global-search-section-label" role="presentation">
-                        {hit.kind === 'note' ? 'Notes' : hit.kind === 'project' ? 'Projects' : 'Atoms'}
+                        {row.label}
                       </div>
-                    )}
+                    )
+                  }
+                  const hit = row.hit
+                  const index = row.hitIndex
+                return (
                     <button
                       id={`search-hit-${index}`}
                       type="button"
@@ -4995,7 +5374,7 @@ function App() {
                           <span className="global-search-hit-main">
                             <strong>{hit.project.name}</strong>
                           </span>
-                          <span className="global-search-hit-meta">{notes.filter((note) => note.projectId === hit.project.id).length} notes</span>
+                          <span className="global-search-hit-meta">{noteIndexes.notesByProjectId.get(hit.project.id)?.length ?? 0} notes</span>
                         </>
                       )}
                       {hit.kind === 'atom' && (
@@ -5010,9 +5389,9 @@ function App() {
                         </>
                       )}
                     </button>
-                  </Fragment>
                 )
-              })}
+                }}
+              />
             </div>
             <p className="global-search-footer-hint">
               Ctrl+K or ⌘K to toggle
@@ -5325,12 +5704,12 @@ function App() {
   )
 }
 
-function buildAtomCards(atoms: Atom[], notes: Note[], projects: Project[]) {
+function buildAtomCards(atoms: Atom[], noteIndexes: NoteIndexes, projectById: Map<string, Project>): AtomCard[] {
   return atoms.map((atom) => {
-    const linkedNotes = notes.filter((note) => contentHasAtom(note.content, atom.id))
-    const projectIds = Array.from(new Set(linkedNotes.map((note) => note.projectId)))
-    const projectNames = projectIds.map((id) => projects.find((project) => project.id === id)?.name).filter(Boolean) as string[]
-    return { atom: { ...atom, tags: atom.tags ?? [] }, noteCount: linkedNotes.length, projectIds, projectNames }
+    const projectIds = Array.from(noteIndexes.projectIdsByAtomId.get(atom.id) ?? [])
+    const noteCount = noteIndexes.noteIdsByAtomId.get(atom.id)?.size ?? 0
+    const projectNames = projectIds.map((id) => projectById.get(id)?.name).filter(Boolean) as string[]
+    return { atom: { ...atom, tags: atom.tags ?? [] }, noteCount, projectIds, projectNames }
   })
 }
 
@@ -5377,6 +5756,18 @@ function sortByCreated(a: Note, b: Note) {
   if (createdDelta !== 0) return createdDelta
   const titleDelta = a.title.localeCompare(b.title)
   return titleDelta || a.id.localeCompare(b.id)
+}
+
+function sameFormatBlockControls(a: FormatBlockControlRect[], b: FormatBlockControlRect[]) {
+  return a.length === b.length && a.every((left, index) => {
+    const right = b[index]
+    return Boolean(right) &&
+      left.blockId === right.blockId &&
+      left.type === right.type &&
+      left.top === right.top &&
+      left.height === right.height &&
+      left.left === right.left
+  })
 }
 
 function shuffleList<T>(items: T[]) {

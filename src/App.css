@@ -241,23 +241,20 @@ button {
 
 .app-shell {
   --sidebar-width: 72px;
-  --sidebar-open-width: 270px;
+  --sidebar-open-width: 248px;
   width: 100vw;
   height: calc(100vh - 34px);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   overflow: hidden;
   background: var(--shell);
-  transition: grid-template-columns 220ms ease;
-}
-
-.app-shell.sidebar-is-open {
-  --sidebar-width: var(--sidebar-open-width);
 }
 
 .sidebar {
   position: relative;
   z-index: 5;
+  box-sizing: border-box;
+  width: var(--sidebar-width);
   height: calc(100vh - 34px);
   display: flex;
   flex-direction: column;
@@ -266,11 +263,33 @@ button {
   background: var(--sidebar);
   border-right: 1px solid #efefed;
   overflow: hidden;
-  transition: padding 220ms ease;
+  contain: layout paint style;
+  will-change: width;
+  transition: width 180ms ease, padding 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 36px;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(90deg, rgba(251, 251, 251, 0.72), rgba(251, 251, 251, 0));
+  transition: opacity 180ms ease;
 }
 
 .sidebar.is-open {
-  padding: 18px 22px 30px;
+  width: var(--sidebar-open-width);
+  padding: 18px 18px 30px;
+  border-color: rgba(17, 17, 17, 0.08);
+  box-shadow: 10px 0 24px rgba(17, 17, 17, 0.055);
+}
+
+.sidebar.is-open::after {
+  opacity: 1;
 }
 
 .sidebar-actions {
@@ -426,6 +445,11 @@ button {
   flex-shrink: 0;
 }
 
+.sidebar.is-open .nav-action,
+.sidebar.is-open .primary-nav > button {
+  gap: 13px;
+}
+
 .nav-action > svg,
 .primary-nav button > svg {
   flex: 0 0 auto;
@@ -531,23 +555,25 @@ button {
 }
 
 .project-quick-nav {
-  display: grid;
-  gap: 5px;
   min-width: 0;
-  max-height: 240px;
-  overflow-y: auto;
+  height: 240px;
   margin: -4px 0 4px 10px;
   padding: 0;
 }
 
-.primary-nav .project-quick-nav > div:not(.project-quick-nav-head) {
+.primary-nav .project-quick-nav .virtual-list-row {
+  padding-bottom: 5px;
+}
+
+.primary-nav .project-quick-nav .quick-note-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
   border-radius: 6px;
+  height: 32px;
 }
 
-.primary-nav .project-quick-nav > div:not(.project-quick-nav-head).is-active {
+.primary-nav .project-quick-nav .quick-note-row.is-active {
   background: #111;
   color: #fff;
 }
@@ -561,17 +587,17 @@ button {
   font-size: 12px;
 }
 
-.primary-nav .project-quick-nav > div.is-active button:not(.quick-note-delete) {
+.primary-nav .project-quick-nav .quick-note-row.is-active button:not(.quick-note-delete) {
   background: transparent;
   color: #fff;
 }
 
-.primary-nav .project-quick-nav > div:not(.project-quick-nav-head):not(.is-active) button:not(.quick-note-delete):hover {
+.primary-nav .project-quick-nav .quick-note-row:not(.is-active) button:not(.quick-note-delete):hover {
   background: #eeeeed;
   color: #111;
 }
 
-.primary-nav .project-quick-nav > div.is-active button:not(.quick-note-delete):hover {
+.primary-nav .project-quick-nav .quick-note-row.is-active button:not(.quick-note-delete):hover {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
@@ -600,22 +626,22 @@ button {
   flex-shrink: 0;
 }
 
-.primary-nav .project-quick-nav > div:not(.is-active) .quick-note-delete:hover {
+.primary-nav .project-quick-nav .quick-note-row:not(.is-active) .quick-note-delete:hover {
   background: rgba(17, 17, 17, 0.07);
   color: #111;
 }
 
-.primary-nav .project-quick-nav > div.is-active .quick-note-delete {
+.primary-nav .project-quick-nav .quick-note-row.is-active .quick-note-delete {
   color: #fff;
 }
 
-.primary-nav .project-quick-nav > div.is-active .quick-note-delete:hover {
+.primary-nav .project-quick-nav .quick-note-row.is-active .quick-note-delete:hover {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
 
-.primary-nav .project-quick-nav > div:hover .quick-note-delete,
-.primary-nav .project-quick-nav > div:focus-within .quick-note-delete {
+.primary-nav .project-quick-nav .quick-note-row:hover .quick-note-delete,
+.primary-nav .project-quick-nav .quick-note-row:focus-within .quick-note-delete {
   opacity: 1;
 }
 
@@ -4073,6 +4099,72 @@ button {
 
 .project-memory-field:focus-visible {
   outline: none;
+}
+
+.virtual-list,
+.virtual-grid {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.virtual-list-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-list-row,
+.virtual-grid-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  contain: layout paint style;
+  will-change: transform;
+}
+
+.virtual-list-row > *,
+.virtual-grid-row > * {
+  height: 100%;
+}
+
+.virtual-grid-row {
+  display: grid;
+  gap: 14px;
+}
+
+.notice-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notice-with-action button {
+  border: 0;
+  background: #111;
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.atom-card-grid.atom-card-grid--virtual {
+  display: block;
+  height: min(68vh, 760px);
+  padding-right: 6px;
+}
+
+.global-search-results-virtual {
+  height: min(54vh, 460px);
+}
+
+.global-search-results-virtual .global-search-section-label {
+  display: flex;
+  align-items: end;
+  height: 100%;
 }
 
 .ai-project-instruction-draft small {

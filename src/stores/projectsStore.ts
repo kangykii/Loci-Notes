@@ -21,9 +21,15 @@ export const projectsStore = {
     atomIdsToDelete: string[],
     updatedSets: FlashcardSet[],
   ) =>
-    db.transaction('rw', [db.projects, db.notes, db.atoms, db.noteSnapshots, db.flashcardSets], async () => {
+    db.transaction('rw', [db.projects, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.atoms, db.noteSnapshots, db.flashcardSets], async () => {
       await db.projects.delete(projectId)
-      if (projectNotes.length) await db.notes.bulkDelete(projectNotes.map((note) => note.id))
+      const noteIds = projectNotes.map((note) => note.id)
+      if (noteIds.length) {
+        await db.notes.bulkDelete(noteIds)
+        await db.noteMetas.bulkDelete(noteIds)
+        await db.noteBodies.bulkDelete(noteIds)
+        await Promise.all(noteIds.map((noteId) => db.mediaAssets.where('noteId').equals(noteId).delete()))
+      }
       if (snapshotIdsToDelete.length) await db.noteSnapshots.bulkDelete(snapshotIdsToDelete)
       if (atomIdsToDelete.length) await db.atoms.bulkDelete(atomIdsToDelete)
       if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)

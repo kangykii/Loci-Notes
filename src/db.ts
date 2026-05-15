@@ -165,6 +165,36 @@ export type Note = {
   updatedAt: string
 }
 
+export type NoteMeta = {
+  id: string
+  title: string
+  projectId: string
+  templateId: NoteTemplateId
+  tags: string[]
+  updatedAt: string
+  preview: string
+  hasMedia: boolean
+}
+
+export type NoteBody = {
+  noteId: string
+  content: JSONContent
+  templateData: NoteTemplateData
+  blocks?: LociBlock[]
+  updatedAt: string
+}
+
+export type MediaAsset = {
+  id: string
+  noteId: string
+  kind: 'image'
+  thumbSrc: string
+  fullSrc: string
+  width?: number
+  height?: number
+  updatedAt: string
+}
+
 /** Point-in-time title + body for restore. */
 export type NoteSnapshot = {
   id: string
@@ -186,6 +216,9 @@ class LociNotesDatabase extends Dexie {
   atoms!: Dexie.Table<Atom, string>
   flashcardSets!: Dexie.Table<FlashcardSet, string>
   projects!: Dexie.Table<Project, string>
+  noteMetas!: Dexie.Table<NoteMeta, string>
+  noteBodies!: Dexie.Table<NoteBody, string>
+  mediaAssets!: Dexie.Table<MediaAsset, string>
   noteSnapshots!: Dexie.Table<NoteSnapshot, string>
   userProfiles!: Dexie.Table<UserProfile, string>
   userSettings!: Dexie.Table<UserSettings, string>
@@ -306,6 +339,26 @@ class LociNotesDatabase extends Dexie {
       userProfiles: 'id',
       userSettings: 'id',
     })
+    this.version(11)
+      .stores({
+        notes: 'id, title, projectId, templateId, updatedAt, *tags',
+        noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+        noteBodies: 'noteId, updatedAt',
+        mediaAssets: 'id, noteId, kind, updatedAt',
+        atoms: 'id, phrase, updatedAt, *tags',
+        flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+        projects: 'id, name',
+        noteSnapshots: 'id, noteId, savedAt',
+        userProfiles: 'id',
+        userSettings: 'id',
+      })
+      .upgrade(async (tx) => {
+        const notes = await tx.table('notes').toArray() as Note[]
+        await tx.table('noteMetas').bulkPut(notes.map(noteToMeta))
+        await tx.table('noteBodies').bulkPut(notes.map(noteToBody))
+        const assets = notes.flatMap(noteToMediaAssets)
+        if (assets.length) await tx.table('mediaAssets').bulkPut(assets)
+      })
   }
 }
 
@@ -342,6 +395,68 @@ function contentToSeedBlocks(content?: JSONContent): LociBlock[] {
     createdAt: now,
     updatedAt: now,
   }]
+}
+
+function collectPlainText(content: JSONContent | undefined): string {
+  if (!content) return ''
+  if (typeof content.text === 'string') return content.text
+  return (content.content ?? []).map(collectPlainText).join(' ').replace(/\s+/g, ' ').trim()
+}
+
+function truncatePreview(value: string, max = 180) {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length <= max) return text
+  return `${text.slice(0, Math.max(0, max - 3))}...`
+}
+
+function collectImageAssets(note: Pick<Note, 'id' | 'updatedAt' | 'content'>): MediaAsset[] {
+  const assets: MediaAsset[] = []
+  const visit = (node: JSONContent) => {
+    if (node.type === 'image' && typeof node.attrs?.src === 'string') {
+      const src = node.attrs.src
+      assets.push({
+        id: `${note.id}_image_${assets.length}`,
+        noteId: note.id,
+        kind: 'image',
+        thumbSrc: src,
+        fullSrc: src,
+        width: typeof node.attrs.width === 'number' ? node.attrs.width : undefined,
+        height: typeof node.attrs.height === 'number' ? node.attrs.height : undefined,
+        updatedAt: note.updatedAt,
+      })
+    }
+    ;(node.content ?? []).forEach(visit)
+  }
+  visit(note.content)
+  return assets
+}
+
+export function noteToMeta(note: Note): NoteMeta {
+  const mediaAssets = collectImageAssets(note)
+  return {
+    id: note.id,
+    title: note.title,
+    projectId: note.projectId,
+    templateId: note.templateId,
+    tags: note.tags ?? [],
+    updatedAt: note.updatedAt,
+    preview: truncatePreview(collectPlainText(note.content)),
+    hasMedia: mediaAssets.length > 0,
+  }
+}
+
+export function noteToBody(note: Note): NoteBody {
+  return {
+    noteId: note.id,
+    content: note.content,
+    templateData: note.templateData,
+    blocks: note.blocks,
+    updatedAt: note.updatedAt,
+  }
+}
+
+export function noteToMediaAssets(note: Note): MediaAsset[] {
+  return collectImageAssets(note)
 }
 
 /** Skip if identical to latest snapshot; drop oldest past cap. */
@@ -538,9 +653,13 @@ export async function ensureSeedData() {
   const noteCount = await db.notes.count()
   if (noteCount > 0) return
 
-  await db.transaction('rw', db.projects, db.atoms, db.notes, db.noteSnapshots, async () => {
+  await db.transaction('rw', [db.projects, db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.noteSnapshots], async () => {
     await db.projects.bulkPut(initialProjects)
     await db.atoms.bulkPut(initialAtoms)
     await db.notes.bulkPut(initialNotes)
+    await db.noteMetas.bulkPut(initialNotes.map(noteToMeta))
+    await db.noteBodies.bulkPut(initialNotes.map(noteToBody))
+    const assets = initialNotes.flatMap(noteToMediaAssets)
+    if (assets.length) await db.mediaAssets.bulkPut(assets)
   })
 }
