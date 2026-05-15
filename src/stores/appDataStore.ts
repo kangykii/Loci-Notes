@@ -14,7 +14,7 @@ export async function loadLocalAppData() {
     atomsStore.listByUpdated(),
     flashcardSetsStore.listByUpdated(),
     projectsStore.listByName(),
-    profileStore.getLocal(),
+    profileStore.getLocalWorkspaceProfile(),
     settingsStore.getLocal(),
   ])
 

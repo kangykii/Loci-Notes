@@ -11,8 +11,6 @@ import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { relaunch } from '@tauri-apps/plugin-process'
-import { check } from '@tauri-apps/plugin-updater'
 import {
   ArrowLeft,
   Brain,
@@ -43,6 +41,7 @@ import {
   Sparkles,
   Table2,
   Trash2,
+  Users,
   X,
 } from 'lucide-react'
 import { AtomMark } from './AtomMark'
@@ -66,6 +65,12 @@ import type {
   TemplateScheduleItem,
   TemplateSlide,
   TemplateTask,
+  AccountProfile,
+  AuthSession,
+  FriendGroup,
+  Friendship,
+  RemoteContentItem,
+  SharedNoteExport,
   UserProfile,
   UserSettings,
 } from './db'
@@ -96,6 +101,8 @@ import type {
 } from './ai/aiTasks'
 import { AIResultDialog } from './components/dialogs/AIResultDialog'
 import { PageHeader } from './components/layout/PageHeader'
+import { CommunityView } from './components/views/CommunityView'
+import type { CommunityTarget } from './components/views/CommunityView'
 import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
@@ -156,12 +163,24 @@ import { mediaStore } from './stores/mediaStore'
 import { profileStore } from './stores/profileStore'
 import { projectsStore } from './stores/projectsStore'
 import { settingsStore } from './stores/settingsStore'
+import { authService, signedOutSession } from './services/authService'
+import { collaborationService } from './services/collaborationService'
+import { communityActivityService } from './services/communityActivityService'
+import { communityRecipientId } from './services/communityRecipientService'
+import { friendService, normalizeUserHandle } from './services/friendService'
+import type { FriendSearchResult } from './services/friendService'
+import { friendGroupService } from './services/friendGroupService'
+import { notificationService } from './services/notificationService'
+import { profileService } from './services/profileService'
+import { sharingService } from './services/sharingService'
+import { initialUpdateState, updateService } from './services/updateService'
+import type { UpdateState } from './services/updateService'
 import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
 import './App.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
 
-type View = 'home' | 'editor' | 'projects' | 'atoms' | 'settings'
+type View = 'home' | 'editor' | 'projects' | 'community' | 'atoms' | 'settings'
 type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
 type StudyDirection = 'term' | 'definition'
 type AtomDialog = {
@@ -327,6 +346,7 @@ function defaultUserSettings(): UserSettings {
     reduceMotion: false,
     compactMode: false,
     preferredAtomSubView: 'atoms',
+    pinnedCommunityRecipientIds: [],
     createdAt: now,
     updatedAt: now,
   }
@@ -350,6 +370,9 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
     ...settings,
     aiProviders: providers,
     preferredAtomSubView: settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms',
+    pinnedCommunityRecipientIds: Array.isArray(settings.pinnedCommunityRecipientIds)
+      ? settings.pinnedCommunityRecipientIds.filter((id): id is string => typeof id === 'string')
+      : [],
   }
 }
 
@@ -614,15 +637,9 @@ const PROFILE_COLORS = ['#4c4439', '#111111', '#5d6b52', '#6c5a7c', '#8a5a44', '
 type ProfileDraft = {
   displayName: string
   initials: string
+  handle: string
+  handleEdited: boolean
   avatarColor: string
-}
-
-type UpdateStatus = 'idle' | 'checking' | 'available' | 'current' | 'installing' | 'error'
-
-type UpdateState = {
-  status: UpdateStatus
-  message: string
-  version?: string
 }
 
 type SidebarProps = {
@@ -634,10 +651,10 @@ type SidebarProps = {
   dragOverProjectId: string
   profileAvatarColor: string
   profileDisplayName: string
+  profileHandleLabel: string
   profileInitials: string
   projectQuickNotes: Note[]
   onAssignNoteToProjectDrop: (event: React.DragEvent<HTMLElement>, targetProjectId: string) => void
-  onDeleteNote: (note: Note) => void
   onDragEnterProject: (projectId: string) => void
   onDragLeaveProject: (projectId: string) => void
   onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
@@ -657,10 +674,10 @@ const Sidebar = memo(function Sidebar({
   dragOverProjectId,
   profileAvatarColor,
   profileDisplayName,
+  profileHandleLabel,
   profileInitials,
   projectQuickNotes,
   onAssignNoteToProjectDrop,
-  onDeleteNote,
   onDragEnterProject,
   onDragLeaveProject,
   onDragOverProject,
@@ -765,9 +782,6 @@ const Sidebar = memo(function Sidebar({
         >
           <Layers3 size={18} />
           <span className="nav-label">{activeProject?.name ?? 'Projects'}</span>
-          {activeProject && projectQuickNotes.length > 1 && (
-            <kbd aria-label="Ctrl Page Up or Down">Ctrl Pg</kbd>
-          )}
         </button>
         {sidebarOpen && activeProject && projectQuickNotes.length > 0 && (
           <VirtualList
@@ -782,13 +796,14 @@ const Sidebar = memo(function Sidebar({
                 <button type="button" onClick={() => onOpenNote(note.id)}>
                   <span>{note.title || 'Untitled Note'}</span>
                 </button>
-                <button type="button" className="quick-note-delete" aria-label={`Delete ${note.title || 'Untitled Note'}`} onClick={() => onDeleteNote(note)}>
-                  <Trash2 size={13} />
-                </button>
               </div>
             )}
           />
         )}
+        <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
+          <Users size={18} />
+          <span className="nav-label">Community</span>
+        </button>
         <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => onSetActiveView('atoms')}>
           <Brain size={18} />
           <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
@@ -800,7 +815,7 @@ const Sidebar = memo(function Sidebar({
           <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
           <div className="profile-text">
             <strong>{profileDisplayName}</strong>
-            <span>Loci Notes</span>
+            <span>{profileHandleLabel}</span>
           </div>
         </button>
 
@@ -851,6 +866,8 @@ function App() {
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({
     displayName: '',
     initials: '',
+    handle: '',
+    handleEdited: false,
     avatarColor: DEFAULT_PROFILE_COLOR,
   })
   const [selectedNoteId, setSelectedNoteId] = useState('')
@@ -918,16 +935,23 @@ function App() {
   const [aiRunning, setAiRunning] = useState(false)
   const [aiInstructionUpdating, setAiInstructionUpdating] = useState(false)
   const [aiResult, setAiResult] = useState<AIResult | null>(null)
-  const [updateState, setUpdateState] = useState<UpdateState>({
-    status: 'idle',
-    message: 'Check GitHub Releases for signed app updates.',
-  })
+  const [updateState, setUpdateState] = useState<UpdateState>(initialUpdateState)
+  const [authSession, setAuthSession] = useState<AuthSession>(() => signedOutSession())
+  const [accountProfile, setAccountProfile] = useState<AccountProfile | undefined>()
+  const [friendships, setFriendships] = useState<Friendship[]>([])
+  const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([])
+  const [sharedNoteExports, setSharedNoteExports] = useState<SharedNoteExport[]>([])
+  const [communitySearchQuery, setCommunitySearchQuery] = useState('')
+  const [communitySearchResults, setCommunitySearchResults] = useState<FriendSearchResult[]>([])
+  const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
+  const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
   const [showSaveState, setShowSaveState] = useState(true)
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
   const atomsRef = useRef<Atom[]>([])
   const noteIndexCacheRef = useRef<Map<string, NoteIndexCacheEntry>>(new Map())
   const selectedNoteIdRef = useRef('')
+  const noteOpenHistoryRef = useRef<string[]>([])
   const searchInputRef = useRef<HTMLInputElement>(null)
   const aiPromptInputRef = useRef<HTMLInputElement>(null)
   const flashcardSetTitleInputRef = useRef<HTMLInputElement>(null)
@@ -981,6 +1005,26 @@ function App() {
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
   const profileAvatarColor = localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR
+  const profileHandleLabel = accountProfile?.handle ? `@${accountProfile.handle}` : 'No user tag'
+  const accountStatusLabel = authSession.status === 'signed-in'
+    ? accountProfile?.handle
+      ? `Signed in as @${accountProfile.handle}`
+      : `Signed in${accountProfile?.displayName ? ` as ${accountProfile.displayName}` : ''}`
+    : 'Signed out · local workspace only'
+  const acceptedFriendCount = friendships.filter((friendship) => friendship.status === 'accepted').length
+  const pendingFriendCount = friendships.filter((friendship) => friendship.status !== 'accepted').length
+  const selectedCommunityFriend = communityTarget?.kind === 'friend'
+    ? friendships.find((friendship) => friendship.id === communityTarget.id)
+    : undefined
+  const selectedCommunityGroup = communityTarget?.kind === 'group'
+    ? friendGroups.find((group) => group.id === communityTarget.id)
+    : undefined
+  const selectedCommunityRecipientIds = selectedCommunityFriend
+    ? [selectedCommunityFriend.friendAccountId]
+    : selectedCommunityGroup?.memberAccountIds ?? []
+  const selectedCommunityShares = selectedCommunityRecipientIds.length
+    ? sharedNoteExports.filter((share) => selectedCommunityRecipientIds.some((accountId) => share.recipientAccountIds.includes(accountId)))
+    : []
   const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
 
   const clearNoticeTimer = useCallback(() => {
@@ -1144,73 +1188,11 @@ function App() {
   }, [notes, runWorkerJob])
 
   const checkForUpdates = useCallback(async (manual = false) => {
-    if (!window.__TAURI_INTERNALS__) {
-      setUpdateState({
-        status: 'current',
-        message: 'Updates are only available in the desktop app.',
-      })
-      return
-    }
-
-    setUpdateState({
-      status: 'checking',
-      message: manual ? 'Checking GitHub Releases for updates...' : 'Checking for app updates...',
+    await updateService.checkAndInstall({
+      manual,
+      isDesktop: Boolean(window.__TAURI_INTERNALS__),
+      onStateChange: setUpdateState,
     })
-
-    try {
-      const update = await check()
-      if (!update) {
-        setUpdateState({
-          status: 'current',
-          message: 'You are running the latest version.',
-        })
-        return
-      }
-
-      setUpdateState({
-        status: 'available',
-        message: `Version ${update.version} is available. Downloading signed update...`,
-        version: update.version,
-      })
-
-      let downloaded = 0
-      await update.downloadAndInstall((event) => {
-        if (event.event === 'Started') {
-          downloaded = 0
-          setUpdateState({
-            status: 'installing',
-            message: event.data.contentLength
-              ? `Downloading update (${Math.round(event.data.contentLength / 1024 / 1024)} MB)...`
-              : 'Downloading update...',
-            version: update.version,
-          })
-          return
-        }
-
-        if (event.event === 'Progress') {
-          downloaded += event.data.chunkLength
-          setUpdateState({
-            status: 'installing',
-            message: `Downloaded ${Math.round(downloaded / 1024 / 1024)} MB...`,
-            version: update.version,
-          })
-          return
-        }
-
-        setUpdateState({
-          status: 'installing',
-          message: 'Update installed. Relaunching Loci Notes...',
-          version: update.version,
-        })
-      })
-
-      await relaunch()
-    } catch (error) {
-      setUpdateState({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Could not check for updates.',
-      })
-    }
   }, [])
 
   useEffect(() => {
@@ -1218,6 +1200,28 @@ function App() {
     updateCheckRanRef.current = true
     void checkForUpdates()
   }, [checkForUpdates])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([
+      authService.getAccountState(),
+      friendService.listFriends(),
+      friendGroupService.listGroups(),
+      sharingService.listAll(),
+      notificationService.listDeveloperNotifications(),
+    ]).then(([accountState, storedFriendships, storedFriendGroups, shares, notifications]) => {
+      if (cancelled) return
+      setAuthSession(accountState.session)
+      setAccountProfile(accountState.profile)
+      setFriendships(storedFriendships)
+      setFriendGroups(storedFriendGroups)
+      setSharedNoteExports(shares)
+      setDeveloperNotifications(notifications)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function runSavedNoteMaintenance(savedNotes: Note[]) {
     const contentNotes = savedNotes.filter((note) => note.content)
@@ -1400,7 +1404,10 @@ function App() {
     event.dataTransfer.dropEffect = 'move'
   }, [])
 
-  const openNote = useCallback((noteId: string) => {
+  const openNote = useCallback((noteId: string, options: { trackHistory?: boolean } = {}) => {
+    if (options.trackHistory !== false) {
+      noteOpenHistoryRef.current = [noteId, ...noteOpenHistoryRef.current.filter((id) => id !== noteId)]
+    }
     setSelectedNoteId(noteId)
     setActiveView('editor')
     void notesStore.getBody(noteId).then((body) => {
@@ -2025,9 +2032,13 @@ function App() {
   }, [appDialog])
 
   const openProfileModal = () => {
+    const displayName = localProfile?.displayName ?? ''
+    const existingHandle = accountProfile?.handle ?? ''
     setProfileDraft({
-      displayName: localProfile?.displayName ?? '',
+      displayName,
       initials: localProfile?.initials ?? '',
+      handle: existingHandle || createBaseHandleFromDisplayName(displayName),
+      handleEdited: Boolean(existingHandle),
       avatarColor: localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR,
     })
     setProfileModalOpen(true)
@@ -2037,6 +2048,9 @@ function App() {
     const displayName = profileDraft.displayName.trim()
     if (!displayName) return
     const now = nowIso()
+    const existingAccountProfile = await profileService.getProfile('local')
+    const requestedHandle = normalizeUserHandle(profileDraft.handle || createBaseHandleFromDisplayName(displayName))
+    const handle = await createAvailableLocalHandle(requestedHandle || displayName, existingAccountProfile?.accountId)
     const profile: UserProfile = {
       id: 'local',
       displayName,
@@ -2045,8 +2059,23 @@ function App() {
       createdAt: localProfile?.createdAt ?? now,
       updatedAt: now,
     }
-    await profileStore.save(profile)
+    await profileStore.saveLocalWorkspaceProfile(profile)
+    const account = await profileService.saveProfile({
+      accountId: 'local',
+      displayName,
+      handle,
+      createdAt: existingAccountProfile?.createdAt ?? now,
+      updatedAt: now,
+    })
     setLocalProfile(profile)
+    setAccountProfile(account)
+    setAuthSession((current) => ({
+      ...current,
+      status: 'signed-in',
+      accountId: 'local',
+      updatedAt: now,
+      lastCheckedAt: now,
+    }))
     setProfileModalOpen(false)
   }
 
@@ -2054,6 +2083,143 @@ function App() {
     const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
     await settingsStore.save(normalized)
     setUserSettings(normalized)
+  }
+
+  const searchCommunityUsers = async () => {
+    const results = await friendService.searchAccounts(communitySearchQuery)
+    setCommunitySearchResults(results)
+  }
+
+  const addCommunitySearchResult = async (result: FriendSearchResult) => {
+    if (!authSession.accountId) {
+      showNotice('Sign in before sending friend requests.')
+      return
+    }
+    const friendship = await friendService.sendRequest(authSession.accountId, result)
+    setFriendships((current) => [friendship, ...current])
+    setCommunityTarget({ kind: 'friend', id: friendship.id })
+    setCommunitySearchResults([])
+    setCommunitySearchQuery('')
+    showNotice(`${result.handle ? `@${result.handle}` : result.displayName} request pending.`)
+  }
+
+  const togglePinnedCommunityRecipient = (target: CommunityTarget) => {
+    const targetId = communityRecipientId(target.kind, target.id)
+    const pinned = userSettings.pinnedCommunityRecipientIds.includes(targetId)
+    const pinnedCommunityRecipientIds = pinned
+      ? userSettings.pinnedCommunityRecipientIds.filter((id) => id !== targetId)
+      : [targetId, ...userSettings.pinnedCommunityRecipientIds]
+    void saveUserSettings({ ...userSettings, pinnedCommunityRecipientIds })
+  }
+
+  const removePinnedCommunityRecipient = (target: CommunityTarget) => {
+    const targetId = communityRecipientId(target.kind, target.id)
+    if (!userSettings.pinnedCommunityRecipientIds.includes(targetId)) return
+    void saveUserSettings({
+      ...userSettings,
+      pinnedCommunityRecipientIds: userSettings.pinnedCommunityRecipientIds.filter((id) => id !== targetId),
+    })
+  }
+
+  const acceptCommunityFriend = async (friendshipId: string) => {
+    const friendship = await friendService.acceptRequest(friendshipId)
+    if (!friendship) return
+    setFriendships((current) => current.map((item) => item.id === friendshipId ? friendship : item))
+    showNotice(`${friendship.friendDisplayName} accepted.`)
+  }
+
+  const rejectCommunityFriend = async (friendshipId: string) => {
+    await friendService.declineRequest(friendshipId)
+    setFriendships((current) => current.filter((friendship) => friendship.id !== friendshipId))
+    setCommunityTarget((current) => current?.kind === 'friend' && current.id === friendshipId ? null : current)
+    removePinnedCommunityRecipient({ kind: 'friend', id: friendshipId })
+    showNotice('Request removed.')
+  }
+
+  const removeCommunityFriend = async (friendshipId: string) => {
+    await friendService.declineRequest(friendshipId)
+    setFriendships((current) => current.filter((friendship) => friendship.id !== friendshipId))
+    setCommunityTarget((current) => current?.kind === 'friend' && current.id === friendshipId ? null : current)
+    removePinnedCommunityRecipient({ kind: 'friend', id: friendshipId })
+    showNotice('User removed.')
+  }
+
+  const createDefaultFriendGroup = async () => {
+    const group = await friendGroupService.createGroup(
+      'Study circle',
+      authSession.accountId,
+      friendships.filter((friendship) => friendship.status === 'accepted').map((friendship) => friendship.friendAccountId),
+    )
+    setFriendGroups((current) => [group, ...current])
+    setCommunityTarget({ kind: 'group', id: group.id })
+    showNotice('Friend group foundation created.')
+  }
+
+  const createTargetedShareForSelectedNote = async (permission: SharedNoteExport['permission'] = 'view', noteId = selectedNote?.id) => {
+    const noteToShare = notes.find((note) => note.id === noteId)
+    if (!noteToShare) {
+      showNotice('Open a note before creating a community share.')
+      return
+    }
+    if (!selectedCommunityFriend && !selectedCommunityGroup) {
+      showNotice('Choose a friend or group before sending a note.')
+      return
+    }
+    const options = { ownerAccountId: authSession.accountId, permission }
+    const share = selectedCommunityFriend
+      ? await sharingService.sendNoteToFriend(noteToShare.id, selectedCommunityFriend, options)
+      : await sharingService.sendNoteToGroup(noteToShare.id, selectedCommunityGroup as FriendGroup, options)
+    await communityActivityService.create({
+      recipientKind: selectedCommunityFriend ? 'friend' : 'group',
+      recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
+      actorAccountId: authSession.accountId,
+      kind: 'note-shared',
+      objectType: 'sharedNoteExport',
+      objectId: share.id,
+      payload: {
+        noteId: noteToShare.id,
+        title: noteToShare.title || 'Untitled Note',
+        permission,
+      },
+    })
+    setSharedNoteExports((current) => [share, ...current])
+    showNotice(permission === 'edit' ? 'Editable note share prepared.' : 'Note share prepared.')
+  }
+
+  const createCollaborationForSelectedNote = async () => {
+    if (!selectedNote) {
+      showNotice('Open a note before starting a collaboration session.')
+      return
+    }
+    if (!selectedCommunityFriend && !selectedCommunityGroup) {
+      showNotice('Choose a friend or group before starting edit-together.')
+      return
+    }
+    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const }
+    const share = selectedCommunityFriend
+      ? await sharingService.sendNoteToFriend(selectedNote.id, selectedCommunityFriend, options)
+      : await sharingService.sendNoteToGroup(selectedNote.id, selectedCommunityGroup as FriendGroup, options)
+    const session = await collaborationService.createSession({
+      localNoteId: selectedNote.id,
+      shareId: share.id,
+      ownerAccountId: authSession.accountId,
+      title: selectedNote.title || 'Untitled collaboration',
+    })
+    await communityActivityService.create({
+      recipientKind: selectedCommunityFriend ? 'friend' : 'group',
+      recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
+      actorAccountId: authSession.accountId,
+      kind: 'edit-session-created',
+      objectType: 'collaborationSession',
+      objectId: session.id,
+      payload: {
+        noteId: selectedNote.id,
+        shareId: share.id,
+        title: session.title,
+      },
+    })
+    setSharedNoteExports((current) => [{ ...share, collaborationSessionId: session.id }, ...current])
+    showNotice('Edit-together foundation created for this note.')
   }
 
   const updateUserSettings = (patch: Partial<UserSettings>) => {
@@ -2388,24 +2554,35 @@ function App() {
     showNotice('')
   }, [openNote, showNotice])
 
-  const switchProjectQuickNote = useCallback(
-    (direction: 1 | -1) => {
-      if (activeView !== 'editor' || projectQuickNotes.length < 2 || !selectedNote) return
-      const currentIndex = projectQuickNotes.findIndex((note) => note.id === selectedNote.id)
-      if (currentIndex === -1) return
-      const nextIndex = (currentIndex + direction + projectQuickNotes.length) % projectQuickNotes.length
-      openProjectQuickNote(projectQuickNotes[nextIndex].id)
-    },
-    [activeView, openProjectQuickNote, projectQuickNotes, selectedNote],
-  )
+  const switchToPreviousOpenedNote = useCallback(() => {
+    const currentNoteId = selectedNoteIdRef.current
+    const validNoteIds = new Set(notesRef.current.map((note) => note.id))
+    const history = noteOpenHistoryRef.current.filter((id) => validNoteIds.has(id))
+    noteOpenHistoryRef.current = history
+    if (activeView !== 'editor' || history.length < 2 || !currentNoteId) return
+
+    const previousNoteId = history.find((id) => id !== currentNoteId)
+    if (!previousNoteId) return
+
+    const nextHistory = [
+      previousNoteId,
+      ...history.filter((id) => id !== currentNoteId && id !== previousNoteId),
+      currentNoteId,
+    ]
+    noteOpenHistoryRef.current = nextHistory
+    openNote(previousNoteId, { trackHistory: false })
+    setActiveEditorPanel(null)
+    setNoteHistoryOpen(false)
+    showNotice('')
+  }, [activeView, openNote, showNotice])
 
   useEffect(() => {
     const onDocKeyDown = (event: KeyboardEvent) => {
-      const isProjectTabShortcut =
-        (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && (event.key === 'PageDown' || event.key === 'PageUp')
-      if (isProjectTabShortcut && !appDialog && !searchOpen && !atomDialog && !noteHistoryOpen && !templateProjectId) {
+      const isNoteHistoryShortcut =
+        event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'Shift' && !event.repeat
+      if (isNoteHistoryShortcut && !appDialog && !searchOpen && !atomDialog && !noteHistoryOpen && !templateProjectId) {
         event.preventDefault()
-        switchProjectQuickNote(event.key === 'PageDown' ? 1 : -1)
+        switchToPreviousOpenedNote()
         return
       }
       if (event.key === 'Escape' && appDialog) {
@@ -2461,7 +2638,7 @@ function App() {
     }
     document.addEventListener('keydown', onDocKeyDown)
     return () => document.removeEventListener('keydown', onDocKeyDown)
-  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchProjectQuickNote, templateProjectId])
+  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchToPreviousOpenedNote, templateProjectId])
 
   
   useEffect(() => {
@@ -3885,10 +4062,10 @@ function App() {
           dragOverProjectId={dragOverProjectId}
           profileAvatarColor={profileAvatarColor}
           profileDisplayName={profileDisplayName}
+          profileHandleLabel={profileHandleLabel}
           profileInitials={profileInitials}
           projectQuickNotes={projectQuickNotes}
           onAssignNoteToProjectDrop={assignNoteToProjectDrop}
-          onDeleteNote={(note) => void deleteNote(note)}
           onDragEnterProject={setDragOverProjectId}
           onDragLeaveProject={(projectId) => setDragOverProjectId((current) => (current === projectId ? '' : current))}
           onDragOverProject={handleNoteDropTargetDragOver}
@@ -3904,7 +4081,7 @@ function App() {
         />
 
         {activeView === 'home' && (
-          <section className="main-pane dashboard-pane scroll-hover">
+          <section className="main-pane dashboard-pane">
             <div className="home-intro-strip">
               <div>
                 <strong>Good to see you</strong>
@@ -4635,8 +4812,37 @@ function App() {
           </section>
         )}
 
+        {activeView === 'community' && (
+          <CommunityView
+            searchQuery={communitySearchQuery}
+            searchResults={communitySearchResults}
+            canAddRecipients={Boolean(authSession.accountId)}
+            communityTarget={communityTarget}
+            pinnedRecipientIds={userSettings.pinnedCommunityRecipientIds}
+            friendships={friendships}
+            friendGroups={friendGroups}
+            selectedFriend={selectedCommunityFriend}
+            selectedGroup={selectedCommunityGroup}
+            selectedNote={selectedNote}
+            selectedShares={selectedCommunityShares}
+            notes={notes}
+            onSearchQueryChange={setCommunitySearchQuery}
+            onSearch={() => void searchCommunityUsers()}
+            onAddSearchResult={(result) => void addCommunitySearchResult(result)}
+            onCreateGroup={() => void createDefaultFriendGroup()}
+            onSelectTarget={setCommunityTarget}
+            onTogglePinnedTarget={togglePinnedCommunityRecipient}
+            onAcceptFriend={(friendshipId) => void acceptCommunityFriend(friendshipId)}
+            onRejectFriend={(friendshipId) => void rejectCommunityFriend(friendshipId)}
+            onRemoveFriend={(friendshipId) => void removeCommunityFriend(friendshipId)}
+            onSendNote={(permission, noteId) => void createTargetedShareForSelectedNote(permission, noteId)}
+            onCreateCollaboration={() => void createCollaborationForSelectedNote()}
+            formatDay={formatDay}
+          />
+        )}
+
         {activeView === 'atoms' && (
-          <section className="main-pane compact-pane scroll-hover">
+          <section className="main-pane compact-pane">
             <PageHeader
               title={
                 <div className="atoms-title-switcher" ref={atomsTitleSwitcherRef}>
@@ -4770,8 +4976,8 @@ function App() {
                 <VirtualGrid
                   className="atom-card-grid atom-card-grid--virtual"
                   items={filteredAtomCards}
-                  minItemWidth={220}
-                  rowHeight={230}
+                  minItemWidth={320}
+                  rowHeight={190}
                   overscan={4}
                   ariaLabel="Atoms"
                   renderItem={(card) => {
@@ -4808,7 +5014,6 @@ function App() {
                           </div>
                           <div className="atom-card-face atom-card-back">
                             <div>
-                              <span>Definition</span>
                               <p>{card.atom.definition}</p>
                             </div>
                             <footer>
@@ -5130,9 +5335,30 @@ function App() {
                 <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
                 <div>
                   <strong>{profileDisplayName}</strong>
-                  <span>Local profile · used for new notes</span>
+                  <span>Local workspace profile · used for new notes</span>
                 </div>
                 <button type="button" onClick={openProfileModal}>Manage</button>
+              </section>
+
+              <section className="settings-card settings-account-card">
+                <div className="settings-card-heading">
+                  <Shield size={18} />
+                  <div>
+                    <h3>Online account</h3>
+                    <p>Prepared for account profiles, profile pictures, and friending while notes stay local.</p>
+                  </div>
+                </div>
+                <div className="settings-data-list">
+                  <span><strong>{authSession.status}</strong> Session</span>
+                  <span><strong>{accountStatusLabel}</strong> Account</span>
+                  <span><strong>{acceptedFriendCount}</strong> Friends</span>
+                  <span><strong>{pendingFriendCount}</strong> Pending requests</span>
+                  <span><strong>{developerNotifications.length}</strong> Dev notifications cached</span>
+                </div>
+                <div className="settings-warning">
+                  <Info size={16} />
+                  <span>These controls use backend-neutral services now. A real provider can be connected later without making notes sync automatically.</span>
+                </div>
               </section>
 
               <section className="settings-card settings-ai-card">
@@ -5409,7 +5635,7 @@ function App() {
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
-            <div id="global-search-list" className="global-search-results scroll-hover" role="listbox" aria-label="Search results">
+            <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
               {searchNormalized && searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
               <VirtualList
                 className="global-search-results-virtual"
@@ -5493,7 +5719,6 @@ function App() {
           }}
         >
           <section className="template-chooser-dialog scroll-hover" role="dialog" aria-modal="true" aria-labelledby="template-chooser-title" onMouseDown={(event) => event.stopPropagation()}>
-            <span className="panel-kicker">New note</span>
             <h2 id="template-chooser-title">Choose a template</h2>
             <p>Start with a blank page or pick a structure for the note you are about to create.</p>
             <div className="template-option-grid">
@@ -5720,14 +5945,13 @@ function App() {
           }}
         >
           <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <span>{localProfile ? 'Profile' : 'Welcome'}</span>
             <h2 id="profile-dialog-title">{localProfile ? 'Profile' : 'Set up your profile'}</h2>
             <p>{localProfile ? 'Tune how your local workspace identifies you.' : 'Choose the name shown in your notes and sidebar.'}</p>
             <div className="profile-dialog-main">
               <div className="profile-preview">
                 <div className="avatar profile-preview-avatar" style={{ background: profileDraft.avatarColor || DEFAULT_PROFILE_COLOR }}>{normalizeInitials(profileDraft.initials || initialsFromName(profileDraft.displayName) || 'LN')}</div>
                 <strong>{profileDraft.displayName.trim() || 'Your name'}</strong>
-                <span>Local profile</span>
+                  <span>{profileDraft.handle ? `@${profileDraft.handle}` : 'Local profile'}</span>
               </div>
               <div className="profile-fields">
                 <label>
@@ -5740,6 +5964,7 @@ function App() {
                         ...current,
                         displayName,
                         initials: localProfile ? current.initials : initialsFromName(displayName),
+                        handle: current.handleEdited ? current.handle : createBaseHandleFromDisplayName(displayName),
                       }))
                     }}
                     placeholder="Your name"
@@ -5754,6 +5979,21 @@ function App() {
                     maxLength={3}
                     placeholder="YN"
                   />
+                </label>
+                <label>
+                  User tag
+                  <div className="profile-tag-input">
+                    <span>@</span>
+                    <input
+                      value={profileDraft.handle}
+                      onChange={(event) => setProfileDraft((current) => ({
+                        ...current,
+                        handle: normalizeUserHandle(event.target.value),
+                        handleEdited: true,
+                      }))}
+                      placeholder="yourtag"
+                    />
+                  </div>
                 </label>
                 <div className="profile-color-field">
                   <span>Avatar color</span>
@@ -5880,6 +6120,30 @@ function initialsFromName(name: string) {
 
 function normalizeInitials(value: string) {
   return value.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase()
+}
+
+function createBaseHandleFromDisplayName(displayName: string) {
+  const words = displayName.trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return ''
+  const [firstName] = words
+  const lastInitial = words.length > 1 ? words[words.length - 1][0] : ''
+  return normalizeUserHandle(`${firstName}${lastInitial}`).replace(/[._-]+/g, '')
+}
+
+async function createAvailableLocalHandle(value: string, currentAccountId?: string) {
+  const base = normalizeUserHandle(value).replace(/[._-]+/g, '') || 'lociuser'
+  const profiles = await friendService.searchAccounts(base)
+  const taken = new Set(
+    profiles
+      .filter((profile) => profile.accountId !== currentAccountId)
+      .map((profile) => normalizeUserHandle(profile.handle ?? ''))
+  )
+  if (!taken.has(base)) return base
+  for (let suffix = 2; suffix < 10000; suffix += 1) {
+    const candidate = `${base}${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
+  return `${base}${Date.now().toString(36)}`
 }
 
 function formatDay(value: string) {

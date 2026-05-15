@@ -1,21 +1,22 @@
 {
   "name": "loci-notes",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "package": "tauri build",
+    "tauri:build": "npm run build && tauri build",
+    "package": "npm run tauri:build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-store": "^2.4.3",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@tiptap/extension-highlight": "^3.22.5",
     "@tiptap/extension-image": "^3.22.5",
@@ -35,6 +36,7 @@
     "file-saver": "^2.0.5",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.14.0",
+    "pocketbase": "^0.26.9",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

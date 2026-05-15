@@ -1,6 +1,5 @@
 import {
   ArrowUpRight,
-  BookOpenCheck,
   Brain,
   Check,
   Download,
@@ -52,15 +51,9 @@ const useCases = [
 const downloadOptions = [
   {
     title: 'Windows Setup EXE',
-    detail: 'Recommended installer for most Windows users.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.0.0-x64.exe',
+    detail: 'Recommended installer and signed updater package for Windows users.',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.0.1-x64.exe',
     label: 'Download EXE',
-  },
-  {
-    title: 'Windows MSI',
-    detail: 'Installer package for managed or admin-style installs.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-1.0.0-x64.msi',
-    label: 'Download MSI',
   },
 ]
 
@@ -71,7 +64,7 @@ function Landing() {
         <header className="site-header" aria-label="Loci Notes advertising navigation">
           <a className="brand-mark" href="#top" aria-label="Loci Notes home">
             <span className="brand-symbol">
-              <BookOpenCheck size={18} aria-hidden />
+              <img src="/logo.png" alt="" aria-hidden />
             </span>
             <span>Loci Notes</span>
           </a>
@@ -215,15 +208,15 @@ function Landing() {
           </div>
           <div className="closing-copy">
             <p>
-              Choose the setup installer for the simplest install, or the MSI package if you prefer
-              a managed Windows installer.
+              Use the setup installer for the simplest Windows install. MSI packages are paused for
+              now and can return later if managed deployments need them.
             </p>
             <div className="closing-points">
               <span>
                 <Check size={14} aria-hidden /> Release assets hosted on GitHub
               </span>
               <span>
-                <Sparkles size={14} aria-hidden /> Version 1.0.0 Windows builds
+                <Sparkles size={14} aria-hidden /> Version 1.0.1 Windows build
               </span>
             </div>
             <div className="download-grid" aria-label="Download options">
@@ -249,7 +242,7 @@ function Landing() {
         <footer className="site-footer">
           <a className="brand-mark footer-brand" href="#top">
             <span className="brand-symbol">
-              <BookOpenCheck size={18} aria-hidden />
+              <img src="/logo.png" alt="" aria-hidden />
             </span>
             <span>Loci Notes</span>
           </a>

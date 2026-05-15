@@ -58,7 +58,218 @@ export type UserSettings = {
   reduceMotion: boolean
   compactMode: boolean
   preferredAtomSubView?: 'atoms' | 'sets'
+  pinnedCommunityRecipientIds: string[]
   createdAt: string
+  updatedAt: string
+}
+
+export type AuthSession = {
+  id: 'current'
+  status: 'signed-out' | 'signed-in' | 'offline'
+  provider?: string
+  accountId?: string
+  accessTokenExpiresAt?: string
+  lastCheckedAt: string
+  updatedAt: string
+}
+
+export type AccountProfile = {
+  accountId: string
+  displayName: string
+  handle?: string
+  tag?: string
+  email?: string
+  avatarAssetId?: string
+  avatarUrl?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type FriendshipStatus = 'pending-outgoing' | 'pending-incoming' | 'accepted' | 'blocked'
+
+export type Friendship = {
+  id: string
+  accountId: string
+  friendAccountId: string
+  friendDisplayName: string
+  friendHandle?: string
+  friendAvatarAssetId?: string
+  status: FriendshipStatus
+  requestedAt: string
+  updatedAt: string
+}
+
+export type FriendGroup = {
+  id: string
+  ownerAccountId?: string
+  name: string
+  memberAccountIds: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type RemoteAsset = {
+  id: string
+  ownerAccountId?: string
+  kind: 'profile-avatar' | 'banner-image' | 'note-share-asset'
+  localUrl?: string
+  remoteUrl?: string
+  mimeType?: string
+  width?: number
+  height?: number
+  updatedAt: string
+}
+
+export type SharedNoteExport = {
+  id: string
+  localNoteId: string
+  remoteShareId?: string
+  ownerAccountId?: string
+  recipientAccountIds: string[]
+  permission: 'view' | 'comment' | 'edit'
+  status: 'draft' | 'published' | 'revoked' | 'deleted'
+  snapshotId?: string
+  collaborationSessionId?: string
+  publishedAt?: string
+  revokedAt?: string
+  updatedAt: string
+}
+
+export type CollaborationSession = {
+  id: string
+  localNoteId: string
+  shareId?: string
+  ownerAccountId?: string
+  title: string
+  status: 'draft' | 'active' | 'paused' | 'closed'
+  createdAt: string
+  updatedAt: string
+}
+
+export type CollaborationParticipant = {
+  id: string
+  sessionId: string
+  accountId: string
+  displayName: string
+  handle?: string
+  role: 'owner' | 'editor' | 'viewer'
+  joinedAt: string
+  lastSeenAt?: string
+}
+
+export type CollaborationEvent = {
+  id: string
+  sessionId: string
+  clientId: string
+  actorAccountId?: string
+  kind: 'presence' | 'content-op' | 'comment' | 'system'
+  payload: JSONContent
+  syncStatus: 'local' | 'pending' | 'synced' | 'failed'
+  createdAt: string
+}
+
+export type CommunityRecipientKind = 'friend' | 'group'
+export type CommunitySyncStatus = 'local' | 'pending' | 'synced' | 'failed'
+
+export type CommunityActivityKind =
+  | 'note-shared'
+  | 'edit-session-created'
+  | 'access-requested'
+  | 'study-timer-started'
+  | 'study-ranking-updated'
+  | 'reaction-added'
+  | 'preset-reply-added'
+  | 'system'
+
+export type CommunityObjectType =
+  | 'note'
+  | 'sharedNoteExport'
+  | 'collaborationSession'
+  | 'studyTimer'
+  | 'ranking'
+  | 'flashcardChallenge'
+  | 'groupGoal'
+  | 'reaction'
+  | 'presetReply'
+  | 'system'
+
+export type CommunityActivity = {
+  id: string
+  recipientKind: CommunityRecipientKind
+  recipientId: string
+  actorAccountId?: string
+  kind: CommunityActivityKind
+  objectType: CommunityObjectType
+  objectId?: string
+  payload?: JSONContent
+  syncStatus: CommunitySyncStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export type CommunityWidgetKind = 'study-timer' | 'ranking' | 'flashcard-challenge' | 'group-goal'
+export type CommunityWidgetStatus = 'draft' | 'active' | 'paused' | 'completed' | 'archived'
+
+export type CommunityWidget = {
+  id: string
+  kind: CommunityWidgetKind
+  ownerAccountId?: string
+  recipientKind: CommunityRecipientKind
+  recipientId: string
+  status: CommunityWidgetStatus
+  payload: JSONContent
+  syncStatus: CommunitySyncStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export type CommunityReactionKind = 'seen' | 'helpful' | 'done' | 'question'
+
+export type CommunityReaction = {
+  id: string
+  activityId: string
+  actorAccountId?: string
+  kind: CommunityReactionKind
+  syncStatus: CommunitySyncStatus
+  createdAt: string
+}
+
+export type CommunityPresetReplyKind = 'reviewing' | 'looks-good' | 'send-again' | 'done'
+
+export type CommunityPresetReply = {
+  id: string
+  activityId: string
+  actorAccountId?: string
+  kind: CommunityPresetReplyKind
+  syncStatus: CommunitySyncStatus
+  createdAt: string
+}
+
+export type CommunitySyncQueueItem = {
+  id: string
+  entityType: 'activity' | 'widget' | 'reaction' | 'presetReply' | 'share' | 'collaborationEvent'
+  entityId: string
+  operation: 'create' | 'update' | 'delete'
+  status: Exclude<CommunitySyncStatus, 'local'>
+  attempts: number
+  lastError?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type RemoteContentPlacement = 'landing' | 'app-banner' | 'settings' | 'dev-notification'
+
+export type RemoteContentItem = {
+  id: string
+  placement: RemoteContentPlacement
+  campaignId?: string
+  title: string
+  body?: string
+  imageAssetId?: string
+  href?: string
+  startsAt?: string
+  endsAt?: string
+  cachedAt: string
   updatedAt: string
 }
 
@@ -223,6 +434,21 @@ class LociNotesDatabase extends Dexie {
   noteSnapshots!: Dexie.Table<NoteSnapshot, string>
   userProfiles!: Dexie.Table<UserProfile, string>
   userSettings!: Dexie.Table<UserSettings, string>
+  authSessions!: Dexie.Table<AuthSession, string>
+  accountProfiles!: Dexie.Table<AccountProfile, string>
+  friendships!: Dexie.Table<Friendship, string>
+  friendGroups!: Dexie.Table<FriendGroup, string>
+  remoteAssets!: Dexie.Table<RemoteAsset, string>
+  sharedNoteExports!: Dexie.Table<SharedNoteExport, string>
+  collaborationSessions!: Dexie.Table<CollaborationSession, string>
+  collaborationParticipants!: Dexie.Table<CollaborationParticipant, string>
+  collaborationEvents!: Dexie.Table<CollaborationEvent, string>
+  communityActivities!: Dexie.Table<CommunityActivity, string>
+  communityWidgets!: Dexie.Table<CommunityWidget, string>
+  communityReactions!: Dexie.Table<CommunityReaction, string>
+  communityPresetReplies!: Dexie.Table<CommunityPresetReply, string>
+  communitySyncQueue!: Dexie.Table<CommunitySyncQueueItem, string>
+  remoteContentItems!: Dexie.Table<RemoteContentItem, string>
 
   constructor() {
     super('loci-notes')
@@ -442,6 +668,73 @@ class LociNotesDatabase extends Dexie {
         if (migratedBodies.length) await bodyTable.bulkPut(migratedBodies)
         if (migratedSets.length) await setTable.bulkPut(migratedSets)
       })
+    this.version(13).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, updatedAt, *recipientAccountIds',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+    })
+    this.version(14).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+    })
+    this.version(15).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+    })
   }
 }
 
@@ -772,8 +1065,62 @@ export const initialNotes: Note[] = seedInitialNotes.map((note) => ({
   templateData: { kind: 'blank', body: note.content },
 }))
 
+export const initialAccountProfiles: AccountProfile[] = [
+  {
+    accountId: 'demo_devi',
+    displayName: 'Devi K',
+    handle: 'devik',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
+  {
+    accountId: 'demo_vijay',
+    displayName: 'Vijay',
+    handle: 'vijay',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
+  {
+    accountId: 'demo_ananya',
+    displayName: 'Ananya',
+    handle: 'ananya',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
+  {
+    accountId: 'demo_siddarth',
+    displayName: 'Siddarth Bruh',
+    handle: 'siddarth',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
+]
+
+export const initialFriendships: Friendship[] = initialAccountProfiles.map((profile) => ({
+  id: `local_${profile.accountId}`,
+  accountId: 'local',
+  friendAccountId: profile.accountId,
+  friendDisplayName: profile.displayName,
+  friendHandle: profile.handle,
+  status: 'accepted',
+  requestedAt: nowIso(),
+  updatedAt: nowIso(),
+}))
+
+export const initialFriendGroups: FriendGroup[] = [
+  {
+    id: 'group_study_circle',
+    ownerAccountId: 'local',
+    name: 'Study circle',
+    memberAccountIds: ['demo_devi', 'demo_vijay', 'demo_ananya'],
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  },
+]
+
 export async function ensureSeedData() {
   const noteCount = await db.notes.count()
+  await ensureCommunitySeedData()
   if (noteCount > 0) return
 
   await db.transaction('rw', [db.projects, db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.noteSnapshots], async () => {
@@ -784,5 +1131,22 @@ export async function ensureSeedData() {
     await db.noteBodies.bulkPut(initialNotes.map(noteToBody))
     const assets = initialNotes.flatMap(noteToMediaAssets)
     if (assets.length) await db.mediaAssets.bulkPut(assets)
+  })
+}
+
+async function ensureCommunitySeedData() {
+  const existingProfiles = await db.accountProfiles.bulkGet(initialAccountProfiles.map((profile) => profile.accountId))
+  const missingProfiles = initialAccountProfiles.filter((_, index) => !existingProfiles[index])
+  const existingFriendships = await db.friendships.bulkGet(initialFriendships.map((friendship) => friendship.id))
+  const missingFriendships = initialFriendships.filter((_, index) => !existingFriendships[index])
+  const existingGroups = await db.friendGroups.bulkGet(initialFriendGroups.map((group) => group.id))
+  const missingGroups = initialFriendGroups.filter((_, index) => !existingGroups[index])
+
+  if (!missingProfiles.length && !missingFriendships.length && !missingGroups.length) return
+
+  await db.transaction('rw', [db.accountProfiles, db.friendships, db.friendGroups], async () => {
+    if (missingProfiles.length) await db.accountProfiles.bulkPut(missingProfiles)
+    if (missingFriendships.length) await db.friendships.bulkPut(missingFriendships)
+    if (missingGroups.length) await db.friendGroups.bulkPut(missingGroups)
   })
 }
