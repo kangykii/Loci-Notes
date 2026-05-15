@@ -6,6 +6,7 @@ type VirtualListProps<T> = {
   items: T[]
   rowHeight: number
   className?: string
+  style?: React.CSSProperties
   overscan?: number
   ariaLabel?: string
   role?: string
@@ -16,6 +17,7 @@ export function VirtualList<T>({
   items,
   rowHeight,
   className = '',
+  style,
   overscan = 8,
   ariaLabel,
   role,
@@ -39,7 +41,7 @@ export function VirtualList<T>({
   }
 
   return (
-    <div ref={containerRef} className={`virtual-list ${className}`.trim()} onScroll={onScroll} aria-label={ariaLabel} role={role}>
+    <div ref={containerRef} className={`virtual-list ${className}`.trim()} style={style} onScroll={onScroll} aria-label={ariaLabel} role={role}>
       <div className="virtual-list-spacer" style={{ height: totalHeight }}>
         {virtualItems.map((virtualItem) => (
           <div

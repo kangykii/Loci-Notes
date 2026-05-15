@@ -69,6 +69,15 @@ export function createLociBlock(content: JSONContent, type = blockTypeForNode(co
   }
 }
 
+function createBlockFromNode(node: JSONContent): LociBlock {
+  return createLociBlock(blockDoc([node]), blockTypeForNode(node))
+}
+
+function sameBlockNode(block: LociBlock, node: JSONContent) {
+  const nodes = blockContentNodes(block.content)
+  return nodes.length === 1 && JSON.stringify(nodes[0]) === JSON.stringify(node)
+}
+
 export function paragraphNode(text: string): JSONContent {
   return { type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }
 }
@@ -230,7 +239,8 @@ export function quoteDataFromNode(node: JSONContent): { quote: string; author?: 
 
 export function blocksFromContent(content?: JSONContent): LociBlock[] {
   const nodes = content?.type === 'doc' ? content.content ?? [] : []
-  return [createLociBlock(blockDoc(nodes.length ? nodes : [{ type: 'paragraph', content: [] }]), 'paragraph')]
+  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
+  return sourceNodes.map((node) => createBlockFromNode(cloneTemplateValue(node)))
 }
 
 export function contentFromBlocks(blocks?: LociBlock[]): JSONContent {
@@ -245,39 +255,65 @@ export function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlo
   const nodes = content?.type === 'doc' ? content.content ?? [] : []
   const now = nowIso()
   const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
-  if (!blocks?.length) return [createLociBlock(blockDoc(sourceNodes), 'paragraph')]
-  const existingNodes = blocks.flatMap((block) => blockContentNodes(block.content))
-  if (JSON.stringify(existingNodes) === JSON.stringify(sourceNodes)) {
-    return blocks.map((block) => ({
-      ...block,
-      content: block.content.type === 'doc' ? block.content : blockDoc([block.content]),
-      updatedAt: now,
-    }))
+  if (!blocks?.length) return sourceNodes.map((node) => createBlockFromNode(cloneTemplateValue(node)))
+
+  if (sourceNodes.length === blocks.length) {
+    return sourceNodes.map((node, index) => {
+      const clonedNode = cloneTemplateValue(node)
+      return {
+        ...blocks[index],
+        type: blockTypeForNode(clonedNode),
+        content: blockDoc([clonedNode]),
+        updatedAt: now,
+      }
+    })
   }
-  if (blocks.length === 1) {
-    const existing = blocks[0]
-    return [{
-      ...existing,
-      type: blockTypeForNode(sourceNodes[0] ?? { type: 'paragraph' }),
-      content: blockDoc(cloneTemplateValue(sourceNodes)),
-      updatedAt: now,
-    }]
+
+  const usedBlockIndexes = new Set<number>()
+  const takeExactMatch = (node: JSONContent) => {
+    const index = blocks.findIndex((block, blockIndex) => !usedBlockIndexes.has(blockIndex) && sameBlockNode(block, node))
+    if (index < 0) return null
+    usedBlockIndexes.add(index)
+    return blocks[index]
   }
-  const counts = blocks.map((block) => Math.max(1, blockContentNodes(block.content).length))
-  const totalPrevious = counts.reduce((sum, count) => sum + count, 0)
-  const delta = sourceNodes.length - totalPrevious
-  const targetIndex = activeIndex >= 0 && activeIndex < counts.length ? activeIndex : counts.length - 1
-  counts[targetIndex] = Math.max(1, counts[targetIndex] + delta)
-  let cursor = 0
-  return blocks.map((block, index) => {
-    const nextNodes = sourceNodes.slice(cursor, cursor + counts[index])
-    cursor += counts[index]
-    return {
-      ...block,
-      type: blockTypeForNode(nextNodes[0] ?? { type: 'paragraph' }),
-      content: blockDoc(cloneTemplateValue(nextNodes.length ? nextNodes : [{ type: 'paragraph', content: [] }])),
-      updatedAt: now,
+
+  const takeReusableBlock = (preferredIndex: number) => {
+    if (preferredIndex >= 0 && preferredIndex < blocks.length && !usedBlockIndexes.has(preferredIndex)) {
+      usedBlockIndexes.add(preferredIndex)
+      return blocks[preferredIndex]
     }
+    const index = blocks.findIndex((_, blockIndex) => !usedBlockIndexes.has(blockIndex))
+    if (index < 0) return null
+    usedBlockIndexes.add(index)
+    return blocks[index]
+  }
+
+  const shouldCreateNewBlock = sourceNodes.length > blocks.length && activeIndex >= 0
+  return sourceNodes.map((node, index) => {
+    const clonedNode = cloneTemplateValue(node)
+    const exactMatch = takeExactMatch(node)
+    if (exactMatch) {
+      return {
+        ...exactMatch,
+        type: blockTypeForNode(clonedNode),
+        content: blockDoc([clonedNode]),
+        updatedAt: now,
+      }
+    }
+
+    if (shouldCreateNewBlock && index !== activeIndex) return createBlockFromNode(clonedNode)
+
+    const reusable = takeReusableBlock(index)
+    if (reusable) {
+      return {
+        ...reusable,
+        type: blockTypeForNode(clonedNode),
+        content: blockDoc([clonedNode]),
+        updatedAt: now,
+      }
+    }
+
+    return createBlockFromNode(clonedNode)
   })
 }
 

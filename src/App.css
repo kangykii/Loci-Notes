@@ -9,6 +9,7 @@
   --tag: #ececeb;
   --accent: #171717;
   --danger: #c93d36;
+  --popup-backdrop-bg: rgba(17, 17, 17, 0.35);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--text);
@@ -196,12 +197,17 @@ button {
 }
 
 .custom-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
   height: 34px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  border-bottom: 1px solid #efefed;
-  background: var(--shell);
+  border-bottom: 1px solid transparent;
+  background: transparent;
   color: #3e3d3b;
   user-select: none;
 }
@@ -215,18 +221,34 @@ button {
   font-weight: 650;
 }
 
+.custom-titlebar-drag span {
+  opacity: 0;
+}
+
 .custom-titlebar-controls {
   height: 100%;
   display: inline-flex;
   align-items: stretch;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.custom-titlebar:hover .custom-titlebar-controls,
+.custom-titlebar:focus-within .custom-titlebar-controls {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
 }
 
 .custom-titlebar-controls button {
   width: 46px;
   border: 0;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.86);
   color: #5f5c56;
   font-size: 15px;
+  backdrop-filter: blur(10px);
 }
 
 .custom-titlebar-controls button:hover {
@@ -243,7 +265,7 @@ button {
   --sidebar-width: 72px;
   --sidebar-open-width: 248px;
   width: 100vw;
-  height: calc(100vh - 34px);
+  height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   overflow: hidden;
@@ -255,7 +277,7 @@ button {
   z-index: 5;
   box-sizing: border-box;
   width: var(--sidebar-width);
-  height: calc(100vh - 34px);
+  height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -556,7 +578,7 @@ button {
 
 .project-quick-nav {
   min-width: 0;
-  height: 240px;
+  height: var(--project-quick-nav-height, 37px);
   margin: -4px 0 4px 10px;
   padding: 0;
 }
@@ -647,7 +669,7 @@ button {
 
 .main-pane {
   min-width: 0;
-  height: calc(100vh - 34px);
+  height: 100vh;
   background: #fff;
   overflow: auto;
 }
@@ -739,13 +761,18 @@ button {
 
 .title-input {
   width: 100%;
+  box-sizing: border-box;
   border: 0;
   outline: 0;
   color: #070707;
   background: transparent;
+  margin: 0 0 18px;
+  padding: 0;
+  font-family: inherit;
   font-size: 38px;
   font-weight: 780;
   letter-spacing: 0;
+  line-height: 1.08;
 }
 
 .meta-grid {
@@ -1359,26 +1386,18 @@ button {
 .modal-backdrop.format-modal-backdrop {
   z-index: 120;
   align-items: center;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(5px);
 }
 
 .modal-backdrop.atom-dialog-backdrop {
   z-index: 130;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(5px);
 }
 
 .modal-backdrop.profile-dialog-backdrop {
   z-index: 140;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(5px);
 }
 
 .modal-backdrop.ai-result-backdrop {
   z-index: 145;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(5px);
 }
 
 .ai-result-dialog {
@@ -1966,8 +1985,6 @@ button {
 
 .template-chooser-backdrop {
   z-index: 135;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(5px);
 }
 
 .template-chooser-dialog {
@@ -2031,8 +2048,8 @@ button {
 
 .block-hover-controls {
   position: absolute;
-  top: 0.18em;
-  left: -82px;
+  top: 0;
+  right: 14px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2042,33 +2059,26 @@ button {
   pointer-events: auto;
 }
 
-.note-editor > *:hover .block-hover-controls,
+.block-control-hotspot.is-hovered .block-hover-controls,
+.block-control-hotspot:hover .block-hover-controls,
+.block-control-hotspot:focus-within .block-hover-controls,
 .block-hover-controls:hover,
-.format-block-control-hotspot:hover .format-block-hover-controls,
-.format-block-control-hotspot:focus-within .format-block-hover-controls,
-.format-block-hover-controls:hover,
-.format-block-hover-controls:focus-within,
-.note-editor:focus-within .block-hover-controls:hover {
+.block-hover-controls:focus-within {
   opacity: 1;
 }
 
-.format-block-controls-layer {
+.block-controls-layer {
   position: absolute;
   inset: 0;
   z-index: 13;
   pointer-events: none;
 }
 
-.format-block-control-hotspot {
+.block-control-hotspot {
   position: absolute;
   left: -96px;
-  right: 0;
+  width: 96px;
   display: block;
-  pointer-events: auto;
-}
-
-.format-block-hover-controls {
-  top: 0;
   pointer-events: auto;
 }
 
@@ -2130,21 +2140,33 @@ button {
 
 .block-drop-target {
   position: absolute;
-  opacity: 1;
+  opacity: 0;
   pointer-events: auto;
   border-radius: 8px;
   background: transparent;
-  outline: 0 solid transparent;
   transition:
+    opacity 120ms ease,
     background 120ms ease,
-    outline-color 120ms ease,
     box-shadow 120ms ease;
 }
 
+.block-drop-target::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(141, 105, 47, 0.72);
+  box-shadow: 0 0 0 4px rgba(141, 105, 47, 0.1);
+  transform: translateY(50%);
+}
+
 .block-editor-shell.is-dragging-block .block-drop-target:hover {
+  opacity: 1;
   background: rgba(141, 105, 47, 0.07);
-  outline: 1px solid rgba(141, 105, 47, 0.32);
-  box-shadow: 0 0 0 4px rgba(141, 105, 47, 0.06);
+  box-shadow: 0 0 0 1px rgba(141, 105, 47, 0.22);
 }
 
 .block-picker-backdrop {
@@ -2153,7 +2175,7 @@ button {
   z-index: 35;
   display: grid;
   place-items: center;
-  background: rgba(17, 17, 17, 0.22);
+  background: var(--popup-backdrop-bg);
 }
 
 .block-picker-dialog {
@@ -2229,24 +2251,30 @@ button {
 }
 
 .note-editor h2 {
-  margin: 0 0 10px;
+  margin: 0 0 18px;
   color: #111;
   font-size: 25px;
   line-height: 1.25;
 }
 
 .note-editor h1 {
-  margin: 0 0 12px;
+  margin: 0 0 20px;
   color: #111;
   font-size: 32px;
   line-height: 1.14;
 }
 
 .note-editor h3 {
-  margin: 0 0 8px;
+  margin: 0 0 16px;
   color: #111;
   font-size: 20px;
   line-height: 1.3;
+}
+
+.note-editor p + h1,
+.note-editor p + h2,
+.note-editor p + h3 {
+  margin-top: 30px;
 }
 
 .note-editor h1 *,
@@ -5433,13 +5461,11 @@ button {
   z-index: 50;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--popup-backdrop-bg);
 }
 
 .app-dialog-backdrop {
   z-index: 140;
-  background: rgba(17, 17, 17, 0.24);
-  backdrop-filter: blur(4px);
 }
 
 .app-dialog {
@@ -5545,7 +5571,7 @@ button {
   box-shadow: 0 18px 54px rgba(17, 17, 17, 0.16);
 }
 
-.atom-dialog h2 {
+.atom-dialog > h2:not(.visually-hidden) {
   margin: -8px 0 0;
   font-size: 26px;
 }
@@ -5805,8 +5831,7 @@ button {
   display: grid;
   place-items: start center;
   padding: 12vh 24px 48px;
-  background: rgba(17, 17, 17, 0.35);
-  backdrop-filter: blur(8px);
+  background: var(--popup-backdrop-bg);
 }
 
 .global-search-modal {

@@ -103,12 +103,10 @@ import { ProjectDetail } from './components/views/ProjectDetail'
 import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
 import {
   AISelectionHighlight,
-  BlockControlsExtension,
   LociFlashcard,
   LociImage,
   LociQuote,
   aiSelectionHighlightKey,
-  blockControlsKey,
 } from './editor/extensions'
 import type { EditorRange } from './editor/extensions'
 import {
@@ -224,6 +222,9 @@ type LociWorkerResponse =
   | { id: string; type: 'search-results'; noteIds: string[]; indexVersion: number }
   | { id: string; type: 'preview-ready'; noteId: string; preview: string }
 
+const PROJECT_QUICK_NAV_ROW_HEIGHT = 37
+const PROJECT_QUICK_NAV_MAX_HEIGHT = 240
+
 type EditorPanel = 'format' | 'more'
 
 type ImageCropMode = 'contain' | 'cover'
@@ -252,12 +253,10 @@ type BlockDropTarget = {
   left: number
 }
 
-type FormatBlockControlRect = {
+type BlockControlRect = {
   blockId: string
-  type: FormatBlockType
   top: number
   height: number
-  left: number
 }
 
 type FormatSideControlsRect = {
@@ -706,6 +705,10 @@ const Sidebar = memo(function Sidebar({
   ]
     .filter(Boolean)
     .join(' ')
+  const projectQuickNavHeight = Math.min(projectQuickNotes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
+  const projectQuickNavStyle = {
+    '--project-quick-nav-height': `${projectQuickNavHeight}px`,
+  } as React.CSSProperties
 
   return (
     <aside
@@ -748,8 +751,9 @@ const Sidebar = memo(function Sidebar({
         {sidebarOpen && activeProject && projectQuickNotes.length > 0 && (
           <VirtualList
             className="project-quick-nav"
+            style={projectQuickNavStyle}
             items={projectQuickNotes}
-            rowHeight={37}
+            rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
             overscan={6}
             ariaLabel={`${activeProject.name} documents`}
             renderItem={(note) => (
@@ -882,7 +886,8 @@ function App() {
   const [draggedBlockId, setDraggedBlockId] = useState('')
   const [blockDropTargets, setBlockDropTargets] = useState<BlockDropTarget[]>([])
   const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
-  const [formatBlockControls, setFormatBlockControls] = useState<FormatBlockControlRect[]>([])
+  const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
+  const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
   const [imageCropEditing, setImageCropEditing] = useState(false)
   const [imageCropDragging, setImageCropDragging] = useState(false)
   const [aiMarkingCriteria] = useState(DEFAULT_MARKING_CRITERIA)
@@ -913,10 +918,8 @@ function App() {
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
-  const createBlockAfterActiveRef = useRef<() => boolean>(() => false)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
   const formatDialogRef = useRef<HTMLElement | null>(null)
-  const userScrollVetoUntilRef = useRef(0)
   const snapshotDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveStateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noteSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1029,7 +1032,23 @@ function App() {
           content,
         }
 
-        const changed = nextPid !== note.projectId || (note.tags?.length ?? 0) > 0 || !note.templateId || !note.templateData || !note.blocks
+        const blocksChanged =
+          blocks.length !== (note.blocks?.length ?? 0) ||
+          blocks.some((block, index) => {
+            const previous = note.blocks?.[index]
+            return !previous ||
+              block.id !== previous.id ||
+              block.type !== previous.type ||
+              JSON.stringify(block.content) !== JSON.stringify(previous.content) ||
+              JSON.stringify(block.attrs ?? {}) !== JSON.stringify(previous.attrs ?? {})
+          })
+        const changed =
+          nextPid !== note.projectId ||
+          (note.tags?.length ?? 0) > 0 ||
+          !note.templateId ||
+          !note.templateData ||
+          !note.blocks ||
+          blocksChanged
 
         if (changed) await notesStore.save(next)
 
@@ -1410,17 +1429,18 @@ function App() {
       LociQuote,
       AtomMark,
       AISelectionHighlight,
-      BlockControlsExtension,
     ],
     content: primaryTemplateContent(selectedNote),
     editorProps: {
       attributes: { class: 'note-editor' },
       handleKeyDown: (_view, event) => {
         if (event.key !== 'Enter') return false
+        if (event.shiftKey) {
+          event.preventDefault()
+          return true
+        }
         pendingEnterBlockIndexRef.current = activeBlockIndex()
-        if (!event.shiftKey) return false
-        event.preventDefault()
-        return createBlockAfterActiveRef.current()
+        return false
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
@@ -1448,11 +1468,6 @@ function App() {
     if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.content === selectedNote.content) return
     const nextContent = primaryTemplateContent(selectedNote)
     if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) setEditorContentFromSync(nextContent)
-  }, [editor, selectedNote])
-
-  useEffect(() => {
-    if (!editor || !selectedNote) return
-    editor.view.dispatch(editor.state.tr.setMeta(blockControlsKey, selectedNote.blocks ?? normalizeBlocksForContent(selectedNote.content)))
   }, [editor, selectedNote])
 
   const syncFormatSideControls = useCallback(() => {
@@ -1644,16 +1659,8 @@ function App() {
     const scrollEl = documentScrollRef.current
     if (!scrollEl) return
 
-    const veto = () => {
-      userScrollVetoUntilRef.current = Date.now() + 800
-    }
-
-    const vetoKeyboardScroll = (event: KeyboardEvent) => {
-      if (['PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) veto()
-    }
-
     const adjustCaretScroll = () => {
-      if (Date.now() < userScrollVetoUntilRef.current) return
+      if (!editor.isFocused) return
       if (!editor.view) return
       const pos = editor.state.selection.from
       let coords
@@ -1662,19 +1669,12 @@ function App() {
       } catch {
         return
       }
-      const caretMid = (coords.top + coords.bottom) / 2
       const sr = scrollEl.getBoundingClientRect()
-      const rel = caretMid - sr.top
-      const h = sr.height
-      const topGuard = 92
-      const bottomGuard = Math.min(190, h * 0.24)
-      if (rel < topGuard) {
-        scrollEl.scrollTop += rel - topGuard
-        return
-      }
-      if (rel > h - bottomGuard) {
-        scrollEl.scrollTop += rel - (h - bottomGuard)
-      }
+      const targetBottom = sr.bottom - scrollEl.clientHeight * 0.25
+      const delta = coords.bottom - targetBottom
+      if (delta <= 0) return
+      const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight)
+      scrollEl.scrollTop = Math.min(maxScrollTop, Math.max(0, scrollEl.scrollTop + delta))
     }
 
     let rafQueued = false
@@ -1687,25 +1687,14 @@ function App() {
       })
     }
 
-    const onSel = () => queueAdjust()
     const onTrx = ({ transaction }: { transaction: { docChanged: boolean } }) => {
       if (transaction.docChanged) queueAdjust()
     }
 
-    editor.on('selectionUpdate', onSel)
     editor.on('transaction', onTrx)
-    scrollEl.addEventListener('wheel', veto, { passive: true })
-    scrollEl.addEventListener('touchmove', veto, { passive: true })
-    scrollEl.addEventListener('pointerdown', veto, { passive: true })
-    document.addEventListener('keydown', vetoKeyboardScroll)
 
     return () => {
-      editor.off('selectionUpdate', onSel)
       editor.off('transaction', onTrx)
-      scrollEl.removeEventListener('wheel', veto)
-      scrollEl.removeEventListener('touchmove', veto)
-      scrollEl.removeEventListener('pointerdown', veto)
-      document.removeEventListener('keydown', vetoKeyboardScroll)
     }
   }, [
     editor,
@@ -2549,7 +2538,6 @@ function App() {
       const scrollTop = scrollEl?.scrollTop
       suppressEditorPersistRef.current = true
       editor.commands.setContent(content, { emitUpdate: false })
-      editor.view.dispatch(editor.state.tr.setMeta(blockControlsKey, blocks))
       suppressEditorPersistRef.current = false
       if (scrollEl && scrollTop !== undefined) {
         requestAnimationFrame(() => {
@@ -2584,35 +2572,32 @@ function App() {
     return null
   }, [editor, selectedBlocksKey])
 
-  const measureFormatBlockControls = useCallback(() => {
+  const measureBlockControls = useCallback(() => {
     const shell = blockEditorShellRef.current
     const editorDom = mountedEditorDom(editor)
     if (!shell || !editorDom) {
-      setFormatBlockControls([])
+      setBlockControls([])
       return
     }
     const shellRect = shell.getBoundingClientRect()
     const children = Array.from(editorDom.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
     let childIndex = 0
-    const controls: FormatBlockControlRect[] = []
+    const controls: BlockControlRect[] = []
     selectedBlocks.forEach((block) => {
       const count = Math.max(1, blockContentNodes(block.content).length)
       const blockChildren = children.slice(childIndex, childIndex + count)
       childIndex += count
-      const formatType = formatBlockTypeForBlock(block)
-      if (!formatType || !blockChildren.length) return
+      if (!blockChildren.length) return
       const rects = blockChildren.map((child) => child.getBoundingClientRect())
       const top = Math.min(...rects.map((rect) => rect.top))
       const bottom = Math.max(...rects.map((rect) => rect.bottom))
       controls.push({
         blockId: block.id,
-        type: formatType,
         top: top - shellRect.top + 3,
         height: Math.max(24, bottom - top),
-        left: -82,
       })
     })
-    setFormatBlockControls((current) => (sameFormatBlockControls(current, controls) ? current : controls))
+    setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
   }, [editor, selectedBlocksKey])
 
   const scheduleFormatSideControls = useCallback(() => {
@@ -2623,39 +2608,39 @@ function App() {
     })
   }, [syncFormatSideControls])
 
-  const scheduleFormatBlockControls = useCallback(() => {
+  const scheduleBlockControls = useCallback(() => {
     if (formatBlockFrameRef.current) return
     formatBlockFrameRef.current = requestAnimationFrame(() => {
       formatBlockFrameRef.current = null
-      measureFormatBlockControls()
+      measureBlockControls()
     })
-  }, [measureFormatBlockControls])
+  }, [measureBlockControls])
 
   useLayoutEffect(() => {
-    measureFormatBlockControls()
-  }, [measureFormatBlockControls])
+    measureBlockControls()
+  }, [measureBlockControls])
 
   useEffect(() => {
     if (!editor) return
     syncFormatSideControls()
-    measureFormatBlockControls()
+    measureBlockControls()
     editor.on('selectionUpdate', scheduleFormatSideControls)
     editor.on('transaction', scheduleFormatSideControls)
-    editor.on('transaction', scheduleFormatBlockControls)
+    editor.on('transaction', scheduleBlockControls)
     window.addEventListener('resize', scheduleFormatSideControls)
-    window.addEventListener('resize', scheduleFormatBlockControls)
+    window.addEventListener('resize', scheduleBlockControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
-    documentScrollRef.current?.addEventListener('scroll', scheduleFormatBlockControls)
+    documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
       editor.off('transaction', scheduleFormatSideControls)
-      editor.off('transaction', scheduleFormatBlockControls)
+      editor.off('transaction', scheduleBlockControls)
       window.removeEventListener('resize', scheduleFormatSideControls)
-      window.removeEventListener('resize', scheduleFormatBlockControls)
+      window.removeEventListener('resize', scheduleBlockControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
-      documentScrollRef.current?.removeEventListener('scroll', scheduleFormatBlockControls)
+      documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
     }
-  }, [editor, measureFormatBlockControls, scheduleFormatBlockControls, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, measureBlockControls, scheduleBlockControls, scheduleFormatSideControls, syncFormatSideControls])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
@@ -2741,27 +2726,6 @@ function App() {
     return Math.max(0, selectedBlocks.length - 1)
   }
 
-  const createBlockAfterActive = () => {
-    if (!selectedBlocks.length) return false
-    const insertIndex = activeBlockIndex() + 1
-    const nextBlocks = [...selectedBlocks]
-    nextBlocks.splice(insertIndex, 0, createLociBlock(blankBlockNode('paragraph'), 'paragraph'))
-    persistBlocks(nextBlocks)
-    requestAnimationFrame(() => {
-      if (!editorRef.current) return
-      const scrollEl = documentScrollRef.current
-      const scrollTop = scrollEl?.scrollTop
-      const pos = 1 + nextBlocks.slice(0, insertIndex).reduce(
-        (total, block) => total + blockContentNodes(block.content).reduce((sum, node) => sum + editorRef.current!.schema.nodeFromJSON(node).nodeSize, 0),
-        0,
-      )
-      editorRef.current.commands.setTextSelection(Math.max(1, pos + 1))
-      editorRef.current.commands.focus(undefined, { scrollIntoView: false })
-      if (scrollEl && scrollTop !== undefined) scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
-    })
-    return true
-  }
-
   const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn') => {
     if (!editor) return
     const chain = editor.chain().focus()
@@ -2785,7 +2749,7 @@ function App() {
     editor.chain().focus().updateAttributes('image', attrs).run()
     requestAnimationFrame(() => {
       syncFormatSideControls()
-      measureFormatBlockControls()
+      measureBlockControls()
     })
   }
 
@@ -2851,6 +2815,30 @@ function App() {
       offsetX: clampImageNumber(drag.startOffsetX - ((event.clientX - drag.startX) / drag.frameWidth) * 100, 0, 100, 50),
       offsetY: clampImageNumber(drag.startOffsetY - ((event.clientY - drag.startY) / drag.frameHeight) * 100, 0, 100, 50),
     })
+  }
+
+  const syncHoveredBlockControl = (event: React.PointerEvent<HTMLElement>) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-block-id]') : null
+    const targetBlockId = target?.dataset.blockId
+    if (targetBlockId && blockControls.some((control) => control.blockId === targetBlockId)) {
+      setHoveredBlockControlId((current) => (current === targetBlockId ? current : targetBlockId))
+      return
+    }
+
+    const shellRect = event.currentTarget.getBoundingClientRect()
+    const pointerY = event.clientY - shellRect.top
+    const hoveredControl = blockControls.find((control) => pointerY >= control.top && pointerY <= control.top + control.height)
+    const nextBlockId = hoveredControl?.blockId ?? ''
+    setHoveredBlockControlId((current) => (current === nextBlockId ? current : nextBlockId))
+  }
+
+  const handleBlockEditorPointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    handleImageCropPointerMove(event)
+    if (!imageCropDragRef.current) syncHoveredBlockControl(event)
+  }
+
+  const handleBlockEditorPointerLeave = () => {
+    if (!imageCropDragRef.current) setHoveredBlockControlId('')
   }
 
   const handleImageCropPointerEnd = (event: React.PointerEvent<HTMLElement>) => {
@@ -2930,26 +2918,29 @@ function App() {
     )
   }
 
-  const renderFormatBlockControls = () => {
-    if (!formatBlockControls.length) return null
+  const renderBlockControls = () => {
+    if (!blockControls.length) return null
     return (
-      <div className="format-block-controls-layer" aria-hidden={false}>
-        {formatBlockControls.map((control) => (
-          <span key={control.blockId} className="format-block-control-hotspot" style={{ top: control.top, height: control.height }}>
+      <div className="block-controls-layer" aria-hidden={false}>
+        {blockControls.map((control) => {
+          const block = selectedBlocks.find((item) => item.id === control.blockId)
+          return (
+          <span key={control.blockId} className={`block-control-hotspot ${hoveredBlockControlId === control.blockId ? 'is-hovered' : ''}`} style={{ top: control.top, height: control.height }}>
             <span
-              className="block-hover-controls format-block-hover-controls"
-              style={{ left: control.left }}
+              className="block-hover-controls"
               data-block-id={control.blockId}
-              data-block-type={control.type}
+              data-block-type={block?.type ?? ''}
               contentEditable={false}
             >
-              <button className="block-control-button block-control-delete" type="button" aria-label="Delete format block" data-block-action="delete" data-block-id={control.blockId}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
-              </button>
-              <button className="block-control-button" type="button" aria-label="Insert block after format block" data-block-action="insert" data-block-id={control.blockId}>
+              {selectedBlocks.length > 1 && (
+                <button className="block-control-button block-control-delete" type="button" aria-label="Delete block" data-block-action="delete" data-block-id={control.blockId}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
+                </button>
+              )}
+              <button className="block-control-button" type="button" aria-label="Insert block after block" data-block-action="insert" data-block-id={control.blockId}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
               </button>
-              <button className="block-control-button block-control-handle" type="button" aria-label="Move format block" draggable data-block-action="drag" data-block-id={control.blockId}>
+              <button className="block-control-button block-control-handle" type="button" aria-label="Move block" draggable data-block-action="drag" data-block-id={control.blockId}>
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="9" cy="7.5" r="1.25" /><circle cx="15" cy="7.5" r="1.25" />
                   <circle cx="9" cy="12" r="1.25" /><circle cx="15" cy="12" r="1.25" />
@@ -2958,14 +2949,11 @@ function App() {
               </button>
             </span>
           </span>
-        ))}
+          )
+        })}
       </div>
     )
   }
-
-  useEffect(() => {
-    createBlockAfterActiveRef.current = createBlockAfterActive
-  }, [createBlockAfterActive])
 
   const measureBlockDropTargets = () => {
     const shell = blockEditorShellRef.current
@@ -2979,6 +2967,7 @@ function App() {
       const count = Math.max(1, blockContentNodes(block.content).length)
       const blockChildren = children.slice(childIndex, childIndex + count)
       childIndex += count
+      if (block.id === draggedBlockId) return []
       if (!blockChildren.length) return []
       const rects = blockChildren.map((child) => child.getBoundingClientRect())
       const top = Math.min(...rects.map((rect) => rect.top))
@@ -2988,9 +2977,9 @@ function App() {
       return [{
         blockId: block.id,
         top: top - shellRect.top,
+        height: bottom - top,
         left: Math.max(0, left - shellRect.left),
         width: Math.min(shellRect.width, right - left),
-        height: bottom - top,
       }]
     })
   }
@@ -3074,9 +3063,7 @@ function App() {
   const renderBlockDropOverlay = () =>
     draggedBlockId ? (
       <div className="block-drop-overlay" aria-hidden>
-        {blockDropTargets
-          .filter((target) => target.blockId !== draggedBlockId)
-          .map((target) => (
+        {blockDropTargets.map((target) => (
           <span
             key={target.blockId}
             className="block-drop-target"
@@ -4066,10 +4053,10 @@ function App() {
                         <textarea value={selectedTemplateData.recommendations} onChange={(event) => persistTemplateData({ ...selectedTemplateData, recommendations: event.target.value })} />
                       </label>
                     </div>
-                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                       <span>Appendix / body</span>
                       <EditorContent editor={editor} />
-                      {renderFormatBlockControls()}
+                      {renderBlockControls()}
                       {renderFormatSideControls()}
                       {renderBlockDropOverlay()}
                     </section>
@@ -4124,10 +4111,10 @@ function App() {
                       </div>
                       <button className="template-soft-action" type="button" onClick={addPlannerSchedule}>Add schedule block</button>
                     </section>
-                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                       <span>Notes</span>
                       <EditorContent editor={editor} />
-                      {renderFormatBlockControls()}
+                      {renderBlockControls()}
                       {renderFormatSideControls()}
                       {renderBlockDropOverlay()}
                     </section>
@@ -4155,9 +4142,9 @@ function App() {
                       return (
                         <section className="slide-stage">
                           <input value={slide.title} onChange={(event) => updateSlide(slide.id, { title: event.target.value })} placeholder="Slide title" />
-                          <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                          <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                             <EditorContent editor={editor} />
-                            {renderFormatBlockControls()}
+                            {renderBlockControls()}
                             {renderFormatSideControls()}
                             {renderBlockDropOverlay()}
                           </div>
@@ -4172,9 +4159,9 @@ function App() {
                   </div>
                 )}
                 {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && (
-                  <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleImageCropPointerMove} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
+                  <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
                     <EditorContent editor={editor} />
-                    {renderFormatBlockControls()}
+                    {renderBlockControls()}
                     {renderFormatSideControls()}
                     {renderBlockDropOverlay()}
                   </div>
@@ -5587,33 +5574,36 @@ function App() {
           }}
         >
           <section className="atom-dialog" role="dialog" aria-modal="true" aria-labelledby="atom-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <span>Atomise</span>
-            <h2 id="atom-dialog-title">Atomise</h2>
+            <h2 id="atom-dialog-title" className="visually-hidden">
+              Add term and meaning
+            </h2>
             {atomDialog.mode === 'manual' && (
               <label>
-                Word or phrase
+                Term
                 <input
                   value={atomDialog.phrase}
                   onChange={(event) => setAtomDialog({ ...atomDialog, phrase: event.target.value })}
-                  placeholder="Create an atom"
                   autoFocus
                 />
               </label>
             )}
             {atomDialog.mode === 'selection' && <div className="atom-dialog-phrase">{atomDialog.phrase}</div>}
             <label>
-              Definition
+              Meaning
               <textarea
                 value={atomDialog.definition}
                 onChange={(event) => setAtomDialog({ ...atomDialog, definition: event.target.value })}
-                placeholder="Enter definition here..."
                 autoFocus={atomDialog.mode === 'selection'}
               />
             </label>
-            <div className="dialog-context">Project: {selectedProject?.name ?? openedProject?.name ?? 'Unassigned'}</div>
+            <div className="dialog-context">
+              {(selectedProject?.name ?? openedProject?.name ?? 'Unassigned') === 'Unassigned'
+                ? 'Project: Unassigned'
+                : (selectedProject?.name ?? openedProject?.name ?? '')}
+            </div>
             <footer>
               <button type="button" onClick={() => setAtomDialog(null)}>Cancel</button>
-              <button type="button" className="primary" onClick={() => void saveAtomDialog()} disabled={!atomDialog.phrase.trim() || !atomDialog.definition.trim()}>Save atom</button>
+              <button type="button" className="primary" onClick={() => void saveAtomDialog()} disabled={!atomDialog.phrase.trim() || !atomDialog.definition.trim()}>Save</button>
             </footer>
           </section>
         </div>
@@ -5758,15 +5748,13 @@ function sortByCreated(a: Note, b: Note) {
   return titleDelta || a.id.localeCompare(b.id)
 }
 
-function sameFormatBlockControls(a: FormatBlockControlRect[], b: FormatBlockControlRect[]) {
+function sameBlockControls(a: BlockControlRect[], b: BlockControlRect[]) {
   return a.length === b.length && a.every((left, index) => {
     const right = b[index]
     return Boolean(right) &&
       left.blockId === right.blockId &&
-      left.type === right.type &&
       left.top === right.top &&
-      left.height === right.height &&
-      left.left === right.left
+      left.height === right.height
   })
 }
 
