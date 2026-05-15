@@ -156,7 +156,6 @@ button {
   background: rgba(255, 255, 255, 0.86);
   color: #5f5c56;
   font-size: 15px;
-  backdrop-filter: blur(10px);
 }
 
 .custom-titlebar-controls button:hover {

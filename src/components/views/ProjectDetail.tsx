@@ -34,6 +34,7 @@ function ProjectMemoryTextarea({
   ariaLabel: string
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
+  const resizeFrameRef = useRef<number | null>(null)
 
   const syncHeight = useCallback(() => {
     const el = ref.current
@@ -43,14 +44,28 @@ function ProjectMemoryTextarea({
     el.style.height = `${Math.max(minPx, el.scrollHeight)}px`
   }, [])
 
+  const scheduleSyncHeight = useCallback(() => {
+    if (resizeFrameRef.current) return
+    resizeFrameRef.current = requestAnimationFrame(() => {
+      resizeFrameRef.current = null
+      syncHeight()
+    })
+  }, [syncHeight])
+
   useLayoutEffect(() => {
     syncHeight()
   }, [value, syncHeight])
 
   useEffect(() => {
-    window.addEventListener('resize', syncHeight)
-    return () => window.removeEventListener('resize', syncHeight)
-  }, [syncHeight])
+    window.addEventListener('resize', scheduleSyncHeight)
+    return () => {
+      window.removeEventListener('resize', scheduleSyncHeight)
+      if (resizeFrameRef.current) {
+        cancelAnimationFrame(resizeFrameRef.current)
+        resizeFrameRef.current = null
+      }
+    }
+  }, [scheduleSyncHeight])
 
   return (
     <textarea

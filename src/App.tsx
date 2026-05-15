@@ -953,6 +953,7 @@ function App() {
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const formatSideFrameRef = useRef<number | null>(null)
   const formatBlockFrameRef = useRef<number | null>(null)
+  const editorResizeFrameRef = useRef<number | null>(null)
   const suppressEditorPersistRef = useRef(false)
   const lastLocalEditorContentRef = useRef<{ noteId: string; content: JSONContent } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
@@ -2658,6 +2659,17 @@ function App() {
     })
   }, [measureBlockControls])
 
+  const scheduleEditorResizeMeasurements = useCallback(() => {
+    if (activeView !== 'editor' || !blockEditorShellRef.current || !mountedEditorDom(editor)) return
+    if (editorResizeFrameRef.current) return
+    editorResizeFrameRef.current = requestAnimationFrame(() => {
+      editorResizeFrameRef.current = null
+      if (activeView !== 'editor' || !blockEditorShellRef.current || !mountedEditorDom(editor)) return
+      syncFormatSideControls()
+      measureBlockControls()
+    })
+  }, [activeView, editor, measureBlockControls, syncFormatSideControls])
+
   useLayoutEffect(() => {
     measureBlockControls()
   }, [measureBlockControls])
@@ -2669,20 +2681,22 @@ function App() {
     editor.on('selectionUpdate', scheduleFormatSideControls)
     editor.on('transaction', scheduleFormatSideControls)
     editor.on('transaction', scheduleBlockControls)
-    window.addEventListener('resize', scheduleFormatSideControls)
-    window.addEventListener('resize', scheduleBlockControls)
+    window.addEventListener('resize', scheduleEditorResizeMeasurements)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
       editor.off('transaction', scheduleFormatSideControls)
       editor.off('transaction', scheduleBlockControls)
-      window.removeEventListener('resize', scheduleFormatSideControls)
-      window.removeEventListener('resize', scheduleBlockControls)
+      window.removeEventListener('resize', scheduleEditorResizeMeasurements)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
+      if (editorResizeFrameRef.current) {
+        cancelAnimationFrame(editorResizeFrameRef.current)
+        editorResizeFrameRef.current = null
+      }
     }
-  }, [editor, measureBlockControls, scheduleBlockControls, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
