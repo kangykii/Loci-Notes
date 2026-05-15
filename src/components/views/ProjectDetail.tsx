@@ -55,7 +55,7 @@ function ProjectMemoryTextarea({
   return (
     <textarea
       ref={ref}
-      className="project-memory-field"
+      className="project-memory-field scroll-hover"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}

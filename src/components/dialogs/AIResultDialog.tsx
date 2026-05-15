@@ -28,7 +28,7 @@ function MarkWritingFeedbackFields({
         <div key={key} className="ai-mark-feedback-card">
           <span className="ai-mark-feedback-card-title">{label}</span>
           <textarea
-            className="ai-mark-feedback-card-input"
+            className="ai-mark-feedback-card-input scroll-hover"
             value={sections[key]}
             onChange={(event) => patch(key, event.target.value)}
             aria-label={label}
@@ -93,7 +93,7 @@ function AiDraftFormattedPreview({ text }: { text: string }) {
   if (!nodes.length) {
     return <p className="ai-draft-preview-empty">Nothing to preview yet.</p>
   }
-  return <div className="ai-draft-preview-doc">{nodes}</div>
+  return <div className="ai-draft-preview-doc scroll-hover">{nodes}</div>
 }
 
 function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
@@ -162,65 +162,70 @@ export function AIResultDialog({
         aria-labelledby="ai-result-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <button className="modal-close" type="button" onClick={onClose} aria-label="Close AI result">
+        <button className="ai-result-close" type="button" onClick={onClose} aria-label="Close AI result">
           <X size={18} />
         </button>
-        <h2 id="ai-result-title">{aiResultTitle(result)}</h2>
-        {result.taskType === 'mark_writing' ? (
-          <MarkWritingFeedbackFields
-            draftText={result.draftText}
-            onChange={(next) => onDraftChange({ draftText: next })}
-          />
-        ) : result.canReplaceSelection && result.selectionOriginalText !== undefined ? (
-          <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
-            <div className="ai-rewrite-compare-pane">
-              <span className="ai-rewrite-compare-heading">Original selection</span>
-              <div className="ai-rewrite-compare-readonly">{result.selectionOriginalText.trim() || '—'}</div>
-            </div>
-            <div className="ai-rewrite-compare-pane">
-              <label className="ai-draft-editor ai-rewrite-compare-draft">
-                <textarea
-                  value={result.draftText}
-                  onChange={(event) => onDraftChange({ draftText: event.target.value })}
-                  aria-label={aiDraftLabel(result.taskType)}
-                  autoFocus
-                />
-              </label>
-            </div>
-          </div>
-        ) : (
-          <label className="ai-draft-editor">
-            <textarea
-              value={result.draftText}
-              onChange={(event) => onDraftChange({ draftText: event.target.value })}
-              aria-label={aiDraftLabel(result.taskType)}
-              autoFocus
+        <div className="ai-result-dialog-scroll scroll-hover">
+          <h2 id="ai-result-title">{aiResultTitle(result)}</h2>
+          {result.taskType === 'mark_writing' ? (
+            <MarkWritingFeedbackFields
+              draftText={result.draftText}
+              onChange={(next) => onDraftChange({ draftText: next })}
             />
-          </label>
-        )}
-        {result.taskType !== 'mark_writing' &&
-          result.taskType !== 'ai_atomise' &&
-          result.taskType !== 'atom_task' && (
-            <details className="ai-draft-preview-details" open>
-              <summary>Formatted preview</summary>
-              <div className="ai-draft-preview-panel">
-                {result.blockPayload ? (
-                  <AIBlockFormattedPreview payload={result.blockPayload} />
-                ) : (
-                  <AiDraftFormattedPreview text={result.draftText} />
-                )}
+          ) : result.canReplaceSelection && result.selectionOriginalText !== undefined ? (
+            <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
+              <div className="ai-rewrite-compare-pane">
+                <span className="ai-rewrite-compare-heading">Original selection</span>
+                <div className="ai-rewrite-compare-readonly scroll-hover">{result.selectionOriginalText.trim() || '—'}</div>
               </div>
-            </details>
+              <div className="ai-rewrite-compare-pane">
+                <label className="ai-draft-editor ai-rewrite-compare-draft">
+                  <textarea
+                    className="scroll-hover"
+                    value={result.draftText}
+                    onChange={(event) => onDraftChange({ draftText: event.target.value })}
+                    aria-label={aiDraftLabel(result.taskType)}
+                    autoFocus
+                  />
+                </label>
+              </div>
+            </div>
+          ) : (
+            <label className="ai-draft-editor">
+              <textarea
+                className="scroll-hover"
+                value={result.draftText}
+                onChange={(event) => onDraftChange({ draftText: event.target.value })}
+                aria-label={aiDraftLabel(result.taskType)}
+                autoFocus
+              />
+            </label>
           )}
-        {result.projectInstructionDraft !== undefined && (
-          <label className="ai-draft-editor ai-project-instruction-draft">
-            <textarea
-              value={result.projectInstructionDraft}
-              onChange={(event) => onDraftChange({ projectInstructionDraft: event.target.value })}
-              aria-label="Project instructions update"
-            />
-          </label>
-        )}
+          {result.taskType !== 'mark_writing' &&
+            result.taskType !== 'ai_atomise' &&
+            result.taskType !== 'atom_task' && (
+              <details className="ai-draft-preview-details" open>
+                <summary>Formatted preview</summary>
+                <div className="ai-draft-preview-panel">
+                  {result.blockPayload ? (
+                    <AIBlockFormattedPreview payload={result.blockPayload} />
+                  ) : (
+                    <AiDraftFormattedPreview text={result.draftText} />
+                  )}
+                </div>
+              </details>
+            )}
+          {result.projectInstructionDraft !== undefined && (
+            <label className="ai-draft-editor ai-project-instruction-draft">
+              <textarea
+                className="scroll-hover"
+                value={result.projectInstructionDraft}
+                onChange={(event) => onDraftChange({ projectInstructionDraft: event.target.value })}
+                aria-label="Project instructions update"
+              />
+            </label>
+          )}
+        </div>
         <footer>
           {(result.canCreateAtoms || result.canApplyBlock || result.canReplaceSelection || result.canInsert || result.taskType === 'answer_with_context' || result.taskType === 'app_help' || result.taskType === 'mark_writing') && (
             <button type="button" className="primary" onClick={onPrimaryAction}>

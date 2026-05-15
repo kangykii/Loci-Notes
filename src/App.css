@@ -31,64 +31,34 @@ body,
   height: 100%;
 }
 
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   min-width: 1120px;
   overflow: hidden;
 }
 
+/* Chromium/WebKit: hide native search cancel/decoration (often a bright blue glyph). */
+input[type='search']::-webkit-search-cancel-button,
+input[type='search']::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 * {
   scrollbar-width: none;
 }
 
-.main-pane,
-.project-quick-nav,
-.floating-editor-bar,
-.ai-result-dialog,
-.format-dialog,
-.template-chooser-dialog,
-.ai-rewrite-compare-readonly,
-.ai-draft-preview-doc,
-.ai-result-output,
-.ai-draft-editor textarea,
-.slide-strip,
-.project-memory-field,
-.note-history-list,
-.note-history-body-expanded,
-.global-search-results {
+.scroll-hover {
   scrollbar-gutter: stable;
 }
 
-.main-pane:hover,
-.main-pane:focus-within,
-.project-quick-nav:hover,
-.project-quick-nav:focus-within,
-.floating-editor-bar:hover,
-.floating-editor-bar:focus-within,
-.ai-result-dialog:hover,
-.ai-result-dialog:focus-within,
-.format-dialog:hover,
-.format-dialog:focus-within,
-.template-chooser-dialog:hover,
-.template-chooser-dialog:focus-within,
-.ai-rewrite-compare-readonly:hover,
-.ai-rewrite-compare-readonly:focus-within,
-.ai-draft-preview-doc:hover,
-.ai-draft-preview-doc:focus-within,
-.ai-result-output:hover,
-.ai-result-output:focus-within,
-.ai-draft-editor textarea:hover,
-.ai-draft-editor textarea:focus,
-.slide-strip:hover,
-.slide-strip:focus-within,
-.project-memory-field:hover,
-.project-memory-field:focus,
-.note-history-list:hover,
-.note-history-list:focus-within,
-.note-history-body-expanded:hover,
-.note-history-body-expanded:focus,
-.global-search-results:hover,
-.global-search-results:focus-within {
+.scroll-hover:hover,
+.scroll-hover:focus-within {
   scrollbar-width: thin;
 }
 
@@ -97,75 +67,13 @@ body {
   height: 0;
 }
 
-.main-pane::-webkit-scrollbar,
-.project-quick-nav::-webkit-scrollbar,
-.floating-editor-bar::-webkit-scrollbar,
-.ai-result-dialog::-webkit-scrollbar,
-.format-dialog::-webkit-scrollbar,
-.template-chooser-dialog::-webkit-scrollbar,
-.ai-rewrite-compare-readonly::-webkit-scrollbar,
-.ai-draft-preview-doc::-webkit-scrollbar,
-.ai-result-output::-webkit-scrollbar,
-.ai-draft-editor textarea::-webkit-scrollbar,
-.slide-strip::-webkit-scrollbar,
-.project-memory-field::-webkit-scrollbar,
-.note-history-list::-webkit-scrollbar,
-.note-history-body-expanded::-webkit-scrollbar,
-.global-search-results::-webkit-scrollbar {
+.scroll-hover::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.main-pane:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.project-quick-nav:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.floating-editor-bar:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.ai-result-dialog:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.format-dialog:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.template-chooser-dialog:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.ai-rewrite-compare-readonly:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.ai-draft-preview-doc:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.ai-result-output:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.ai-draft-editor textarea:not(:hover):not(:focus)::-webkit-scrollbar-thumb,
-.slide-strip:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.project-memory-field:not(:hover):not(:focus)::-webkit-scrollbar-thumb,
-.note-history-list:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb,
-.note-history-body-expanded:not(:hover):not(:focus)::-webkit-scrollbar-thumb,
-.global-search-results:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb {
+.scroll-hover:not(:hover):not(:focus-within)::-webkit-scrollbar-thumb {
   background: transparent;
-}
-
-.main-pane:hover::-webkit-scrollbar,
-.main-pane:focus-within::-webkit-scrollbar,
-.project-quick-nav:hover::-webkit-scrollbar,
-.project-quick-nav:focus-within::-webkit-scrollbar,
-.floating-editor-bar:hover::-webkit-scrollbar,
-.floating-editor-bar:focus-within::-webkit-scrollbar,
-.ai-result-dialog:hover::-webkit-scrollbar,
-.ai-result-dialog:focus-within::-webkit-scrollbar,
-.format-dialog:hover::-webkit-scrollbar,
-.format-dialog:focus-within::-webkit-scrollbar,
-.template-chooser-dialog:hover::-webkit-scrollbar,
-.template-chooser-dialog:focus-within::-webkit-scrollbar,
-.ai-rewrite-compare-readonly:hover::-webkit-scrollbar,
-.ai-rewrite-compare-readonly:focus-within::-webkit-scrollbar,
-.ai-draft-preview-doc:hover::-webkit-scrollbar,
-.ai-draft-preview-doc:focus-within::-webkit-scrollbar,
-.ai-result-output:hover::-webkit-scrollbar,
-.ai-result-output:focus-within::-webkit-scrollbar,
-.ai-draft-editor textarea:hover::-webkit-scrollbar,
-.ai-draft-editor textarea:focus::-webkit-scrollbar,
-.slide-strip:hover::-webkit-scrollbar,
-.slide-strip:focus-within::-webkit-scrollbar,
-.project-memory-field:hover::-webkit-scrollbar,
-.project-memory-field:focus::-webkit-scrollbar,
-.note-history-list:hover::-webkit-scrollbar,
-.note-history-list:focus-within::-webkit-scrollbar,
-.note-history-body-expanded:hover::-webkit-scrollbar,
-.note-history-body-expanded:focus::-webkit-scrollbar,
-.global-search-results:hover::-webkit-scrollbar,
-.global-search-results:focus-within::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
 }
 
 *::-webkit-scrollbar-thumb {
@@ -191,7 +99,7 @@ button {
 }
 
 .app-stage {
-  width: 100vw;
+  width: 100%;
   height: 100vh;
   background: var(--bg);
 }
@@ -264,7 +172,7 @@ button {
 .app-shell {
   --sidebar-width: 72px;
   --sidebar-open-width: 248px;
-  width: 100vw;
+  width: 100%;
   height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
@@ -676,6 +584,13 @@ button {
 
 .main-pane.editor-pane {
   overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.main-pane.editor-pane,
+.main-pane.editor-pane:hover,
+.main-pane.editor-pane:focus-within {
+  scrollbar-width: none;
 }
 
 .document-scroll {
@@ -866,6 +781,63 @@ button {
   margin: 8px 0 20px;
   color: #8c5b00;
   font-size: 13px;
+}
+
+.toast-notice {
+  position: fixed;
+  top: 58px;
+  right: 22px;
+  z-index: 120;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(360px, calc(100vw - 44px));
+  padding: 13px 14px 13px 16px;
+  border: 1px solid rgba(17, 17, 17, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 18px 48px rgba(17, 17, 17, 0.16);
+  color: #2c2b29;
+  backdrop-filter: blur(16px);
+  animation: toast-notice-in 160ms ease-out;
+}
+
+.toast-notice-content {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.toast-notice-dismiss {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #6f6d68;
+  padding: 0;
+}
+
+.toast-notice-dismiss:hover {
+  background: #efefee;
+  color: #111;
+}
+
+@keyframes toast-notice-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .floating-editor-wrap {
@@ -1311,17 +1283,17 @@ button {
 }
 
 .format-dialog .format-option-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: 1fr;
+  gap: 4px;
 }
 
 .format-dialog .format-option-grid button {
-  min-height: 98px;
+  min-height: 64px;
   align-items: flex-start;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  padding: 12px;
+  padding: 12px 14px;
   color: #111;
   transition:
     background 160ms ease,
@@ -1404,13 +1376,28 @@ button {
   width: min(680px, calc(100vw - 48px));
   max-height: min(78vh, 760px);
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
   border-radius: 14px;
   background: #fff;
   padding: 32px;
   box-shadow: 0 18px 54px rgba(17, 17, 17, 0.16);
+  overflow: hidden;
+}
+
+.ai-result-dialog-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ai-result-dialog .ai-result-dialog-scroll::-webkit-scrollbar-track {
+  margin-block: 8px;
 }
 
 .ai-result-dialog h2 {
@@ -1644,7 +1631,6 @@ button {
   font-weight: 700;
 }
 
-.ai-result-output,
 .ai-draft-editor textarea {
   max-height: 380px;
   overflow: auto;
@@ -1681,6 +1667,7 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .ai-result-dialog footer button {
@@ -1699,37 +1686,78 @@ button {
 }
 
 .format-dialog {
-  width: min(860px, calc(100vw - 48px));
+  width: min(440px, calc(100vw - 48px));
   max-height: min(78vh, 780px);
-  display: grid;
-  gap: 14px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
   border-radius: 14px;
   background: #fff;
-  padding: 24px;
+  padding: 20px 22px 22px;
   box-shadow: 0 18px 54px rgba(17, 17, 17, 0.16);
 }
 
-.format-dialog h2 {
-  margin: -6px 0 0;
-  font-size: 24px;
+.format-dialog-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
 }
 
-.format-dialog p {
+.format-dialog .format-dialog-scroll::-webkit-scrollbar-track {
+  margin-block: 8px;
+}
+
+.format-dialog-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: #f4f4f3;
+  border: 1px solid #e8e7e4;
+  padding: 10px 14px;
+  color: #77736d;
+}
+
+.format-dialog-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 15px;
+  color: #111;
+}
+
+.format-dialog-search input::placeholder {
+  color: #aaa9a5;
+}
+
+.format-dialog-empty {
   margin: 0;
-  color: #57544f;
+  padding: 18px 10px 8px;
+  text-align: center;
+  color: var(--muted);
   font-size: 14px;
   line-height: 1.45;
 }
 
+.format-dialog > h2:not(.visually-hidden) {
+  margin: -6px 0 0;
+  font-size: 24px;
+}
+
 .format-dialog-grid {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
 .format-dialog footer {
   display: flex;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 .format-dialog footer button {
@@ -1744,15 +1772,12 @@ button {
 @media (max-width: 620px) {
   .format-dialog {
     width: min(420px, calc(100vw - 28px));
-    padding: 20px;
-  }
-
-  .format-dialog .format-option-grid {
-    grid-template-columns: 1fr;
+    padding: 18px 16px 20px;
   }
 
   .format-dialog .format-option-grid button {
-    min-height: 76px;
+    min-height: 56px;
+    padding: 10px 12px;
   }
 }
 
@@ -4110,7 +4135,7 @@ button {
   font-size: 13px;
   line-height: 1.45;
   outline: none;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
 
 .project-memory-field::placeholder {

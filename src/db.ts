@@ -64,6 +64,7 @@ export type UserSettings = {
 
 export type Atom = {
   id: string
+  projectId: string
   phrase: string
   definition: string
   tags: string[]
@@ -359,6 +360,88 @@ class LociNotesDatabase extends Dexie {
         const assets = notes.flatMap(noteToMediaAssets)
         if (assets.length) await tx.table('mediaAssets').bulkPut(assets)
       })
+    this.version(12)
+      .stores({
+        notes: 'id, title, projectId, templateId, updatedAt, *tags',
+        noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+        noteBodies: 'noteId, updatedAt',
+        mediaAssets: 'id, noteId, kind, updatedAt',
+        atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+        flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+        projects: 'id, name',
+        noteSnapshots: 'id, noteId, savedAt',
+        userProfiles: 'id',
+        userSettings: 'id',
+      })
+      .upgrade(async (tx) => {
+        const atomsTable = tx.table('atoms')
+        const bodyTable = tx.table('noteBodies')
+        const setTable = tx.table('flashcardSets')
+        const atoms = await atomsTable.toArray() as Atom[]
+        const bodies = await bodyTable.toArray() as NoteBody[]
+        const noteMetas = await tx.table('noteMetas').toArray() as NoteMeta[]
+        const noteProjectById = new Map(noteMetas.map((note) => [note.id, note.projectId]))
+        const usageByAtomId = new Map<string, Set<string>>()
+
+        bodies.forEach((body) => {
+          const projectId = noteProjectById.get(body.noteId) ?? '__unassigned__'
+          collectAtomIdsFromContent(body.content).forEach((atomId) => {
+            const projects = usageByAtomId.get(atomId) ?? new Set<string>()
+            projects.add(projectId)
+            usageByAtomId.set(atomId, projects)
+          })
+        })
+
+        const atomIdProjectMap = new Map<string, Map<string, string>>()
+        const migratedAtoms: Atom[] = []
+
+        atoms.forEach((atom) => {
+          const projects = Array.from(usageByAtomId.get(atom.id) ?? [])
+          const scopedProjects = projects.length ? projects : [atom.projectId ?? '__unassigned__']
+          const projectMap = new Map<string, string>()
+          scopedProjects.forEach((projectId, index) => {
+            const scopedAtom: Atom = {
+              ...atom,
+              id: index === 0 ? atom.id : createId('atom'),
+              projectId,
+            }
+            projectMap.set(projectId, scopedAtom.id)
+            migratedAtoms.push(scopedAtom)
+          })
+          atomIdProjectMap.set(atom.id, projectMap)
+        })
+
+        const migratedBodies = bodies.map((body) => {
+          const projectId = noteProjectById.get(body.noteId) ?? '__unassigned__'
+          const idMap = new Map<string, string>()
+          atomIdProjectMap.forEach((projectMap, atomId) => {
+            const mappedId = projectMap.get(projectId)
+            if (mappedId && mappedId !== atomId) idMap.set(atomId, mappedId)
+          })
+          if (!idMap.size) return body
+          const content = remapAtomIdsInContent(body.content, idMap)
+          const templateData = remapAtomIdsInTemplateData(body.templateData, idMap)
+          const blocks = body.blocks?.map((block) => ({
+            ...block,
+            content: remapAtomIdsInContent(block.content, idMap),
+          }))
+          return { ...body, content, templateData, blocks }
+        })
+
+        const sets = await setTable.toArray() as FlashcardSet[]
+        const migratedSets = sets.map((set) => {
+          const atomIds = set.atomIds.flatMap((atomId) => {
+            const projectMap = atomIdProjectMap.get(atomId)
+            return projectMap ? Array.from(projectMap.values()) : [atomId]
+          })
+          return { ...set, atomIds: Array.from(new Set(atomIds)) }
+        })
+
+        await atomsTable.clear()
+        if (migratedAtoms.length) await atomsTable.bulkPut(migratedAtoms)
+        if (migratedBodies.length) await bodyTable.bulkPut(migratedBodies)
+        if (migratedSets.length) await setTable.bulkPut(migratedSets)
+      })
   }
 }
 
@@ -395,6 +478,44 @@ function contentToSeedBlocks(content?: JSONContent): LociBlock[] {
     createdAt: now,
     updatedAt: now,
   }]
+}
+
+function collectAtomIdsFromContent(content: JSONContent): string[] {
+  const attrAtomId = typeof content.attrs?.atomId === 'string' ? [content.attrs.atomId] : []
+  const markAtomIds = (content.marks ?? [])
+    .filter((mark) => mark.type === 'atom' && typeof mark.attrs?.atomId === 'string')
+    .map((mark) => mark.attrs?.atomId as string)
+  return [...attrAtomId, ...markAtomIds, ...(content.content ?? []).flatMap(collectAtomIdsFromContent)]
+}
+
+function remapAtomIdsInContent(content: JSONContent, atomIdMap: Map<string, string>): JSONContent {
+  const next: JSONContent = { ...content }
+  if (content.attrs && typeof content.attrs.atomId === 'string') {
+    const mappedAtomId = atomIdMap.get(content.attrs.atomId)
+    if (mappedAtomId) next.attrs = { ...content.attrs, atomId: mappedAtomId }
+  }
+  if (content.marks) {
+    next.marks = content.marks.map((mark) => {
+      if (mark.type !== 'atom' || typeof mark.attrs?.atomId !== 'string') return mark
+      const mappedAtomId = atomIdMap.get(mark.attrs.atomId)
+      return mappedAtomId ? { ...mark, attrs: { ...mark.attrs, atomId: mappedAtomId } } : mark
+    })
+  }
+  if (content.content) next.content = content.content.map((child) => remapAtomIdsInContent(child, atomIdMap))
+  return next
+}
+
+function remapAtomIdsInTemplateData(templateData: NoteTemplateData, atomIdMap: Map<string, string>): NoteTemplateData {
+  if (templateData.kind === 'blank') return { ...templateData, body: remapAtomIdsInContent(templateData.body, atomIdMap) }
+  if (templateData.kind === 'report') return { ...templateData, appendix: remapAtomIdsInContent(templateData.appendix, atomIdMap) }
+  if (templateData.kind === 'planner') return { ...templateData, notes: remapAtomIdsInContent(templateData.notes, atomIdMap) }
+  if (templateData.kind === 'slideshow') {
+    return {
+      ...templateData,
+      slides: templateData.slides.map((slide) => ({ ...slide, body: remapAtomIdsInContent(slide.body, atomIdMap) })),
+    }
+  }
+  return templateData
 }
 
 function collectPlainText(content: JSONContent | undefined): string {
@@ -509,6 +630,7 @@ export const initialProjects: Project[] = [
 export const initialAtoms: Atom[] = [
   {
     id: 'atom_normalization',
+    projectId: 'project_database',
     phrase: 'Normalization',
     definition:
       'A database design process that organizes data to reduce redundancy and improve consistency.',
@@ -520,6 +642,7 @@ export const initialAtoms: Atom[] = [
   },
   {
     id: 'atom_5nf',
+    projectId: 'project_database',
     phrase: '5NF',
     definition:
       'Fifth normal form, a database normalization level focused on decomposing tables to remove join dependencies.',

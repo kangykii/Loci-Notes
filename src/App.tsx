@@ -16,20 +16,19 @@ import { check } from '@tauri-apps/plugin-updater'
 import {
   ArrowLeft,
   Brain,
-  ChartNoAxesColumn,
   ChevronDown,
-  Code2,
-  Columns3,
   Download,
   FileText,
   Heading1,
   Heading2,
   Heading3,
+  Highlighter,
   History,
   Home,
   ImageIcon,
   Info,
   Keyboard,
+  ListTodo,
   Layers3,
   LinkIcon,
   MoreHorizontal,
@@ -42,7 +41,6 @@ import {
   Shield,
   Shuffle as ShuffleIcon,
   Sparkles,
-  Sigma,
   Table2,
   Trash2,
   X,
@@ -170,6 +168,7 @@ type AtomDialog = {
   phrase: string
   definition: string
   existingId?: string
+  projectId: string
   from?: number
   to?: number
   mode: 'selection' | 'manual'
@@ -271,11 +270,13 @@ type FormatOption = {
   label: string
   icon: IconComponent
   description: string
-  group: 'Structure' | 'Text' | 'Insert' | 'Advanced blocks'
+  ariaLabel?: string
+  group: 'Structure' | 'Text' | 'Insert'
   enabled: boolean
   action?: () => void
-  comingSoonLabel?: string
 }
+
+const FORMAT_DIALOG_GROUP_ORDER: FormatOption['group'][] = ['Structure', 'Text', 'Insert']
 
 type AppDialog =
   | {
@@ -283,8 +284,10 @@ type AppDialog =
       title: string
       message: string
       confirmLabel: string
+      secondaryLabel?: string
       intent?: 'danger' | 'primary'
       onConfirm: () => void | Promise<void>
+      onSecondary?: () => void | Promise<void>
     }
   | {
       kind: 'prompt'
@@ -416,6 +419,23 @@ function createNoteIndexes(notes: Note[], cache = new Map<string, NoteIndexCache
   })
   notesByProjectId.forEach((projectNotes) => projectNotes.sort(sortByCreated))
   return { noteTextById, notePreviewLinesById, notesByProjectId, noteIdsByAtomId, atomIdsByProjectId, projectIdsByAtomId }
+}
+
+function normalizeAtomPhrase(phrase: string) {
+  return phrase.trim().toLowerCase()
+}
+
+function projectIdForAtom(atom: Atom) {
+  return atom.projectId || UNASSIGNED_PROJECT_ID
+}
+
+function findProjectAtomByPhrase(atoms: Atom[], projectId: string, phrase: string, excludeId = '') {
+  const normalized = normalizeAtomPhrase(phrase)
+  return atoms.find((atom) =>
+    atom.id !== excludeId &&
+    projectIdForAtom(atom) === projectId &&
+    normalizeAtomPhrase(atom.phrase) === normalized,
+  )
 }
 
 function escapeRegExp(value: string) {
@@ -584,6 +604,7 @@ const UNASSIGNED_PROJECT_ID = '__unassigned__'
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
 const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
 const NOTE_SAVE_DEBOUNCE_MS = 650
+const NOTICE_TOAST_MS = 4000
 const OPTIMISTIC_UNDO_MS = 6000
 
 const DEFAULT_PROFILE_COLOR = '#4c4439'
@@ -750,7 +771,7 @@ const Sidebar = memo(function Sidebar({
         </button>
         {sidebarOpen && activeProject && projectQuickNotes.length > 0 && (
           <VirtualList
-            className="project-quick-nav"
+            className="project-quick-nav scroll-hover"
             style={projectQuickNavStyle}
             items={projectQuickNotes}
             rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
@@ -874,6 +895,8 @@ function App() {
   const [appDialog, setAppDialog] = useState<AppDialog | null>(null)
   const [templateProjectId, setTemplateProjectId] = useState<string | null>(null)
   const [activeEditorPanel, setActiveEditorPanel] = useState<EditorPanel | null>(null)
+  const [formatDialogQuery, setFormatDialogQuery] = useState('')
+  const formatDialogSearchRef = useRef<HTMLInputElement | null>(null)
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiPromptFocused, setAiPromptFocused] = useState(false)
   const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
@@ -917,6 +940,7 @@ function App() {
   const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
+  const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
   const formatDialogRef = useRef<HTMLElement | null>(null)
@@ -925,6 +949,7 @@ function App() {
   const noteSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const atomSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const formatSideFrameRef = useRef<number | null>(null)
   const formatBlockFrameRef = useRef<number | null>(null)
@@ -956,6 +981,23 @@ function App() {
   const profileInitials = localProfile?.initials ?? 'LN'
   const profileAvatarColor = localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR
   const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
+
+  const clearNoticeTimer = useCallback(() => {
+    if (!noticeTimerRef.current) return
+    clearTimeout(noticeTimerRef.current)
+    noticeTimerRef.current = null
+  }, [])
+
+  const showNotice = useCallback((message: string) => {
+    clearNoticeTimer()
+    setNotice(message)
+    if (!message) return
+    noticeTimerRef.current = setTimeout(() => {
+      setNotice('')
+      noticeTimerRef.current = null
+    }, NOTICE_TOAST_MS)
+  }, [clearNoticeTimer])
+
   const projectQuickNotes = useMemo(
     () =>
       activeProjectForQuickNav
@@ -1057,7 +1099,7 @@ function App() {
     )
 
     setNotes(normalized)
-    setAtoms(storedAtoms.map((atom) => ({ ...atom, tags: atom.tags ?? [] })))
+    setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
     setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
     const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
     if (storedProjects.some((project) => project.description === undefined)) {
@@ -1264,6 +1306,7 @@ function App() {
       if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
       if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
       if (aiPromptHintTimerRef.current) clearTimeout(aiPromptHintTimerRef.current)
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
       optimisticDeleteTimersRef.current.forEach((timer) => clearTimeout(timer))
       if (formatSideFrameRef.current) cancelAnimationFrame(formatSideFrameRef.current)
       if (formatBlockFrameRef.current) cancelAnimationFrame(formatBlockFrameRef.current)
@@ -1271,19 +1314,34 @@ function App() {
     }
   }, [])
 
+  const restoreEditorScroll = useCallback((scrollTop = editorScrollTopRef.current) => {
+    const scrollEl = documentScrollRef.current
+    if (!scrollEl) return
+    const nextScrollTop = Math.min(scrollTop, Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight))
+    scrollEl.scrollTop = nextScrollTop
+    editorScrollTopRef.current = nextScrollTop
+  }, [])
+
+  const preserveEditorScroll = useCallback((callback: () => void) => {
+    const scrollEl = documentScrollRef.current
+    const scrollTop = scrollEl?.scrollTop ?? editorScrollTopRef.current
+    editorScrollTopRef.current = scrollTop
+    callback()
+    if (scrollEl) {
+      requestAnimationFrame(() => {
+        restoreEditorScroll(scrollTop)
+      })
+    }
+  }, [restoreEditorScroll])
+
   function setEditorContentFromSync(content: JSONContent) {
     const currentEditor = editorRef.current
     if (!currentEditor) return
-    const scrollEl = documentScrollRef.current
-    const scrollTop = scrollEl?.scrollTop
-    suppressEditorPersistRef.current = true
-    currentEditor.commands.setContent(content, { emitUpdate: false })
-    suppressEditorPersistRef.current = false
-    if (scrollEl && scrollTop !== undefined) {
-      requestAnimationFrame(() => {
-        scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
-      })
-    }
+    preserveEditorScroll(() => {
+      suppressEditorPersistRef.current = true
+      currentEditor.commands.setContent(content, { emitUpdate: false })
+      suppressEditorPersistRef.current = false
+    })
   }
 
   async function syncAtomMarksForNotes(notesToSync: Note[], atomsToUse = atomsRef.current) {
@@ -1313,9 +1371,7 @@ function App() {
   }
 
   function projectAtomsForNote(note: Note, atomsToUse = atomsRef.current) {
-    const projectAtomIds = createNoteIndexes(notesRef.current, noteIndexCacheRef.current).atomIdsByProjectId.get(note.projectId)
-    if (!projectAtomIds?.size) return []
-    return atomsToUse.filter((atom) => projectAtomIds.has(atom.id))
+    return atomsToUse.filter((atom) => projectIdForAtom(atom) === note.projectId)
   }
 
   async function syncProjectAtomMarks(projectId: string, atomsToUse = atomsRef.current) {
@@ -1463,6 +1519,31 @@ function App() {
   }, [editor])
 
   useEffect(() => {
+    const scrollEl = documentScrollRef.current
+    if (!scrollEl) return
+    editorScrollTopRef.current = scrollEl.scrollTop
+    const syncEditorScrollTop = () => {
+      editorScrollTopRef.current = scrollEl.scrollTop
+    }
+    scrollEl.addEventListener('scroll', syncEditorScrollTop, { passive: true })
+    return () => scrollEl.removeEventListener('scroll', syncEditorScrollTop)
+  }, [activeView, selectedNoteId])
+
+  useLayoutEffect(() => {
+    if (activeView !== 'editor') return
+    restoreEditorScroll()
+  }, [
+    activeView,
+    selectedNoteId,
+    activeEditorPanel,
+    searchOpen,
+    noteHistoryOpen,
+    atomDialog,
+    blockPicker.open,
+    restoreEditorScroll,
+  ])
+
+  useEffect(() => {
     if (!editor || !selectedNote) return
     const latestLocalContent = lastLocalEditorContentRef.current
     if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.content === selectedNote.content) return
@@ -1597,6 +1678,14 @@ function App() {
   }, [activeEditorPanel])
 
   useEffect(() => {
+    if (activeEditorPanel !== 'format') return
+    setFormatDialogQuery('')
+    queueMicrotask(() => {
+      formatDialogSearchRef.current?.focus()
+    })
+  }, [activeEditorPanel])
+
+  useEffect(() => {
     if (!atomHeadingMenuOpen) return
     const closeOnOutsidePointer = (event: MouseEvent) => {
       if (atomsTitleSwitcherRef.current?.contains(event.target as Node)) return
@@ -1652,57 +1741,6 @@ function App() {
     document.addEventListener('mousedown', clearTransientHighlights)
     return () => document.removeEventListener('mousedown', clearTransientHighlights)
   }, [clearAIContextRange, editor])
-
-  useEffect(() => {
-    if (!editor || activeView !== 'editor' || searchOpen || atomDialog || noteHistoryOpen)
-      return
-    const scrollEl = documentScrollRef.current
-    if (!scrollEl) return
-
-    const adjustCaretScroll = () => {
-      if (!editor.isFocused) return
-      if (!editor.view) return
-      const pos = editor.state.selection.from
-      let coords
-      try {
-        coords = editor.view.coordsAtPos(pos)
-      } catch {
-        return
-      }
-      const sr = scrollEl.getBoundingClientRect()
-      const targetBottom = sr.bottom - scrollEl.clientHeight * 0.25
-      const delta = coords.bottom - targetBottom
-      if (delta <= 0) return
-      const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight)
-      scrollEl.scrollTop = Math.min(maxScrollTop, Math.max(0, scrollEl.scrollTop + delta))
-    }
-
-    let rafQueued = false
-    const queueAdjust = () => {
-      if (rafQueued) return
-      rafQueued = true
-      requestAnimationFrame(() => {
-        rafQueued = false
-        adjustCaretScroll()
-      })
-    }
-
-    const onTrx = ({ transaction }: { transaction: { docChanged: boolean } }) => {
-      if (transaction.docChanged) queueAdjust()
-    }
-
-    editor.on('transaction', onTrx)
-
-    return () => {
-      editor.off('transaction', onTrx)
-    }
-  }, [
-    editor,
-    activeView,
-    searchOpen,
-    atomDialog,
-    noteHistoryOpen,
-  ])
 
   const atomCards = useMemo(() => buildAtomCards(atoms, noteIndexes, projectById), [atoms, noteIndexes, projectById])
   const filteredAtomCards = useMemo(() => {
@@ -1978,6 +2016,13 @@ function App() {
     await dialog.onConfirm()
   }, [appDialog])
 
+  const submitAppDialogSecondary = useCallback(async () => {
+    const dialog = appDialog
+    if (!dialog || dialog.kind !== 'confirm' || !dialog.onSecondary) return
+    setAppDialog(null)
+    await dialog.onSecondary()
+  }, [appDialog])
+
   const openProfileModal = () => {
     setProfileDraft({
       displayName: localProfile?.displayName ?? '',
@@ -2126,7 +2171,7 @@ function App() {
     const provider = userSettings.aiProviders[providerId]
     const apiKey = provider.apiKey.trim()
     if (!provider.enabled || !apiKey) {
-      setNotice(`Add a ${providerMeta.name} API key in Settings first.`)
+      showNotice(`Add a ${providerMeta.name} API key in Settings first.`)
       setActiveView('settings')
       void saveUserSettings({
         ...userSettings,
@@ -2152,7 +2197,7 @@ function App() {
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
     setAiRunning(true)
-    setNotice('')
+    showNotice('')
     try {
       const result = await requestAIText({
         providerId,
@@ -2212,7 +2257,7 @@ function App() {
           : error instanceof Error
             ? error.message
             : 'AI request failed.'
-      setNotice(`${providerMeta.name}: ${message}`)
+      showNotice(`${providerMeta.name}: ${message}`)
       void saveUserSettings({
         ...userSettings,
         aiLastStatus: timedOut ? 'timeout' : 'error',
@@ -2237,12 +2282,14 @@ function App() {
     if (!aiResult) return
     const candidates = parseAtomCandidates(aiResult.draftText)
     if (!candidates.length) {
-      setNotice('No atom candidates found in the AI response.')
+      showNotice('No atom candidates found in the AI response.')
       return
     }
     const now = nowIso()
+    const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
     const created = candidates.map((candidate) => ({
       id: createId('atom'),
+      projectId,
       phrase: candidate.phrase,
       definition: candidate.definition,
       tags: [],
@@ -2256,7 +2303,7 @@ function App() {
     const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, created) : editor ? applyAtomMarksToEditor(editor, created) : 0
     setAiResult(null)
     clearAISelectionHighlight()
-    setNotice(`Created ${created.length} atom${created.length === 1 ? '' : 's'}${markCount ? ` and linked ${markCount} note match${markCount === 1 ? '' : 'es'}` : ''}.`)
+    showNotice(`Created ${created.length} atom${created.length === 1 ? '' : 's'}${markCount ? ` and linked ${markCount} note match${markCount === 1 ? '' : 'es'}` : ''}.`)
   }
 
   const draftProjectInstructionsFromAIResult = async () => {
@@ -2265,7 +2312,7 @@ function App() {
     const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
     const provider = userSettings.aiProviders[providerId]
     if (!provider.enabled || !provider.apiKey.trim()) {
-      setNotice(`Add a ${providerMeta.name} API key in Settings first.`)
+      showNotice(`Add a ${providerMeta.name} API key in Settings first.`)
       setActiveView('settings')
       void saveUserSettings({
         ...userSettings,
@@ -2292,7 +2339,7 @@ function App() {
     ].filter(Boolean).join('\n\n')
 
     setAiInstructionUpdating(true)
-    setNotice('')
+    showNotice('')
     try {
       const result = await requestConfiguredAIText(taskInstruction, userContent, controller.signal)
       const projectInstructionDraft = cleanAIDraftFormatting(sanitizeAIInsertText(result.responseText))
@@ -2314,7 +2361,7 @@ function App() {
           : error instanceof Error
             ? error.message
             : 'AI request failed.'
-      setNotice(`${providerMeta.name}: ${message}`)
+      showNotice(`${providerMeta.name}: ${message}`)
       void saveUserSettings({
         ...userSettings,
         aiLastStatus: timedOut ? 'timeout' : 'error',
@@ -2337,8 +2384,8 @@ function App() {
     openNote(noteId)
     setActiveEditorPanel(null)
     setNoteHistoryOpen(false)
-    setNotice('')
-  }, [openNote])
+    showNotice('')
+  }, [openNote, showNotice])
 
   const switchProjectQuickNote = useCallback(
     (direction: 1 | -1) => {
@@ -2534,16 +2581,11 @@ function App() {
     const templateData = updatePrimaryTemplateContent(selectedNote, content)
     void persistNote({ blocks, templateData, content: templateDataToContent(templateData) })
     if (editor) {
-      const scrollEl = documentScrollRef.current
-      const scrollTop = scrollEl?.scrollTop
-      suppressEditorPersistRef.current = true
-      editor.commands.setContent(content, { emitUpdate: false })
-      suppressEditorPersistRef.current = false
-      if (scrollEl && scrollTop !== undefined) {
-        requestAnimationFrame(() => {
-          scrollEl.scrollTop = Math.min(scrollTop, scrollEl.scrollHeight - scrollEl.clientHeight)
-        })
-      }
+      preserveEditorScroll(() => {
+        suppressEditorPersistRef.current = true
+        editor.commands.setContent(content, { emitUpdate: false })
+        suppressEditorPersistRef.current = false
+      })
     }
   }
 
@@ -2657,6 +2699,7 @@ function App() {
     const now = nowIso()
     const atom: Atom = {
       id: createId('atom'),
+      projectId: selectedNote.projectId,
       phrase: 'Question',
       definition: 'Answer',
       tags: ['Flashcard'],
@@ -2673,13 +2716,13 @@ function App() {
     void atomsStore.save(atom)
     setAtoms((current) => [atom, ...current])
     persistBlocks(nextBlocks)
-    setNotice('Flashcard block added and linked as an atom.')
+    showNotice('Flashcard block added and linked as an atom.')
   }
 
   const insertImageAfterActive = (src: string) => {
     const safeSrc = sanitizeImageUrl(src)
     if (!safeSrc) {
-      setNotice('Use a valid http(s) image URL or supported image data URL.')
+      showNotice('Use a valid http(s) image URL or supported image data URL.')
       return
     }
     if (!selectedBlocks.length) {
@@ -2690,7 +2733,7 @@ function App() {
     const nextBlocks = [...selectedBlocks]
     nextBlocks.splice(insertIndex, 0, createLociBlock(imageBlockDoc(safeSrc), 'image'))
     persistBlocks(nextBlocks)
-    setNotice('Image block added.')
+    showNotice('Image block added.')
   }
 
   const applyAIBlockPayload = (payload: AIBlockPayload) => {
@@ -3193,7 +3236,7 @@ function App() {
         }
         setActiveEditorPanel(null)
         setNoteHistoryOpen(false)
-        setNotice('')
+        showNotice('')
         const restore = () => {
           const timer = optimisticDeleteTimersRef.current.get(note.id)
           if (timer) clearTimeout(timer)
@@ -3203,7 +3246,7 @@ function App() {
           setSelectedNoteId(note.id)
           setActiveView('editor')
           setUndoNotice(null)
-          setNotice('Note restored.')
+          showNotice('Note restored.')
         }
         setUndoNotice({ message: 'Note deleted.', action: restore })
         const timer = setTimeout(() => {
@@ -3212,7 +3255,7 @@ function App() {
           void notesStore.deleteWithSnapshots(note.id).catch(() => {
             notesRef.current = previousNotes
             setNotes(previousNotes)
-            setNotice('Could not delete the note. It has been restored.')
+            showNotice('Could not delete the note. It has been restored.')
           })
         }, OPTIMISTIC_UNDO_MS)
         optimisticDeleteTimersRef.current.set(note.id, timer)
@@ -3404,7 +3447,7 @@ function App() {
     if (!project) return
     const projectNotes = notes.filter((note) => note.projectId === projectId)
     const projectNoteIds = new Set(projectNotes.map((note) => note.id))
-    const deletedProjectAtomIds = new Set(projectNotes.flatMap((note) => collectAtomIds(note.content)))
+    const deletedProjectAtomIds = new Set(atoms.filter((atom) => projectIdForAtom(atom) === projectId).map((atom) => atom.id))
     const keptNotes = notes.filter((note) => note.projectId !== projectId)
     const keptAtomIds = new Set(keptNotes.flatMap((note) => collectAtomIds(note.content)))
     const atomIdsToDelete = Array.from(deletedProjectAtomIds).filter((atomId) => !keptAtomIds.has(atomId))
@@ -3498,16 +3541,18 @@ function App() {
       if (empty) chain.extendMarkRange('atom')
       chain.unsetAtom().run()
       setActiveEditorPanel(null)
-      setNotice('Atom link removed.')
+      showNotice('Atom link removed.')
       return
     }
 
     if (empty) {
-      setNotice('')
+      const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
+      showNotice('')
       setActiveEditorPanel(null)
       setAtomDialog({
         phrase: '',
         definition: '',
+        projectId,
         mode: 'manual',
       })
       return
@@ -3515,12 +3560,14 @@ function App() {
 
     const phrase = editor.state.doc.textBetween(from, to, ' ').trim()
     if (!phrase) return
-    const existing = atoms.find((atom) => atom.phrase.toLowerCase() === phrase.toLowerCase())
-    setNotice('')
+    const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
+    const existing = findProjectAtomByPhrase(atoms, projectId, phrase)
+    showNotice('')
     setAtomDialog({
       phrase,
       definition: existing?.definition ?? '',
       existingId: existing?.id,
+      projectId,
       from,
       to,
       mode: 'selection',
@@ -3530,15 +3577,37 @@ function App() {
   const saveAtomDialog = async () => {
     if (!atomDialog || !editor || !atomDialog.definition.trim() || !atomDialog.phrase.trim()) return
     const phrase = atomDialog.phrase.trim()
+    const definition = atomDialog.definition.trim()
     const existing =
       atomDialog.existingId
         ? atoms.find((atom) => atom.id === atomDialog.existingId)
-        : atoms.find((item) => item.phrase.toLowerCase() === phrase.toLowerCase())
+        : findProjectAtomByPhrase(atoms, atomDialog.projectId, phrase)
+    const conflict = findProjectAtomByPhrase(atoms, atomDialog.projectId, phrase, existing?.id)
+    const replacementTarget = conflict ?? existing
+    if (replacementTarget && replacementTarget.definition.trim() !== definition) {
+      const saveNewAtom = () => void saveAtomFromDialog(phrase, definition, null, 'selection')
+      setAppDialog({
+        kind: 'confirm',
+        title: 'Replace existing atom?',
+        message: `"${replacementTarget.phrase}" already exists in this project. Replace its definition, or keep the old version and create a separate atom?`,
+        confirmLabel: 'Replace',
+        secondaryLabel: 'Keep old',
+        onConfirm: () => void saveAtomFromDialog(phrase, definition, replacementTarget, 'project'),
+        onSecondary: saveNewAtom,
+      })
+      return
+    }
+    await saveAtomFromDialog(phrase, definition, existing ?? null, existing ? 'project' : 'selection')
+  }
+
+  const saveAtomFromDialog = async (phrase: string, definition: string, existing: Atom | null, linkScope: 'project' | 'selection') => {
+    if (!atomDialog || !editor) return
     const atom: Atom = {
       id: existing?.id ?? createId('atom'),
+      projectId: existing?.projectId ?? atomDialog.projectId,
       phrase: existing?.phrase ?? phrase,
-      definition: atomDialog.definition.trim(),
-      tags: [],
+      definition,
+      tags: existing?.tags ?? [],
       createdAt: existing?.createdAt ?? nowIso(),
       updatedAt: nowIso(),
       reviewCount: existing?.reviewCount ?? 0,
@@ -3547,8 +3616,14 @@ function App() {
 
     await atomsStore.save(atom)
     setAtoms((current) => [atom, ...current.filter((item) => item.id !== atom.id)])
-    const markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, [atom]) : applyAtomMarksToEditor(editor, [atom])
-    setNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
+    let markCount = 0
+    if (linkScope === 'selection' && atomDialog.from !== undefined && atomDialog.to !== undefined) {
+      editor.chain().focus().setTextSelection({ from: atomDialog.from, to: atomDialog.to }).setAtom({ atomId: atom.id, phrase: atom.phrase, definition: atom.definition }).run()
+      markCount = 1
+    } else {
+      markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, [atom]) : applyAtomMarksToEditor(editor, [atom])
+    }
+    showNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
     setAtomDialog(null)
   }
 
@@ -3564,7 +3639,7 @@ function App() {
       onConfirm: (href) => {
         const safeHref = sanitizeLinkUrl(href)
         if (!safeHref) {
-          setNotice('Use a valid http, https, or mailto link.')
+          showNotice('Use a valid http, https, or mailto link.')
           return
         }
         editor.chain().focus().extendMarkRange('link').setLink({ href: safeHref }).run()
@@ -3584,7 +3659,7 @@ function App() {
       onConfirm: (src) => {
         const safeSrc = sanitizeImageUrl(src)
         if (!safeSrc) {
-          setNotice('Use a valid http(s) image URL or supported image data URL.')
+          showNotice('Use a valid http(s) image URL or supported image data URL.')
           return
         }
         insertImageAfterActive(safeSrc)
@@ -3642,7 +3717,7 @@ function App() {
       id: 'heading-1',
       label: 'Heading 1',
       icon: Heading1,
-      description: 'Promote the current line to a top-level heading.',
+      description: 'Top-level title for the current line.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
@@ -3651,7 +3726,7 @@ function App() {
       id: 'heading-2',
       label: 'Heading 2',
       icon: Heading2,
-      description: 'Create a section heading for the current line.',
+      description: 'Section heading for the current line.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
@@ -3660,7 +3735,7 @@ function App() {
       id: 'heading-3',
       label: 'Heading 3',
       icon: Heading3,
-      description: 'Create a compact subheading.',
+      description: 'Compact subheading.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleHeading({ level: 3 }).run(),
@@ -3668,8 +3743,8 @@ function App() {
     {
       id: 'checklist',
       label: 'Checklist',
-      icon: Keyboard,
-      description: 'Turn the current lines into tappable tasks.',
+      icon: ListTodo,
+      description: 'Turn lines into tappable tasks.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleTaskList().run(),
@@ -3678,7 +3753,7 @@ function App() {
       id: 'table',
       label: 'Table',
       icon: Table2,
-      description: 'Add a structured study grid.',
+      description: 'Study grid with header row.',
       group: 'Structure',
       enabled: true,
       action: () => {
@@ -3690,7 +3765,7 @@ function App() {
       id: 'flashcard',
       label: 'Flashcard',
       icon: Brain,
-      description: 'Add a question and answer atom card.',
+      description: 'Question-and-answer study card.',
       group: 'Structure',
       enabled: true,
       action: () => insertFlashcardAfterActive(),
@@ -3698,8 +3773,8 @@ function App() {
     {
       id: 'highlight',
       label: 'Highlight',
-      icon: Keyboard,
-      description: 'Highlight selected text with the current colour.',
+      icon: Highlighter,
+      description: 'Tint the selection with your highlighter color.',
       group: 'Text',
       enabled: true,
       action: () => toggleHighlight(),
@@ -3708,19 +3783,11 @@ function App() {
       id: 'clear-formatting',
       label: 'Clear formatting',
       icon: RemoveFormatting,
-      description: 'Remove marks, links, highlight, headings, and list formatting. Shortcut: Ctrl+\\.',
+      description: 'Strip marks, links, and block styles.',
+      ariaLabel: 'Clear formatting. Shortcut: Control or Command+Backslash.',
       group: 'Text',
       enabled: true,
       action: clearFormatting,
-    },
-    {
-      id: 'columns',
-      label: 'Columns',
-      icon: Columns3,
-      description: 'Future: split a section into side-by-side lanes.',
-      group: 'Advanced blocks',
-      enabled: false,
-      comingSoonLabel: 'Coming soon',
     },
     {
       id: 'link',
@@ -3735,41 +3802,12 @@ function App() {
       id: 'image',
       label: 'Image',
       icon: ImageIcon,
-      description: 'Insert an image from a URL.',
+      description: 'Insert a picture from a URL.',
       group: 'Insert',
       enabled: true,
       action: addImage,
     },
-    {
-      id: 'code-block',
-      label: 'Code block',
-      icon: Code2,
-      description: 'Future: frameless code with language selection and export styling.',
-      group: 'Advanced blocks',
-      enabled: false,
-      comingSoonLabel: 'Coming soon',
-    },
-    {
-      id: 'chart',
-      label: 'Chart',
-      icon: ChartNoAxesColumn,
-      description: 'Future: structured chart data with clean PDF/DOCX output.',
-      group: 'Advanced blocks',
-      enabled: false,
-      comingSoonLabel: 'Coming soon',
-    },
-    {
-      id: 'latex',
-      label: 'LaTeX',
-      icon: Sigma,
-      description: 'Future: inline equation input with visual export fallback.',
-      group: 'Advanced blocks',
-      enabled: false,
-      comingSoonLabel: 'Coming soon',
-    },
   ]
-
-  const formatGroups: Array<FormatOption['group']> = ['Structure', 'Text', 'Insert', 'Advanced blocks']
 
   const startWindowDrag = () => {
     if (!window.__TAURI_INTERNALS__) return
@@ -3788,8 +3826,31 @@ function App() {
     void getCurrentWindow().close()
   }
 
+  const formatDialogQueryNormalized = formatDialogQuery.trim().toLowerCase()
+  const formatOptionMatchesFormatDialog = (option: FormatOption) => {
+    if (!option.enabled) return false
+    if (!formatDialogQueryNormalized) return true
+    return (
+      option.label.toLowerCase().includes(formatDialogQueryNormalized) ||
+      option.description.toLowerCase().includes(formatDialogQueryNormalized) ||
+      option.group.toLowerCase().includes(formatDialogQueryNormalized)
+    )
+  }
+  const formatDialogSections = FORMAT_DIALOG_GROUP_ORDER.map((group) => ({
+    group,
+    options: formatOptions.filter((option) => option.group === group && formatOptionMatchesFormatDialog(option)),
+  })).filter((section) => section.options.length > 0)
+
   return (
     <main className="app-stage">
+      {notice && (
+        <div className="toast-notice" role="status" aria-live="polite">
+          <span className="toast-notice-content">{notice}</span>
+          <button type="button" className="toast-notice-dismiss" aria-label="Dismiss notification" onClick={() => showNotice('')}>
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+      )}
       <header className="custom-titlebar" onMouseDown={startWindowDrag}>
         <div className="custom-titlebar-drag">
           <span>Loci Notes</span>
@@ -3829,7 +3890,7 @@ function App() {
         />
 
         {activeView === 'home' && (
-          <section className="main-pane dashboard-pane">
+          <section className="main-pane dashboard-pane scroll-hover">
             <div className="home-intro-strip">
               <div>
                 <strong>Good to see you</strong>
@@ -4024,7 +4085,6 @@ function App() {
 
               <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'}`}>
                 <input className="title-input" value={selectedNote.title} onChange={(event) => void persistNote({ title: event.target.value })} />
-                {notice && <div className="notice">{notice}</div>}
                 {undoNotice && (
                   <div className="notice notice-with-action">
                     <span>{undoNotice.message}</span>
@@ -4122,7 +4182,7 @@ function App() {
                 )}
                 {selectedTemplateData?.kind === 'slideshow' && (
                   <div className="template-editor slideshow-editor">
-                    <div className="slide-strip">
+                    <div className="slide-strip scroll-hover">
                       {selectedTemplateData.slides.map((slide, index) => (
                         <button
                           key={slide.id}
@@ -4183,7 +4243,7 @@ function App() {
                         autoFocus
                       />
                     </label>
-                    <div className="block-picker-list">
+                    <div className="block-picker-list scroll-hover">
                       {visibleBlockPickerOptions.map((option) => {
                         const Icon = option.icon
                         return (
@@ -4226,7 +4286,11 @@ function App() {
                     )}
                   </div>
                 )}
-                <div className={`floating-editor-bar ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`} role="toolbar" aria-label="Editor tools">
+                <div
+                  className={`floating-editor-bar scroll-hover ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`}
+                  role="toolbar"
+                  aria-label="Editor tools"
+                >
                   <button type="button" onClick={atomiseSelection}><Sparkles size={16} /> Atomise</button>
                   <button type="button" onClick={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}><Heading2 size={16} /> Format</button>
                   <div className="highlight-tool">
@@ -4360,41 +4424,58 @@ function App() {
               ref={formatDialogRef}
               onMouseDown={(event) => event.stopPropagation()}
             >
-              <span className="panel-kicker">Format</span>
-              <h2 id="format-dialog-title">Choose formatting</h2>
-              <p>Shape the active writing field or insert a simple block.</p>
-              <div className="format-dialog-grid">
-                {formatGroups.map((group) => (
-                  <section className="format-option-section" key={group}>
-                    <span>{group}</span>
-                    <div className="format-option-grid">
-                      {formatOptions
-                        .filter((option) => option.group === group)
-                        .map((option) => {
-                          const Icon = option.icon
-                          return (
-                            <button
-                              type="button"
-                              className={option.enabled ? '' : 'is-disabled'}
-                              disabled={!option.enabled}
-                              key={option.id}
-                              onClick={() => {
-                                option.action?.()
-                                setActiveEditorPanel(null)
-                              }}
-                            >
-                              <Icon size={18} aria-hidden />
-                              <span>
-                                <strong>{option.label}</strong>
-                                <small>{option.description}</small>
-                              </span>
-                              {!option.enabled && <em>{option.comingSoonLabel}</em>}
-                            </button>
-                          )
-                        })}
-                    </div>
-                  </section>
-                ))}
+              <h2 id="format-dialog-title" className="visually-hidden">
+                Formatting and blocks
+              </h2>
+              <div className="format-dialog-search" onMouseDown={(event) => event.stopPropagation()}>
+                <Search size={18} aria-hidden />
+                <input
+                  ref={formatDialogSearchRef}
+                  type="text"
+                  role="searchbox"
+                  value={formatDialogQuery}
+                  onChange={(event) => setFormatDialogQuery(event.target.value)}
+                  placeholder="Search formats…"
+                  aria-label="Filter format options"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="format-dialog-scroll scroll-hover">
+                <div className="format-dialog-grid">
+                  {formatDialogSections.length === 0 ? (
+                    <p className="format-dialog-empty">No matches.</p>
+                  ) : (
+                    formatDialogSections.map(({ group, options }) => (
+                      <section className="format-option-section" key={group}>
+                        <span>{group}</span>
+                        <div className="format-option-grid">
+                          {options.map((option) => {
+                            const Icon = option.icon
+                            const aria = option.ariaLabel ?? `${option.label}. ${option.description}`
+                            return (
+                              <button
+                                type="button"
+                                key={option.id}
+                                aria-label={aria}
+                                onClick={() => {
+                                  option.action?.()
+                                  setActiveEditorPanel(null)
+                                }}
+                              >
+                                <Icon size={18} aria-hidden />
+                                <span>
+                                  <strong>{option.label}</strong>
+                                  <small>{option.description}</small>
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </section>
+                    ))
+                  )}
+                </div>
               </div>
               <footer>
                 <button type="button" onClick={() => setActiveEditorPanel(null)}>Cancel</button>
@@ -4404,7 +4485,7 @@ function App() {
         )}
 
         {activeView === 'projects' && (
-          <section className="main-pane compact-pane">
+          <section className="main-pane compact-pane scroll-hover">
             {openedProject ? (
               <ProjectDetail
                 project={openedProject}
@@ -4541,7 +4622,7 @@ function App() {
         )}
 
         {activeView === 'atoms' && (
-          <section className="main-pane compact-pane">
+          <section className="main-pane compact-pane scroll-hover">
             <PageHeader
               title={
                 <div className="atoms-title-switcher" ref={atomsTitleSwitcherRef}>
@@ -4889,7 +4970,7 @@ function App() {
                         </div>
                       </div>
                     </div>
-                    <div className="flashcard-atom-picker-list">
+                    <div className="flashcard-atom-picker-list scroll-hover">
                       {flashcardSetPickerCards.map((card) => {
                         const isSelected = flashcardSetDraftAtomIds.includes(card.atom.id)
                         return (
@@ -5025,7 +5106,7 @@ function App() {
         )}
 
         {activeView === 'settings' && (
-          <section className="main-pane compact-pane settings-pane">
+          <section className="main-pane compact-pane settings-pane scroll-hover">
             <PageHeader
               title="Settings"
               action={<button type="button" onClick={openProfileModal}><Settings size={17} /> Edit profile</button>}
@@ -5302,17 +5383,19 @@ function App() {
               <Search size={20} aria-hidden strokeWidth={2} />
               <input
                 ref={searchInputRef}
-                type="search"
+                type="text"
+                role="searchbox"
                 value={searchQuery}
                 placeholder="Search notes, projects, atoms…"
                 autoComplete="off"
+                aria-labelledby="global-search-title"
                 aria-autocomplete="list"
                 aria-controls="global-search-list"
                 aria-activedescendant={searchHits[searchActiveIndex] ? `search-hit-${searchActiveIndex}` : undefined}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
-            <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
+            <div id="global-search-list" className="global-search-results scroll-hover" role="listbox" aria-label="Search results">
               {searchNormalized && searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
               <VirtualList
                 className="global-search-results-virtual"
@@ -5395,7 +5478,7 @@ function App() {
             if (event.target === event.currentTarget) setTemplateProjectId(null)
           }}
         >
-          <section className="template-chooser-dialog" role="dialog" aria-modal="true" aria-labelledby="template-chooser-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section className="template-chooser-dialog scroll-hover" role="dialog" aria-modal="true" aria-labelledby="template-chooser-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="panel-kicker">New note</span>
             <h2 id="template-chooser-title">Choose a template</h2>
             <p>Start with a blank page or pick a structure for the note you are about to create.</p>
@@ -5483,6 +5566,11 @@ function App() {
                 <button type="button" onClick={closeAppDialog}>
                   Cancel
                 </button>
+                {appDialog.kind === 'confirm' && appDialog.secondaryLabel && appDialog.onSecondary && (
+                  <button type="button" onClick={() => void submitAppDialogSecondary()}>
+                    {appDialog.secondaryLabel}
+                  </button>
+                )}
                 <button
                   type="submit"
                   className={appDialog.kind === 'confirm' && appDialog.intent === 'danger' ? 'danger' : 'primary'}
@@ -5513,7 +5601,7 @@ function App() {
           >
             <h2 id="note-history-title">Note history</h2>
             <p className="note-history-subtitle">Autosaved snapshots when you pause editing (stored in your browser).</p>
-            <ul className="note-history-list">
+            <ul className="note-history-list scroll-hover">
               {noteSnapshots.length === 0 ? (
                 <li className="note-history-empty">No snapshots yet. Edit this note for a few seconds, then reopen history.</li>
               ) : (
@@ -5696,7 +5784,9 @@ function App() {
 
 function buildAtomCards(atoms: Atom[], noteIndexes: NoteIndexes, projectById: Map<string, Project>): AtomCard[] {
   return atoms.map((atom) => {
-    const projectIds = Array.from(noteIndexes.projectIdsByAtomId.get(atom.id) ?? [])
+    const scopedProjectId = projectIdForAtom(atom)
+    const linkedProjectIds = Array.from(noteIndexes.projectIdsByAtomId.get(atom.id) ?? [])
+    const projectIds = Array.from(new Set([scopedProjectId, ...linkedProjectIds]))
     const noteCount = noteIndexes.noteIdsByAtomId.get(atom.id)?.size ?? 0
     const projectNames = projectIds.map((id) => projectById.get(id)?.name).filter(Boolean) as string[]
     return { atom: { ...atom, tags: atom.tags ?? [] }, noteCount, projectIds, projectNames }

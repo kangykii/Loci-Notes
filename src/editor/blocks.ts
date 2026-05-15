@@ -366,6 +366,25 @@ export function stripAtomMarks(content: JSONContent, atomIds: Set<string>): JSON
   return next
 }
 
+export function remapAtomIds(content: JSONContent, atomIdMap: Map<string, string>): JSONContent {
+  const next: JSONContent = { ...content }
+  if (content.attrs && typeof content.attrs.atomId === 'string') {
+    const mappedAtomId = atomIdMap.get(content.attrs.atomId)
+    if (mappedAtomId) next.attrs = { ...content.attrs, atomId: mappedAtomId }
+  }
+  if (content.marks) {
+    next.marks = content.marks.map((mark) => {
+      if (mark.type !== 'atom' || typeof mark.attrs?.atomId !== 'string') return mark
+      const mappedAtomId = atomIdMap.get(mark.attrs.atomId)
+      return mappedAtomId ? { ...mark, attrs: { ...mark.attrs, atomId: mappedAtomId } } : mark
+    })
+  }
+  if (content.content) {
+    next.content = content.content.map((child) => remapAtomIds(child, atomIdMap))
+  }
+  return next
+}
+
 export function collectInlinePlain(node: JSONContent): string {
   if (node.type === 'hardBreak') return '\n'
   if (node.type === 'image') return ''
