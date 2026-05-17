@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, FileText, MoreHorizontal, Plus, Search, Send, Users, X } from 'lucide-react'
 import type { FriendGroup, Friendship, Note, SharedNoteExport } from '../../db'
+import type { CommunityTarget } from '../../community/types'
 import { collectNotePreviewLines } from '../../editor/blocks'
 import { buildCommunityRecipients, communityRecipientId } from '../../services/communityRecipientService'
 import type { FriendSearchResult } from '../../services/friendService'
 import { PageHeader } from '../layout/PageHeader'
-
-export type CommunityTarget =
-  | { kind: 'friend'; id: string }
-  | { kind: 'group'; id: string }
 
 type CommunityViewProps = {
   searchQuery: string

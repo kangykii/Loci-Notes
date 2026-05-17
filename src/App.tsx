@@ -74,10 +74,7 @@ import type {
   TemplateTask,
   AccountProfile,
   AuthSession,
-  FriendGroup,
-  Friendship,
   RemoteContentItem,
-  SharedNoteExport,
   StarterWorkspaceUpsertResult,
   UserProfile,
   UserSettings,
@@ -110,7 +107,7 @@ import type {
 import { AIResultDialog } from './components/dialogs/AIResultDialog'
 import { PageHeader } from './components/layout/PageHeader'
 import { CommunityView } from './components/views/CommunityView'
-import type { CommunityTarget } from './components/views/CommunityView'
+import { CommunityGroupDialog } from './components/views/CommunityGroupDialog'
 import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { LociEditor } from './components/editor/LociEditor'
@@ -169,6 +166,7 @@ import {
   templateStructureLabel,
   updatePrimaryTemplateContent,
 } from './notes/templates'
+import { useCommunityController } from './community/useCommunityController'
 import { parseProjectMemory, serializeProjectMemory } from './projects/projectMemory'
 import { atomsStore } from './stores/atomsStore'
 import { flashcardSetsStore } from './stores/flashcardSetsStore'
@@ -180,11 +178,7 @@ import { profileStore } from './stores/profileStore'
 import { projectsStore } from './stores/projectsStore'
 import { settingsStore } from './stores/settingsStore'
 import { authService, signedOutSession } from './services/authService'
-import { collaborationService } from './services/collaborationService'
-import { communityActivityService } from './services/communityActivityService'
-import { communityRecipientId } from './services/communityRecipientService'
 import { friendService, normalizeUserHandle } from './services/friendService'
-import type { FriendSearchResult } from './services/friendService'
 import { friendGroupService } from './services/friendGroupService'
 import { notificationService } from './services/notificationService'
 import { profileService } from './services/profileService'
@@ -671,11 +665,6 @@ type ProfileDraft = {
   avatarColor: string
 }
 
-type GroupDialogDraft = {
-  name: string
-  memberAccountIds: string[]
-}
-
 type SidebarProps = {
   activeView: View
   activeProject: Project | undefined
@@ -1058,13 +1047,6 @@ function App() {
   const [updateState, setUpdateState] = useState<UpdateState>(initialUpdateState)
   const [authSession, setAuthSession] = useState<AuthSession>(() => signedOutSession())
   const [accountProfile, setAccountProfile] = useState<AccountProfile | undefined>()
-  const [friendships, setFriendships] = useState<Friendship[]>([])
-  const [friendGroups, setFriendGroups] = useState<FriendGroup[]>([])
-  const [sharedNoteExports, setSharedNoteExports] = useState<SharedNoteExport[]>([])
-  const [communitySearchQuery, setCommunitySearchQuery] = useState('')
-  const [communitySearchResults, setCommunitySearchResults] = useState<FriendSearchResult[]>([])
-  const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
-  const [groupDialogDraft, setGroupDialogDraft] = useState<GroupDialogDraft | null>(null)
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
   const [showSaveState, setShowSaveState] = useState(true)
   const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
@@ -1139,21 +1121,6 @@ function App() {
       ? `Signed in as @${accountProfile.handle}`
       : `Signed in${accountProfile?.displayName ? ` as ${accountProfile.displayName}` : ''}`
     : 'Signed out · local workspace only'
-  const acceptedFriendCount = friendships.filter((friendship) => friendship.status === 'accepted').length
-  const pendingFriendCount = friendships.filter((friendship) => friendship.status !== 'accepted').length
-  const selectedCommunityFriend = communityTarget?.kind === 'friend'
-    ? friendships.find((friendship) => friendship.id === communityTarget.id)
-    : undefined
-  const selectedCommunityGroup = communityTarget?.kind === 'group'
-    ? friendGroups.find((group) => group.id === communityTarget.id)
-    : undefined
-  const selectedCommunityRecipientIds = selectedCommunityFriend
-    ? [selectedCommunityFriend.friendAccountId]
-    : selectedCommunityGroup?.memberAccountIds ?? []
-  const selectedCommunityShares = selectedCommunityRecipientIds.length
-    ? sharedNoteExports.filter((share) => selectedCommunityRecipientIds.some((accountId) => share.recipientAccountIds.includes(accountId)))
-    : []
-  const acceptedFriendships = friendships.filter((friendship) => friendship.status === 'accepted')
   const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
   const localDatabaseNeedsRepair = localLoadIssues.some((issue) =>
     /notes|noteBodies|noteMetas|database|dexie|starter workspace/i.test(issue),
@@ -1181,6 +1148,20 @@ function App() {
       noticeTimerRef.current = null
     }, NOTICE_TOAST_MS)
   }, [clearNoticeTimer])
+
+  const saveUserSettings = useCallback(async (next: UserSettings) => {
+    const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
+    await settingsStore.save(normalized)
+    setUserSettings(normalized)
+  }, [])
+
+  const community = useCommunityController({
+    authSession,
+    notes,
+    userSettings,
+    saveUserSettings,
+    showNotice,
+  })
 
   const projectQuickNotes = useMemo(
     () =>
@@ -1441,15 +1422,17 @@ function App() {
       if (cancelled) return
       setAuthSession(accountState.session)
       setAccountProfile(accountState.profile)
-      setFriendships(storedFriendships)
-      setFriendGroups(storedFriendGroups)
-      setSharedNoteExports(shares)
+      community.setInitialCommunityData({
+        friendships: storedFriendships,
+        friendGroups: storedFriendGroups,
+        sharedNoteExports: shares,
+      })
       setDeveloperNotifications(notifications)
     })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [community.setInitialCommunityData])
 
   async function runSavedNoteMaintenance(savedNotes: Note[]) {
     const contentNotes = savedNotes.filter((note) => note.content)
@@ -2369,177 +2352,6 @@ function App() {
       lastCheckedAt: now,
     }))
     setProfileModalOpen(false)
-  }
-
-  const saveUserSettings = async (next: UserSettings) => {
-    const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
-    await settingsStore.save(normalized)
-    setUserSettings(normalized)
-  }
-
-  const searchCommunityUsers = async () => {
-    const results = await friendService.searchAccounts(communitySearchQuery)
-    setCommunitySearchResults(results)
-  }
-
-  const addCommunitySearchResult = async (result: FriendSearchResult) => {
-    if (!authSession.accountId) {
-      showNotice('Sign in before sending friend requests.')
-      return
-    }
-    const friendship = await friendService.sendRequest(authSession.accountId, result)
-    setFriendships((current) => [friendship, ...current])
-    setCommunityTarget({ kind: 'friend', id: friendship.id })
-    setCommunitySearchResults([])
-    setCommunitySearchQuery('')
-    showNotice(`${result.handle ? `@${result.handle}` : result.displayName} request pending.`)
-  }
-
-  const togglePinnedCommunityRecipient = (target: CommunityTarget) => {
-    const targetId = communityRecipientId(target.kind, target.id)
-    const pinned = userSettings.pinnedCommunityRecipientIds.includes(targetId)
-    const pinnedCommunityRecipientIds = pinned
-      ? userSettings.pinnedCommunityRecipientIds.filter((id) => id !== targetId)
-      : [targetId, ...userSettings.pinnedCommunityRecipientIds]
-    void saveUserSettings({ ...userSettings, pinnedCommunityRecipientIds })
-  }
-
-  const removePinnedCommunityRecipient = (target: CommunityTarget) => {
-    const targetId = communityRecipientId(target.kind, target.id)
-    if (!userSettings.pinnedCommunityRecipientIds.includes(targetId)) return
-    void saveUserSettings({
-      ...userSettings,
-      pinnedCommunityRecipientIds: userSettings.pinnedCommunityRecipientIds.filter((id) => id !== targetId),
-    })
-  }
-
-  const acceptCommunityFriend = async (friendshipId: string) => {
-    const friendship = await friendService.acceptRequest(friendshipId)
-    if (!friendship) return
-    setFriendships((current) => current.map((item) => item.id === friendshipId ? friendship : item))
-    showNotice(`${friendship.friendDisplayName} accepted.`)
-  }
-
-  const rejectCommunityFriend = async (friendshipId: string) => {
-    await friendService.declineRequest(friendshipId)
-    setFriendships((current) => current.filter((friendship) => friendship.id !== friendshipId))
-    setCommunityTarget((current) => current?.kind === 'friend' && current.id === friendshipId ? null : current)
-    removePinnedCommunityRecipient({ kind: 'friend', id: friendshipId })
-    showNotice('Request removed.')
-  }
-
-  const removeCommunityFriend = async (friendshipId: string) => {
-    await friendService.declineRequest(friendshipId)
-    setFriendships((current) => current.filter((friendship) => friendship.id !== friendshipId))
-    setCommunityTarget((current) => current?.kind === 'friend' && current.id === friendshipId ? null : current)
-    removePinnedCommunityRecipient({ kind: 'friend', id: friendshipId })
-    showNotice('User removed.')
-  }
-
-  const openCreateGroupDialog = () => {
-    setGroupDialogDraft({
-      name: '',
-      memberAccountIds: acceptedFriendships.map((friendship) => friendship.friendAccountId),
-    })
-  }
-
-  const toggleGroupDialogMember = (accountId: string) => {
-    setGroupDialogDraft((current) => {
-      if (!current) return current
-      const memberAccountIds = current.memberAccountIds.includes(accountId)
-        ? current.memberAccountIds.filter((id) => id !== accountId)
-        : [...current.memberAccountIds, accountId]
-      return { ...current, memberAccountIds }
-    })
-  }
-
-  const saveFriendGroupDialog = async () => {
-    if (!groupDialogDraft?.name.trim()) return
-    const group = await friendGroupService.createGroup(
-      groupDialogDraft.name,
-      authSession.accountId,
-      groupDialogDraft.memberAccountIds,
-    )
-    setFriendGroups((current) => [group, ...current])
-    setCommunityTarget({ kind: 'group', id: group.id })
-    setGroupDialogDraft(null)
-    showNotice('Friend group created.')
-  }
-
-  const createTargetedShareForSelectedNote = async (permission: SharedNoteExport['permission'] = 'view', noteId?: string) => {
-    if (!noteId) {
-      showNotice('Search for a note, then press Send or Enter.')
-      return
-    }
-    const noteToShare = notes.find((note) => note.id === noteId)
-    if (!noteToShare) {
-      showNotice('That note could not be found.')
-      return
-    }
-    if (!selectedCommunityFriend && !selectedCommunityGroup) {
-      showNotice('Choose a friend or group before sending a note.')
-      return
-    }
-    const options = { ownerAccountId: authSession.accountId, permission }
-    const share = selectedCommunityFriend
-      ? await sharingService.sendNoteToFriend(noteToShare.id, selectedCommunityFriend, options)
-      : await sharingService.sendNoteToGroup(noteToShare.id, selectedCommunityGroup as FriendGroup, options)
-    await communityActivityService.create({
-      recipientKind: selectedCommunityFriend ? 'friend' : 'group',
-      recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
-      actorAccountId: authSession.accountId,
-      kind: 'note-shared',
-      objectType: 'sharedNoteExport',
-      objectId: share.id,
-      payload: {
-        noteId: noteToShare.id,
-        title: noteToShare.title || 'Untitled Note',
-        permission,
-      },
-    })
-    setSharedNoteExports((current) => [share, ...current])
-    showNotice(permission === 'edit' ? 'Editable note share prepared.' : 'Note share prepared.')
-  }
-
-  const createCollaborationForSelectedNote = async (noteId?: string) => {
-    if (!noteId) {
-      showNotice('Search for a note, then choose Edit together.')
-      return
-    }
-    const note = notes.find((n) => n.id === noteId)
-    if (!note) {
-      showNotice('That note could not be found.')
-      return
-    }
-    if (!selectedCommunityFriend && !selectedCommunityGroup) {
-      showNotice('Choose a friend or group before starting edit-together.')
-      return
-    }
-    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const }
-    const share = selectedCommunityFriend
-      ? await sharingService.sendNoteToFriend(note.id, selectedCommunityFriend, options)
-      : await sharingService.sendNoteToGroup(note.id, selectedCommunityGroup as FriendGroup, options)
-    const session = await collaborationService.createSession({
-      localNoteId: note.id,
-      shareId: share.id,
-      ownerAccountId: authSession.accountId,
-      title: note.title || 'Untitled collaboration',
-    })
-    await communityActivityService.create({
-      recipientKind: selectedCommunityFriend ? 'friend' : 'group',
-      recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
-      actorAccountId: authSession.accountId,
-      kind: 'edit-session-created',
-      objectType: 'collaborationSession',
-      objectId: session.id,
-      payload: {
-        noteId: note.id,
-        shareId: share.id,
-        title: session.title,
-      },
-    })
-    setSharedNoteExports((current) => [{ ...share, collaborationSessionId: session.id }, ...current])
-    showNotice('Edit-together foundation created for this note.')
   }
 
   const updateUserSettings = (patch: Partial<UserSettings>) => {
@@ -5226,29 +5038,29 @@ function App() {
 
         {activeView === 'community' && (
           <CommunityView
-            searchQuery={communitySearchQuery}
-            searchResults={communitySearchResults}
+            searchQuery={community.communitySearchQuery}
+            searchResults={community.communitySearchResults}
             canAddRecipients={Boolean(authSession.accountId)}
-            communityTarget={communityTarget}
+            communityTarget={community.communityTarget}
             pinnedRecipientIds={userSettings.pinnedCommunityRecipientIds}
-            friendships={friendships}
-            friendGroups={friendGroups}
-            selectedFriend={selectedCommunityFriend}
-            selectedGroup={selectedCommunityGroup}
+            friendships={community.friendships}
+            friendGroups={community.friendGroups}
+            selectedFriend={community.selectedCommunityFriend}
+            selectedGroup={community.selectedCommunityGroup}
             selectedNote={selectedNote}
-            selectedShares={selectedCommunityShares}
+            selectedShares={community.selectedCommunityShares}
             notes={notes}
-            onSearchQueryChange={setCommunitySearchQuery}
-            onSearch={() => void searchCommunityUsers()}
-            onAddSearchResult={(result) => void addCommunitySearchResult(result)}
-            onCreateGroup={openCreateGroupDialog}
-            onSelectTarget={setCommunityTarget}
-            onTogglePinnedTarget={togglePinnedCommunityRecipient}
-            onAcceptFriend={(friendshipId) => void acceptCommunityFriend(friendshipId)}
-            onRejectFriend={(friendshipId) => void rejectCommunityFriend(friendshipId)}
-            onRemoveFriend={(friendshipId) => void removeCommunityFriend(friendshipId)}
-            onSendNote={(permission, noteId) => void createTargetedShareForSelectedNote(permission, noteId)}
-            onCreateCollaboration={(noteId) => void createCollaborationForSelectedNote(noteId)}
+            onSearchQueryChange={community.setCommunitySearchQuery}
+            onSearch={() => void community.searchCommunityUsers()}
+            onAddSearchResult={(result) => void community.addCommunitySearchResult(result)}
+            onCreateGroup={community.openCreateGroupDialog}
+            onSelectTarget={community.setCommunityTarget}
+            onTogglePinnedTarget={community.togglePinnedCommunityRecipient}
+            onAcceptFriend={(friendshipId) => void community.acceptCommunityFriend(friendshipId)}
+            onRejectFriend={(friendshipId) => void community.rejectCommunityFriend(friendshipId)}
+            onRemoveFriend={(friendshipId) => void community.removeCommunityFriend(friendshipId)}
+            onSendNote={(permission, noteId) => void community.createTargetedShareForSelectedNote(permission, noteId)}
+            onCreateCollaboration={(noteId) => void community.createCollaborationForSelectedNote(noteId)}
             formatDay={formatDay}
           />
         )}
@@ -5763,8 +5575,8 @@ function App() {
                 <div className="settings-data-list">
                   <span><strong>{authSession.status}</strong> Session</span>
                   <span><strong>{accountStatusLabel}</strong> Account</span>
-                  <span><strong>{acceptedFriendCount}</strong> Friends</span>
-                  <span><strong>{pendingFriendCount}</strong> Pending requests</span>
+                  <span><strong>{community.acceptedFriendCount}</strong> Friends</span>
+                  <span><strong>{community.pendingFriendCount}</strong> Pending requests</span>
                   <span><strong>{developerNotifications.length}</strong> Dev notifications cached</span>
                 </div>
                 <div className="settings-warning">
@@ -6156,64 +5968,15 @@ function App() {
         </div>
       )}
 
-      {groupDialogDraft && (
-        <div
-          className="modal-backdrop group-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setGroupDialogDraft(null)
-          }}
-        >
-          <section
-            className="app-dialog group-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="group-dialog-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                void saveFriendGroupDialog()
-              }}
-            >
-              <h2 id="group-dialog-title">Create group</h2>
-              <p>Name the group and choose the accepted friends to include.</p>
-              <label>
-                Group name
-                <input
-                  value={groupDialogDraft.name}
-                  onChange={(event) => setGroupDialogDraft((current) => current ? { ...current, name: event.target.value } : current)}
-                  placeholder="Study circle"
-                  autoFocus
-                />
-              </label>
-              <div className="group-member-list" aria-label="Group members">
-                {acceptedFriendships.length ? acceptedFriendships.map((friendship) => (
-                  <label className="group-member-row" key={friendship.id}>
-                    <input
-                      type="checkbox"
-                      checked={groupDialogDraft.memberAccountIds.includes(friendship.friendAccountId)}
-                      onChange={() => toggleGroupDialogMember(friendship.friendAccountId)}
-                    />
-                    <span>
-                      <strong>{friendship.friendDisplayName}</strong>
-                      <small>{friendship.friendHandle ? `@${friendship.friendHandle}` : 'Connected'}</small>
-                    </span>
-                  </label>
-                )) : (
-                  <p className="group-member-empty">No accepted friends yet. You can create an empty group.</p>
-                )}
-              </div>
-              <footer>
-                <button type="button" onClick={() => setGroupDialogDraft(null)}>Cancel</button>
-                <button type="submit" className="primary" disabled={!groupDialogDraft.name.trim()}>
-                  Create group
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
+      {community.groupDialogDraft && (
+        <CommunityGroupDialog
+          draft={community.groupDialogDraft}
+          acceptedFriendships={community.acceptedFriendships}
+          onNameChange={community.updateGroupDialogName}
+          onToggleMember={community.toggleGroupDialogMember}
+          onClose={community.closeGroupDialog}
+          onSave={() => void community.saveFriendGroupDialog()}
+        />
       )}
 
       {appDialog && (
