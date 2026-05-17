@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { Brain, Calendar, ChartNoAxesColumn, Columns3, FileText, Info, Minus, Quote, Table2 } from 'lucide-react'
+import { Brain, Calendar, ChartNoAxesColumn, Code2, Columns3, FileText, Info, Minus, Quote, Table2 } from 'lucide-react'
 import { createId, nowIso } from '../db'
 import type { JSONContent, LociBlock, LociBlockType, Note, NoteTemplateData, NoteTemplateId } from '../db'
 import {
@@ -114,6 +114,18 @@ export function getNoteTemplate(id: NoteTemplateId = 'blank') {
   return noteTemplates.find((template) => template.id === id) ?? noteTemplates[0]
 }
 
+function reportTemplateData() {
+  return cloneTemplateValue(getNoteTemplate('report').templateData) as Extract<NoteTemplateData, { kind: 'report' }>
+}
+
+function plannerTemplateData() {
+  return cloneTemplateValue(getNoteTemplate('planner').templateData) as Extract<NoteTemplateData, { kind: 'planner' }>
+}
+
+function slideshowTemplateData() {
+  return cloneTemplateValue(getNoteTemplate('slideshow').templateData) as Extract<NoteTemplateData, { kind: 'slideshow' }>
+}
+
 export const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
   blank: FileText,
   report: ChartNoAxesColumn,
@@ -125,6 +137,7 @@ export const blockPickerOptions: BlockPickerOption[] = [
   { type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
   { type: 'flashcard', label: 'Flashcard', description: 'Question and answer atom card.', icon: Brain },
   { type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
+  { type: 'code', label: 'Code', description: 'Add a formatted code snippet.', icon: Code2 },
   { type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
   { type: 'callout', label: 'Callout', description: 'Highlight an important note.', icon: Info },
 ]
@@ -137,10 +150,47 @@ export function templateStructureLabel(id: NoteTemplateId) {
 }
 
 export function normalizeTemplateData(templateId: NoteTemplateId, content: JSONContent, data?: NoteTemplateData): NoteTemplateData {
-  if (data?.kind === templateId) return data
-  if (templateId === 'report') return cloneTemplateValue(getNoteTemplate('report').templateData)
-  if (templateId === 'planner') return cloneTemplateValue(getNoteTemplate('planner').templateData)
-  if (templateId === 'slideshow') return cloneTemplateValue(getNoteTemplate('slideshow').templateData)
+  if (data?.kind === templateId) {
+    if (templateId === 'blank') {
+      return { kind: 'blank', body: cloneTemplateValue(data.kind === 'blank' ? data.body ?? content : content) }
+    }
+    if (templateId === 'report' && data.kind === 'report') {
+      const fallback = reportTemplateData()
+      return {
+        ...fallback,
+        ...data,
+        appendix: cloneTemplateValue(data.appendix ?? fallback.appendix),
+      }
+    }
+    if (templateId === 'planner' && data.kind === 'planner') {
+      const fallback = plannerTemplateData()
+      return {
+        ...fallback,
+        ...data,
+        priorities: Array.isArray(data.priorities) ? data.priorities : fallback.priorities,
+        tasks: Array.isArray(data.tasks) ? data.tasks : fallback.tasks,
+        schedule: Array.isArray(data.schedule) ? data.schedule : fallback.schedule,
+        notes: cloneTemplateValue(data.notes ?? fallback.notes),
+      }
+    }
+    if (templateId === 'slideshow' && data.kind === 'slideshow') {
+      const fallback = slideshowTemplateData()
+      const slides = Array.isArray(data.slides) && data.slides.length ? data.slides : fallback.slides
+      return {
+        ...fallback,
+        ...data,
+        activeSlideId: slides.some((slide) => slide.id === data.activeSlideId) ? data.activeSlideId : slides[0]?.id ?? fallback.activeSlideId,
+        slides: slides.map((slide) => ({
+          ...slide,
+          body: cloneTemplateValue(slide.body ?? emptyDoc),
+          speakerNotes: slide.speakerNotes ?? '',
+        })),
+      }
+    }
+  }
+  if (templateId === 'report') return reportTemplateData()
+  if (templateId === 'planner') return plannerTemplateData()
+  if (templateId === 'slideshow') return slideshowTemplateData()
   return { kind: 'blank', body: cloneTemplateValue(content) }
 }
 
@@ -166,8 +216,9 @@ export function updatePrimaryTemplateContent(note: Note, content: JSONContent): 
 }
 
 export function templateDataToContent(data: NoteTemplateData): JSONContent {
-  if (data.kind === 'blank') return data.body
+  if (data.kind === 'blank') return data.body ?? emptyDoc
   if (data.kind === 'report') {
+    const appendix = data.appendix ?? emptyDoc
     return {
       type: 'doc',
       content: [
@@ -177,27 +228,32 @@ export function templateDataToContent(data: NoteTemplateData): JSONContent {
         { type: 'paragraph', content: data.findings ? [{ type: 'text', text: data.findings }] : [] },
         { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Recommendations' }] },
         { type: 'paragraph', content: data.recommendations ? [{ type: 'text', text: data.recommendations }] : [] },
-        ...(data.appendix.content ?? []),
+        ...(appendix.content ?? []),
       ],
     }
   }
   if (data.kind === 'planner') {
+    const priorities = Array.isArray(data.priorities) ? data.priorities : []
+    const tasks = Array.isArray(data.tasks) ? data.tasks : []
+    const notes = data.notes ?? emptyDoc
     return {
       type: 'doc',
       content: [
         { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: data.date || 'Planner' }] },
-        { type: 'bulletList', content: data.priorities.map((text) => ({ type: 'listItem', content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }] })) },
-        { type: 'bulletList', content: data.tasks.map((task) => ({ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: `${task.done ? '[x]' : '[ ]'} ${task.text}` }] }] })) },
-        ...(data.notes.content ?? []),
+        { type: 'bulletList', content: priorities.map((text) => ({ type: 'listItem', content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }] })) },
+        { type: 'bulletList', content: tasks.map((task) => ({ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: `${task.done ? '[x]' : '[ ]'} ${task.text}` }] }] })) },
+        ...(notes.content ?? []),
       ],
     }
   }
+  const slides = Array.isArray(data.slides) ? data.slides : []
+  const content = slides.flatMap((slide, index) => [
+    { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: slide.title || `Slide ${index + 1}` }] },
+    ...(slide.body?.content ?? []),
+  ])
   return {
     type: 'doc',
-    content: data.slides.flatMap((slide, index) => [
-      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: slide.title || `Slide ${index + 1}` }] },
-      ...(slide.body.content ?? []),
-    ]),
+    content: content.length ? content : emptyDoc.content,
   }
 }
 

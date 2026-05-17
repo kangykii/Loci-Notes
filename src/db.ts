@@ -15,6 +15,8 @@ export type Project = {
   description?: string
   color: string
   createdAt: string
+  source?: 'starter' | 'user' | 'imported' | 'remote'
+  isStarter?: boolean
 }
 
 export type UserProfile = {
@@ -283,6 +285,8 @@ export type Atom = {
   updatedAt: string
   reviewCount: number
   knownCount: number
+  source?: 'starter' | 'user' | 'imported' | 'remote'
+  isStarter?: boolean
 }
 
 export type FlashcardSet = {
@@ -307,6 +311,7 @@ export type LociBlockType =
   | 'numberedList'
   | 'quote'
   | 'image'
+  | 'code'
   | 'divider'
   | 'callout'
   | 'template'
@@ -375,6 +380,8 @@ export type Note = {
   content: JSONContent
   createdAt: string
   updatedAt: string
+  source?: 'starter' | 'user' | 'imported' | 'remote'
+  isStarter?: boolean
 }
 
 export type NoteMeta = {
@@ -417,6 +424,19 @@ export type NoteSnapshot = {
   contentHash: string
 }
 
+export type RemoteEntityType = 'project' | 'note' | 'atom' | 'flashcardSet'
+
+export type RemoteEntityMapping = {
+  id: string
+  entityType: RemoteEntityType
+  localId: string
+  remoteId: string
+  ownerAccountId: string
+  lastSyncedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
 export const NOTE_SNAPSHOT_MAX_PER_NOTE = 25
 
 function snapshotContentHash(note: Pick<Note, 'title' | 'content'>) {
@@ -449,6 +469,7 @@ class LociNotesDatabase extends Dexie {
   communityPresetReplies!: Dexie.Table<CommunityPresetReply, string>
   communitySyncQueue!: Dexie.Table<CommunitySyncQueueItem, string>
   remoteContentItems!: Dexie.Table<RemoteContentItem, string>
+  remoteEntityMappings!: Dexie.Table<RemoteEntityMapping, string>
 
   constructor() {
     super('loci-notes')
@@ -656,7 +677,7 @@ class LociNotesDatabase extends Dexie {
 
         const sets = await setTable.toArray() as FlashcardSet[]
         const migratedSets = sets.map((set) => {
-          const atomIds = set.atomIds.flatMap((atomId) => {
+          const atomIds = (set.atomIds ?? []).flatMap((atomId) => {
             const projectMap = atomIdProjectMap.get(atomId)
             return projectMap ? Array.from(projectMap.values()) : [atomId]
           })
@@ -735,6 +756,34 @@ class LociNotesDatabase extends Dexie {
       communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
       remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
     })
+    this.version(16).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
+    })
   }
 }
 
@@ -756,6 +805,7 @@ function blockTypeForNode(node: JSONContent): LociBlockType {
   if (node.type === 'orderedList') return 'numberedList'
   if (node.type === 'blockquote') return 'quote'
   if (node.type === 'image') return 'image'
+  if (node.type === 'codeBlock') return 'code'
   if (node.type === 'horizontalRule') return 'divider'
   return 'paragraph'
 }
@@ -782,6 +832,7 @@ function collectAtomIdsFromContent(content: JSONContent): string[] {
 }
 
 function remapAtomIdsInContent(content: JSONContent, atomIdMap: Map<string, string>): JSONContent {
+  if (!content || typeof content !== 'object') return { type: 'doc', content: [] }
   const next: JSONContent = { ...content }
   if (content.attrs && typeof content.attrs.atomId === 'string') {
     const mappedAtomId = atomIdMap.get(content.attrs.atomId)
@@ -803,9 +854,10 @@ function remapAtomIdsInTemplateData(templateData: NoteTemplateData, atomIdMap: M
   if (templateData.kind === 'report') return { ...templateData, appendix: remapAtomIdsInContent(templateData.appendix, atomIdMap) }
   if (templateData.kind === 'planner') return { ...templateData, notes: remapAtomIdsInContent(templateData.notes, atomIdMap) }
   if (templateData.kind === 'slideshow') {
+    const slides = Array.isArray(templateData.slides) ? templateData.slides : []
     return {
       ...templateData,
-      slides: templateData.slides.map((slide) => ({ ...slide, body: remapAtomIdsInContent(slide.body, atomIdMap) })),
+      slides: slides.map((slide) => ({ ...slide, body: remapAtomIdsInContent(slide.body, atomIdMap) })),
     }
   }
   return templateData
@@ -873,6 +925,15 @@ export function noteToMediaAssets(note: Note): MediaAsset[] {
   return collectImageAssets(note)
 }
 
+export const noteBodyStore = {
+  getNoteBody: (noteId: string) => db.noteBodies.get(noteId),
+  bulkGetNoteBodies: (noteIds: string[]) => db.noteBodies.bulkGet(noteIds),
+  putNoteBody: (note: Note) => db.noteBodies.put(noteToBody(note)),
+  bulkPutNoteBodies: (notes: Note[]) => db.noteBodies.bulkPut(notes.map(noteToBody)),
+  deleteNoteBody: (noteId: string) => db.noteBodies.delete(noteId),
+  bulkDeleteNoteBodies: (noteIds: string[]) => db.noteBodies.bulkDelete(noteIds),
+}
+
 /** Skip if identical to latest snapshot; drop oldest past cap. */
 export async function appendNoteSnapshot(note: Pick<Note, 'id' | 'title' | 'content'>) {
   const contentHash = snapshotContentHash(note)
@@ -905,154 +966,247 @@ export async function loadNoteSnapshots(noteId: string): Promise<NoteSnapshot[]>
 
 export const initialProjects: Project[] = [
   {
-    id: 'project_database',
-    name: 'System Database',
-    description: 'Course notes, database concepts, and study material.',
+    id: 'project_getting_started',
+    name: 'Getting Started with Loci',
+    description: 'A guided tour of the main Loci Notes workflows.',
     color: '#111111',
     createdAt: nowIso(),
+    source: 'starter',
+    isStarter: true,
   },
   {
-    id: 'project_design',
-    name: 'Design Studio',
-    description: 'Design references, experiments, and loose creative work.',
-    color: '#ece8dc',
+    id: 'project_study_and_review',
+    name: 'Study and Review',
+    description: 'Atoms, flashcards, and review habits for remembering more.',
+    color: '#6c5a7c',
     createdAt: nowIso(),
+    source: 'starter',
+    isStarter: true,
   },
 ]
 
 export const initialAtoms: Atom[] = [
   {
-    id: 'atom_normalization',
-    projectId: 'project_database',
-    phrase: 'Normalization',
+    id: 'atom_atoms',
+    projectId: 'project_study_and_review',
+    phrase: 'Atoms',
     definition:
-      'A database design process that organizes data to reduce redundancy and improve consistency.',
-    tags: ['Database', 'Study'],
+      'Reusable knowledge highlights in Loci Notes. Mark important phrases as atoms so they can be reviewed and reused across notes.',
+    tags: ['Loci Notes', 'Study'],
     createdAt: nowIso(),
     updatedAt: nowIso(),
     reviewCount: 0,
     knownCount: 0,
+    source: 'starter',
+    isStarter: true,
   },
   {
-    id: 'atom_5nf',
-    projectId: 'project_database',
-    phrase: '5NF',
+    id: 'atom_projects',
+    projectId: 'project_getting_started',
+    phrase: 'Projects',
     definition:
-      'Fifth normal form, a database normalization level focused on decomposing tables to remove join dependencies.',
-    tags: ['Database'],
+      'Top-level spaces that group notes, atoms, files, and workflows around a topic.',
+    tags: ['Loci Notes', 'Organization'],
     createdAt: nowIso(),
     updatedAt: nowIso(),
     reviewCount: 0,
     knownCount: 0,
+    source: 'starter',
+    isStarter: true,
   },
 ]
 
 const seedInitialNotes: Array<Omit<Note, 'templateData'>> = [
   {
-    id: 'note_database_week_4',
-    title: 'Database Systems Week 4',
-    projectId: 'project_database',
+    id: 'note_loci_quick_start',
+    title: 'Start Here: How Loci Notes Works',
+    projectId: 'project_getting_started',
     templateId: 'blank',
-    author: 'Floyd Lawton',
-    tags: ['College', 'Lecture', 'Daily', 'Productivity', 'Database'],
-    createdAt: '2026-04-19T10:39:00.000Z',
-    updatedAt: '2026-04-19T10:39:00.000Z',
+    author: 'Loci Notes',
+    tags: ['Guide', 'Onboarding', 'Loci Notes'],
+    createdAt: '2026-05-16T09:00:00.000Z',
+    updatedAt: '2026-05-16T09:00:00.000Z',
     content: {
       type: 'doc',
       content: [
         {
           type: 'heading',
           attrs: { level: 2 },
-          content: [
-            {
-              type: 'text',
-              text: 'Normalization',
-              marks: [
-                {
-                  type: 'atom',
-                  attrs: {
-                    atomId: 'atom_normalization',
-                    phrase: 'Normalization',
-                    definition:
-                      'A database design process that organizes data to reduce redundancy and improve consistency.',
-                  },
-                },
-              ],
-            },
-          ],
+          content: [{ type: 'text', text: 'Welcome to Loci Notes' }],
         },
         {
           type: 'paragraph',
           content: [
+            { type: 'text', text: 'Loci is built around ' },
             {
               type: 'text',
-              text: 'Normalization is the process of ordering basic data structures to ensure that the basic data created is of good quality. Used to minimize data redundancy and data inconsistencies. Normalization stage starts from the lightest stage (1NF) to the strictest (',
-            },
-            {
-              type: 'text',
-              text: '5NF',
+              text: 'Projects',
               marks: [
                 {
                   type: 'atom',
                   attrs: {
-                    atomId: 'atom_5nf',
-                    phrase: '5NF',
-                    definition:
-                      'Fifth normal form, a database normalization level focused on decomposing tables to remove join dependencies.',
+                    atomId: 'atom_projects',
+                    phrase: 'Projects',
+                    definition: 'Top-level spaces that group notes, atoms, files, and workflows around a topic.',
                   },
                 },
               ],
             },
+            { type: 'text', text: ', notes, and ' },
             {
               type: 'text',
-              text: '). Usually only up to the 3NF or BCNF level as they are sufficient to produce good quality tables.',
+              text: 'Atoms',
+              marks: [
+                {
+                  type: 'atom',
+                  attrs: {
+                    atomId: 'atom_atoms',
+                    phrase: 'Atoms',
+                    definition:
+                      'Reusable knowledge highlights in Loci Notes. Mark important phrases as atoms so they can be reviewed and reused across notes.',
+                  },
+                },
+              ],
             },
+            { type: 'text', text: '. Use projects to keep work separated, then use atoms to turn important ideas into reusable memory cards.' },
           ],
         },
-      ],
-    },
-  },
-  {
-    id: 'note_exploration',
-    title: 'Exploration Ideas',
-    projectId: 'project_design',
-    templateId: 'blank',
-    author: 'Floyd Lawton',
-    tags: ['Design', 'Productivity', 'Training'],
-    createdAt: '2026-04-20T08:15:00.000Z',
-    updatedAt: '2026-04-20T08:15:00.000Z',
-    content: {
-      type: 'doc',
-      content: [
-        {
-          type: 'paragraph',
-          content: [
-            {
-              type: 'text',
-              text: 'Blandit pharetra tellus metus fermentum pellentesque augue sit. Donec senectus ideas for future study flows.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    id: 'note_grocery',
-    title: 'Grocery List',
-    projectId: 'project_design',
-    templateId: 'blank',
-    author: 'Floyd Lawton',
-    tags: ['Shopping', 'List'],
-    createdAt: '2026-04-18T09:05:00.000Z',
-    updatedAt: '2026-04-18T09:05:00.000Z',
-    content: {
-      type: 'doc',
-      content: [
         {
           type: 'bulletList',
           content: [
-            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Coffee beans' }] }] },
-            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Notebook tabs' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Open a project from the sidebar to focus your workspace.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Create a note, write freely, then highlight terms you want to remember.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Search across notes and atoms when you need to find a thread again.' }] }] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    id: 'note_loci_editor_basics',
+    title: 'Editor Basics',
+    projectId: 'project_getting_started',
+    templateId: 'blank',
+    author: 'Loci Notes',
+    tags: ['Guide', 'Editor', 'Writing'],
+    createdAt: '2026-05-16T09:10:00.000Z',
+    updatedAt: '2026-05-16T09:10:00.000Z',
+    content: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'Writing in the editor' }],
+        },
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'text',
+              text: 'The editor is block-based, so each paragraph, heading, checklist, quote, table, or image can be moved and managed independently.',
+            },
+          ],
+        },
+        {
+          type: 'taskList',
+          content: [
+            { type: 'taskItem', attrs: { checked: true }, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Use headings to break up long notes.' }] }] },
+            { type: 'taskItem', attrs: { checked: false }, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Use checklists for actions you want to come back to.' }] }] },
+            { type: 'taskItem', attrs: { checked: false }, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Use the floating toolbar for formatting, highlighting, and AI actions.' }] }] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    id: 'note_loci_atoms_review',
+    title: 'Atoms and Review',
+    projectId: 'project_study_and_review',
+    templateId: 'blank',
+    author: 'Loci Notes',
+    tags: ['Guide', 'Atoms', 'Review'],
+    createdAt: '2026-05-16T09:30:00.000Z',
+    updatedAt: '2026-05-16T09:30:00.000Z',
+    content: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'Build a memory layer while you write' }],
+        },
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'When a phrase matters, mark it as an atom. Loci stores the phrase, definition, project, and tags so you can review it later without digging through the whole note.' }],
+        },
+        {
+          type: 'bulletList',
+          content: [
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Keep atom definitions short and useful.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Tag atoms by subject, course, client, or workflow.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Review atoms after writing to lock in the important ideas.' }] }] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    id: 'note_loci_search_export_share',
+    title: 'Search, Export, and Share',
+    projectId: 'project_getting_started',
+    templateId: 'blank',
+    author: 'Loci Notes',
+    tags: ['Guide', 'Search', 'Export', 'Community'],
+    createdAt: '2026-05-16T09:40:00.000Z',
+    updatedAt: '2026-05-16T09:40:00.000Z',
+    content: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'Find and move your work' }],
+        },
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'Search helps you jump between notes, tags, projects, and atoms. Exports help you turn a note into a file when it needs to leave Loci.' }],
+        },
+        {
+          type: 'bulletList',
+          content: [
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Use search when you remember a phrase but not the project.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Export polished notes to share outside the app.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Use Community to send notes or collaborate with saved contacts.' }] }] },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    id: 'note_loci_review_routine',
+    title: 'A Simple Review Routine',
+    projectId: 'project_study_and_review',
+    templateId: 'blank',
+    author: 'Loci Notes',
+    tags: ['Guide', 'Review', 'Example'],
+    createdAt: '2026-05-16T09:50:00.000Z',
+    updatedAt: '2026-05-16T09:50:00.000Z',
+    content: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'A simple review loop' }],
+        },
+        {
+          type: 'orderedList',
+          content: [
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Write the idea in a normal note first.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Mark the phrase that should become an atom.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Give the atom a short definition you would understand later.' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Review a few atoms after each writing session.' }] }] },
           ],
         },
       ],
@@ -1063,7 +1217,32 @@ const seedInitialNotes: Array<Omit<Note, 'templateData'>> = [
 export const initialNotes: Note[] = seedInitialNotes.map((note) => ({
   ...note,
   templateData: { kind: 'blank', body: note.content },
+  source: 'starter',
+  isStarter: true,
 }))
+
+export type StarterWorkspaceUpsertResult = {
+  projects: number
+  atoms: number
+  notes: number
+  repairedNotes: number
+  removedProjects: number
+  removedNotes: number
+  removedAtoms: number
+}
+
+export const starterWorkspaceProjectIds = initialProjects.map((project) => project.id)
+export const starterWorkspaceNoteIds = initialNotes.map((note) => note.id)
+export const starterWorkspaceAtomIds = initialAtoms.map((atom) => atom.id)
+export const deprecatedStarterProjectIds = ['project_database', 'project_design', 'project_writing_system']
+export const deprecatedStarterNoteIds = [
+  'note_database_week_4',
+  'note_exploration',
+  'note_grocery',
+  'note_loci_templates',
+  'note_loci_daily_workflow',
+]
+export const deprecatedStarterAtomIds = ['atom_normalization', 'atom_5nf', 'atom_templates']
 
 export const initialAccountProfiles: AccountProfile[] = [
   {
@@ -1118,20 +1297,175 @@ export const initialFriendGroups: FriendGroup[] = [
   },
 ]
 
-export async function ensureSeedData() {
-  const noteCount = await db.notes.count()
-  await ensureCommunitySeedData()
-  if (noteCount > 0) return
+type StarterWorkspaceUpsertOptions = {
+  force?: boolean
+  restoreMissing?: boolean
+}
 
-  await db.transaction('rw', [db.projects, db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.noteSnapshots], async () => {
-    await db.projects.bulkPut(initialProjects)
-    await db.atoms.bulkPut(initialAtoms)
-    await db.notes.bulkPut(initialNotes)
-    await db.noteMetas.bulkPut(initialNotes.map(noteToMeta))
-    await db.noteBodies.bulkPut(initialNotes.map(noteToBody))
-    const assets = initialNotes.flatMap(noteToMediaAssets)
+export function noteFromMetaAndBody(meta: NoteMeta, body: NoteBody): Note {
+  const updatedAt = body.updatedAt > meta.updatedAt ? body.updatedAt : meta.updatedAt
+  const createdAt = body.updatedAt < meta.updatedAt ? body.updatedAt : meta.updatedAt
+  return {
+    id: meta.id,
+    title: meta.title,
+    projectId: meta.projectId,
+    templateId: meta.templateId,
+    templateData: body.templateData,
+    blocks: body.blocks,
+    author: 'Loci Notes',
+    tags: meta.tags ?? [],
+    content: body.content,
+    createdAt,
+    updatedAt,
+  }
+}
+
+export async function upsertStarterWorkspace(options: StarterWorkspaceUpsertOptions = {}): Promise<StarterWorkspaceUpsertResult> {
+  const force = options.force ?? false
+  const restoreMissing = options.restoreMissing ?? force
+  const seedTables = [db.projects, db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.noteSnapshots] as unknown as Dexie.Table<unknown, string>[]
+
+  const existingProjects = await db.projects.bulkGet(starterWorkspaceProjectIds)
+  const missingProjects = restoreMissing ? initialProjects.filter((_, index) => !existingProjects[index]) : []
+  const existingAtoms = await db.atoms.bulkGet(starterWorkspaceAtomIds)
+  const missingAtoms = restoreMissing ? initialAtoms.filter((_, index) => !existingAtoms[index]) : []
+  const existingNotes = await db.notes.bulkGet(starterWorkspaceNoteIds)
+  const existingNoteMetas = await db.noteMetas.bulkGet(starterWorkspaceNoteIds)
+  const existingNoteBodies = await noteBodyStore.bulkGetNoteBodies(starterWorkspaceNoteIds)
+  const missingNoteCount = restoreMissing ? initialNotes.filter((_, index) => !existingNotes[index] && !existingNoteMetas[index] && !existingNoteBodies[index]).length : 0
+  const repairedNoteIds = new Set<string>()
+  const notesToPut: Note[] = []
+  const metasToPut: NoteMeta[] = []
+  const bodiesToPut: NoteBody[] = []
+
+  initialNotes.forEach((seedNote, index) => {
+    const existingNote = existingNotes[index]
+    const existingMeta = existingNoteMetas[index]
+    const existingBody = existingNoteBodies[index]
+    const noteExistsAnywhere = Boolean(existingNote || existingMeta || existingBody)
+
+    if (force || (restoreMissing && !noteExistsAnywhere)) {
+      notesToPut.push(seedNote)
+      metasToPut.push(noteToMeta(seedNote))
+      bodiesToPut.push(noteToBody(seedNote))
+      if (noteExistsAnywhere && !force) repairedNoteIds.add(seedNote.id)
+      return
+    }
+
+    if (!noteExistsAnywhere) return
+
+    const repairedNote = existingNote ?? (existingMeta && existingBody ? noteFromMetaAndBody(existingMeta, existingBody) : seedNote)
+    if (!existingNote) {
+      notesToPut.push(repairedNote)
+      repairedNoteIds.add(seedNote.id)
+    }
+    if (!existingMeta) {
+      metasToPut.push(noteToMeta(repairedNote))
+      repairedNoteIds.add(seedNote.id)
+    }
+    if (!existingBody) {
+      bodiesToPut.push(noteToBody(repairedNote))
+      repairedNoteIds.add(seedNote.id)
+    }
+  })
+
+  const [deprecatedProjects, deprecatedNotes, deprecatedNoteMetas, deprecatedNoteBodies] = await Promise.all([
+    db.projects.bulkGet(deprecatedStarterProjectIds),
+    db.notes.bulkGet(deprecatedStarterNoteIds),
+    db.noteMetas.bulkGet(deprecatedStarterNoteIds),
+    noteBodyStore.bulkGetNoteBodies(deprecatedStarterNoteIds),
+  ])
+  const deprecatedAtoms = await db.atoms.bulkGet(deprecatedStarterAtomIds)
+  const removedProjects = force ? deprecatedProjects.filter(Boolean).length : 0
+  const removedNotes = force ? deprecatedStarterNoteIds.filter((_, index) => deprecatedNotes[index] || deprecatedNoteMetas[index] || deprecatedNoteBodies[index]).length : 0
+  const removedAtoms = force ? deprecatedAtoms.filter(Boolean).length : 0
+
+  const atomsToPut = force
+    ? initialAtoms
+    : initialAtoms.filter((atom, index) =>
+      (restoreMissing || Boolean(existingAtoms[index])) &&
+      (
+        !existingAtoms[index] ||
+        existingAtoms[index]?.projectId !== atom.projectId ||
+        existingAtoms[index]?.phrase !== atom.phrase ||
+        existingAtoms[index]?.definition !== atom.definition
+      )
+    )
+  const repairedAtomCount = atomsToPut.length - missingAtoms.length
+  const noteRowsToRefreshAssets = notesToPut.length ? notesToPut : force ? initialNotes : []
+
+  const starterAtomsNeedRewrite = initialAtoms.some((atom, index) =>
+    (restoreMissing || Boolean(existingAtoms[index])) &&
+    (
+      existingAtoms[index]?.projectId !== atom.projectId ||
+      existingAtoms[index]?.phrase !== atom.phrase ||
+      existingAtoms[index]?.definition !== atom.definition
+    )
+  )
+
+  if (
+    !missingProjects.length &&
+    !missingAtoms.length &&
+    !starterAtomsNeedRewrite &&
+    !notesToPut.length &&
+    !metasToPut.length &&
+    !bodiesToPut.length &&
+    !removedProjects &&
+    !removedNotes &&
+    !removedAtoms
+  ) {
+    return { projects: 0, atoms: 0, notes: 0, repairedNotes: 0, removedProjects: 0, removedNotes: 0, removedAtoms: 0 }
+  }
+
+  await db.transaction('rw', seedTables, async () => {
+    const seedNotesTable = db.notes as unknown as { bulkPut(items: Note[]): Promise<unknown> }
+    if (force && deprecatedStarterProjectIds.length) await db.projects.bulkDelete(deprecatedStarterProjectIds)
+    if (force && deprecatedStarterAtomIds.length) await db.atoms.bulkDelete(deprecatedStarterAtomIds)
+    if (force && deprecatedStarterNoteIds.length) {
+      await db.notes.bulkDelete(deprecatedStarterNoteIds)
+      await db.noteMetas.bulkDelete(deprecatedStarterNoteIds)
+      await noteBodyStore.bulkDeleteNoteBodies(deprecatedStarterNoteIds)
+      for (const noteId of deprecatedStarterNoteIds) {
+        await db.mediaAssets.where('noteId').equals(noteId).delete()
+        await db.noteSnapshots.where('noteId').equals(noteId).delete()
+      }
+    }
+    if (missingProjects.length) await db.projects.bulkPut(missingProjects)
+    if (atomsToPut.length) await db.atoms.bulkPut(atomsToPut)
+    if (notesToPut.length) await seedNotesTable.bulkPut(notesToPut)
+    if (metasToPut.length) await db.noteMetas.bulkPut(metasToPut)
+    if (bodiesToPut.length) await db.noteBodies.bulkPut(bodiesToPut)
+    for (const note of noteRowsToRefreshAssets) {
+      await db.mediaAssets.where('noteId').equals(note.id).delete()
+    }
+    const assets = noteRowsToRefreshAssets.flatMap(noteToMediaAssets)
     if (assets.length) await db.mediaAssets.bulkPut(assets)
   })
+
+  return {
+    projects: missingProjects.length,
+    atoms: missingAtoms.length + Math.max(0, repairedAtomCount),
+    notes: missingNoteCount,
+    repairedNotes: force ? initialNotes.length - missingNoteCount : repairedNoteIds.size,
+    removedProjects,
+    removedNotes,
+    removedAtoms,
+  }
+}
+
+export async function ensureSeedData() {
+  try {
+    await ensureCommunitySeedData()
+  } catch (error) {
+    console.error('Could not prepare community seed data', error)
+  }
+  const [projectCount, noteCount, atomCount] = await Promise.all([
+    db.projects.count(),
+    db.notes.count(),
+    db.atoms.count(),
+  ])
+  const workspaceIsEmpty = projectCount === 0 && noteCount === 0 && atomCount === 0
+  await upsertStarterWorkspace({ restoreMissing: workspaceIsEmpty })
 }
 
 async function ensureCommunitySeedData() {

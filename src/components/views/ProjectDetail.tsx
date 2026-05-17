@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Dispatch, DragEvent, SetStateAction } from 'react'
-import { ArrowLeft, ChevronDown, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronDown, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 import type { Note, Project } from '../../db'
 import { collectText } from '../../editor/blocks'
 import {
@@ -92,6 +92,7 @@ export function ProjectDetail({
   deleteNote,
   openNote,
   newNote,
+  renameNote,
   deleteProject,
   updateDescription,
   updateName,
@@ -109,6 +110,7 @@ export function ProjectDetail({
   deleteNote: (note: Note) => void
   openNote: (noteId: string) => void
   newNote: () => void
+  renameNote: (noteId: string, title: string) => void
   deleteProject: () => void
   updateDescription: (description: string) => void
   updateName: (name: string) => void
@@ -121,6 +123,8 @@ export function ProjectDetail({
   const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
   const [projectTitleEditing, setProjectTitleEditing] = useState(false)
   const [projectTitleDraft, setProjectTitleDraft] = useState(project.name)
+  const [editingNoteId, setEditingNoteId] = useState('')
+  const [editingNoteTitle, setEditingNoteTitle] = useState('')
   const projectTitleInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -139,6 +143,18 @@ export function ProjectDetail({
     if (nextName && nextName !== project.name) updateName(nextName)
     else setProjectTitleDraft(project.name)
     setProjectTitleEditing(false)
+  }
+
+  const startNoteRename = (note: Note) => {
+    setEditingNoteId(note.id)
+    setEditingNoteTitle(note.title || 'Untitled Note')
+  }
+
+  const commitNoteRename = (note: Note) => {
+    const nextTitle = editingNoteTitle.replace(/\s*\r?\n\s*/g, ' ').trim() || 'Untitled Note'
+    setEditingNoteTitle(nextTitle)
+    setEditingNoteId('')
+    if (nextTitle !== note.title) renameNote(note.id, nextTitle)
   }
 
   return (
@@ -178,9 +194,14 @@ export function ProjectDetail({
         action={
           <div className="project-header-actions">
             <button type="button" onClick={newNote}><Plus size={17} /> New note in this project</button>
-            <button className="project-delete-button" type="button" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
-              <Trash2 size={16} />
-            </button>
+            <details className="project-header-menu">
+              <summary aria-label="More project actions" title="More project actions">
+                <MoreHorizontal size={18} aria-hidden />
+              </summary>
+              <button type="button" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
+                <Trash2 size={15} aria-hidden /> Delete project
+              </button>
+            </details>
           </div>
         }
       />
@@ -261,13 +282,51 @@ export function ProjectDetail({
                     openNote(note.id)
                   }}
                 >
-                  <strong>{note.title}</strong>
+                  {editingNoteId === note.id ? (
+                    <input
+                      className="note-title-rename-input project-note-title-input"
+                      value={editingNoteTitle}
+                      onBlur={() => commitNoteRename(note)}
+                      onChange={(event) => setEditingNoteTitle(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          commitNoteRename(note)
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setEditingNoteTitle(note.title || 'Untitled Note')
+                          setEditingNoteId('')
+                        }
+                      }}
+                      aria-label="Document name"
+                      autoFocus
+                    />
+                  ) : (
+                    <strong
+                      className="project-note-title-editable"
+                      title="Double-click to rename"
+                      onDoubleClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        startNoteRename(note)
+                      }}
+                    >
+                      {note.title || 'Untitled Note'}
+                    </strong>
+                  )}
                   <span className="file-row-date">{formatDay(note.updatedAt)}</span>
                   <p>{collectText(note.content) || 'Empty note'}</p>
                   <button
                     type="button"
                     className="note-row-delete"
                     aria-label={`Delete ${note.title || 'Untitled Note'}`}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation()
                       deleteNote(note)

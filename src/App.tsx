@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { EditorContent, useEditor } from '@tiptap/react'
+import { useEditor } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
@@ -48,8 +48,15 @@ import { AtomMark } from './AtomMark'
 import {
   appendNoteSnapshot,
   createId,
+  deprecatedStarterAtomIds,
+  deprecatedStarterNoteIds,
+  deprecatedStarterProjectIds,
   loadNoteSnapshots,
   nowIso,
+  starterWorkspaceAtomIds,
+  starterWorkspaceNoteIds,
+  starterWorkspaceProjectIds,
+  upsertStarterWorkspace,
 } from './db'
 import type {
   Atom,
@@ -71,6 +78,7 @@ import type {
   Friendship,
   RemoteContentItem,
   SharedNoteExport,
+  StarterWorkspaceUpsertResult,
   UserProfile,
   UserSettings,
 } from './db'
@@ -105,12 +113,18 @@ import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
 import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
+import { LociEditor } from './components/editor/LociEditor'
+import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
+import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
+import type { BlockControlRect, BlockDropTarget } from './components/editor/useBlockGutter'
 import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
 import {
+  ActiveBlockHighlight,
   AISelectionHighlight,
   LociFlashcard,
   LociImage,
   LociQuote,
+  TabIndent,
   aiSelectionHighlightKey,
 } from './editor/extensions'
 import type { EditorRange } from './editor/extensions'
@@ -125,8 +139,10 @@ import {
   contentFromBlocks,
   createLociBlock,
   cloneTemplateValue,
+  ensureDocumentHeading,
   flashcardBlockDoc,
   flashcardsFromContent,
+  flattenLegacyLociBlocks,
   formatBlockTypeForBlock,
   imageBlockDoc,
   normalizeBlocksForContent,
@@ -218,6 +234,24 @@ type NoteIndexCacheEntry = {
   atomIds: string[]
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function starterWorkspaceResultMessage(result: StarterWorkspaceUpsertResult) {
+  const added = [
+    result.projects ? pluralize(result.projects, 'project') : '',
+    result.notes ? pluralize(result.notes, 'note') : '',
+    result.atoms ? pluralize(result.atoms, 'atom') : '',
+  ].filter(Boolean)
+  const removedTotal = result.removedProjects + result.removedNotes + result.removedAtoms
+  const pieces = []
+  if (added.length) pieces.push(`Added ${added.join(', ')}`)
+  if (result.repairedNotes) pieces.push(`repaired ${pluralize(result.repairedNotes, 'note')}`)
+  if (removedTotal) pieces.push(`removed ${pluralize(removedTotal, 'old starter record')}`)
+  return pieces.length ? `Onboarding files updated: ${pieces.join('; ')}.` : 'Onboarding files already exist.'
+}
+
 type AtomCard = {
   atom: Atom
   noteCount: number
@@ -263,18 +297,12 @@ type BlockPickerState = {
   query: string
 }
 
-type BlockDropTarget = {
-  blockId: string
-  top: number
-  height: number
-  width: number
-  left: number
-}
+type DropPlacement = 'above' | 'below'
 
-type BlockControlRect = {
-  blockId: string
-  top: number
-  height: number
+type BlockDropIntent = {
+  draggedId: string
+  targetId: string
+  placement: DropPlacement
 }
 
 type FormatSideControlsRect = {
@@ -626,11 +654,12 @@ const UNASSIGNED_PROJECT_ID = '__unassigned__'
 
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
 const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
-const NOTE_SAVE_DEBOUNCE_MS = 650
+const NOTE_SAVE_DEBOUNCE_MS = 150
 const NOTICE_TOAST_MS = 4000
 const OPTIMISTIC_UNDO_MS = 6000
 
 const DEFAULT_PROFILE_COLOR = '#4c4439'
+const BAD_PROFILE_DISPLAY_NAME = 'Your nMae'
 
 const PROFILE_COLORS = ['#4c4439', '#111111', '#5d6b52', '#6c5a7c', '#8a5a44', '#3f6673']
 
@@ -640,6 +669,11 @@ type ProfileDraft = {
   handle: string
   handleEdited: boolean
   avatarColor: string
+}
+
+type GroupDialogDraft = {
+  name: string
+  memberAccountIds: string[]
 }
 
 type SidebarProps = {
@@ -662,6 +696,8 @@ type SidebarProps = {
   onOpenNote: (noteId: string) => void
   onOpenProfile: () => void
   onOpenSearch: () => void
+  onOpenProjectsRoot: () => void
+  onRenameNote: (noteId: string, title: string) => void
   onSetActiveView: (view: View) => void
 }
 
@@ -685,10 +721,14 @@ const Sidebar = memo(function Sidebar({
   onOpenNote,
   onOpenProfile,
   onOpenSearch,
+  onOpenProjectsRoot,
+  onRenameNote,
   onSetActiveView,
 }: SidebarProps) {
   const [sidebarPinned, setSidebarPinned] = useState(false)
   const [sidebarHovered, setSidebarHovered] = useState(false)
+  const [editingNoteId, setEditingNoteId] = useState('')
+  const [editingNoteTitle, setEditingNoteTitle] = useState('')
   const sidebarOpenTimerRef = useRef<number | null>(null)
   const sidebarCloseTimerRef = useRef<number | null>(null)
 
@@ -735,6 +775,13 @@ const Sidebar = memo(function Sidebar({
     setSidebarPinned((value) => !value)
   }
 
+  const collapseSidebarIfUnpinned = () => {
+    if (sidebarPinned) return
+    clearSidebarOpenTimer()
+    clearSidebarCloseTimer()
+    setSidebarHovered(false)
+  }
+
   const sidebarOpen = sidebarPinned || sidebarHovered
   const sidebarClassName = [
     'sidebar',
@@ -748,6 +795,18 @@ const Sidebar = memo(function Sidebar({
     '--project-quick-nav-height': `${projectQuickNavHeight}px`,
   } as React.CSSProperties
 
+  const startNoteRename = (note: Note) => {
+    setEditingNoteId(note.id)
+    setEditingNoteTitle(note.title || 'Untitled Note')
+  }
+
+  const commitNoteRename = (note: Note) => {
+    const nextTitle = editingNoteTitle.replace(/\s*\r?\n\s*/g, ' ').trim() || 'Untitled Note'
+    setEditingNoteTitle(nextTitle)
+    setEditingNoteId('')
+    if (nextTitle !== note.title) onRenameNote(note.id, nextTitle)
+  }
+
   return (
     <aside
       className={sidebarClassName}
@@ -755,21 +814,44 @@ const Sidebar = memo(function Sidebar({
       onPointerLeave={handleSidebarPointerLeave}
     >
       <div className="sidebar-actions">
-        <button className="nav-action" type="button" onClick={onOpenSearch}>
+        <button className="nav-action" type="button" onClick={() => {
+          onOpenSearch()
+          collapseSidebarIfUnpinned()
+        }}>
           <Search size={18} />
           <span className="nav-label">Search</span>
         </button>
 
-        <button className="nav-action" type="button" onClick={onNewNote}>
+        <button className="nav-action" type="button" onClick={() => {
+          onNewNote()
+          collapseSidebarIfUnpinned()
+        }}>
           <Plus size={18} />
           <span className="nav-label">New Note</span>
         </button>
       </div>
 
       <nav className="primary-nav" aria-label="Primary">
-        <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => onSetActiveView('home')}>
+        <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => {
+          onSetActiveView('home')
+          collapseSidebarIfUnpinned()
+        }}>
           <Home size={18} />
           <span className="nav-label">Home</span>
+        </button>
+        <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => {
+          onSetActiveView('community')
+          collapseSidebarIfUnpinned()
+        }}>
+          <Users size={18} />
+          <span className="nav-label">Community</span>
+        </button>
+        <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => {
+          onSetActiveView('atoms')
+          collapseSidebarIfUnpinned()
+        }}>
+          <Brain size={18} />
+          <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
         </button>
         <button
           className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
@@ -778,7 +860,14 @@ const Sidebar = memo(function Sidebar({
           onDragEnter={() => onDragEnterProject(UNASSIGNED_PROJECT_ID)}
           onDragLeave={() => onDragLeaveProject(UNASSIGNED_PROJECT_ID)}
           onDrop={(event) => onAssignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-          onClick={() => onSetActiveView('projects')}
+          onClick={() => {
+            onSetActiveView('projects')
+            collapseSidebarIfUnpinned()
+          }}
+          onDoubleClick={() => {
+            onOpenProjectsRoot()
+            collapseSidebarIfUnpinned()
+          }}
         >
           <Layers3 size={18} />
           <span className="nav-label">{activeProject?.name ?? 'Projects'}</span>
@@ -793,21 +882,52 @@ const Sidebar = memo(function Sidebar({
             ariaLabel={`${activeProject.name} documents`}
             renderItem={(note) => (
               <div className={`quick-note-row ${note.id === activeNoteId ? 'is-active' : ''}`}>
-                <button type="button" onClick={() => onOpenNote(note.id)}>
-                  <span>{note.title || 'Untitled Note'}</span>
+                <button type="button" onClick={() => {
+                  onOpenNote(note.id)
+                  collapseSidebarIfUnpinned()
+                }}>
+                  {editingNoteId === note.id ? (
+                    <input
+                      className="note-title-rename-input sidebar-note-title-input"
+                      value={editingNoteTitle}
+                      onBlur={() => commitNoteRename(note)}
+                      onChange={(event) => setEditingNoteTitle(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          commitNoteRename(note)
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setEditingNoteTitle(note.title || 'Untitled Note')
+                          setEditingNoteId('')
+                        }
+                      }}
+                      aria-label="Document name"
+                      autoFocus
+                    />
+                  ) : (
+                    <span
+                      className="sidebar-note-title"
+                      title="Double-click to rename"
+                      onDoubleClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        startNoteRename(note)
+                      }}
+                    >
+                      {note.title || 'Untitled Note'}
+                    </span>
+                  )}
                 </button>
               </div>
             )}
           />
         )}
-        <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
-          <Users size={18} />
-          <span className="nav-label">Community</span>
-        </button>
-        <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => onSetActiveView('atoms')}>
-          <Brain size={18} />
-          <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
-        </button>
       </nav>
 
       <div className="sidebar-bottom">
@@ -899,6 +1019,7 @@ function App() {
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
+  const [editorFocusMode, setEditorFocusMode] = useState(false)
   const [saving, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
   const [notice, setNotice] = useState('')
@@ -924,7 +1045,6 @@ function App() {
   const [aiPromptHintVisible, setAiPromptHintVisible] = useState(false)
   const [blockPicker, setBlockPicker] = useState<BlockPickerState>({ open: false, blockId: '', placement: 'after', query: '' })
   const [draggedBlockId, setDraggedBlockId] = useState('')
-  const [blockDropTargets, setBlockDropTargets] = useState<BlockDropTarget[]>([])
   const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
   const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
   const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
@@ -944,8 +1064,10 @@ function App() {
   const [communitySearchQuery, setCommunitySearchQuery] = useState('')
   const [communitySearchResults, setCommunitySearchResults] = useState<FriendSearchResult[]>([])
   const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
+  const [groupDialogDraft, setGroupDialogDraft] = useState<GroupDialogDraft | null>(null)
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
   const [showSaveState, setShowSaveState] = useState(true)
+  const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
   const atomsRef = useRef<Atom[]>([])
@@ -982,6 +1104,12 @@ function App() {
   const lastLocalEditorContentRef = useRef<{ noteId: string; content: JSONContent } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
   const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
+  const selectedBlocksRef = useRef<LociBlock[]>([])
+  const draggedBlockIdRef = useRef('')
+  const blockDropTargetsRef = useRef<BlockDropTarget[]>([])
+  const blockDropIntentRef = useRef<BlockDropIntent | null>(null)
+  const blockDropFrameRef = useRef<number | null>(null)
+  const blockDropIndicatorRef = useRef<HTMLSpanElement | null>(null)
   const pendingEnterBlockIndexRef = useRef<number | null>(null)
   const suppressProjectNavUntilRef = useRef(0)
   const imageCropDragRef = useRef<ImageCropDragState | null>(null)
@@ -1025,7 +1153,18 @@ function App() {
   const selectedCommunityShares = selectedCommunityRecipientIds.length
     ? sharedNoteExports.filter((share) => selectedCommunityRecipientIds.some((accountId) => share.recipientAccountIds.includes(accountId)))
     : []
+  const acceptedFriendships = friendships.filter((friendship) => friendship.status === 'accepted')
   const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
+  const localDatabaseNeedsRepair = localLoadIssues.some((issue) =>
+    /notes|noteBodies|noteMetas|database|dexie|starter workspace/i.test(issue),
+  )
+  const starterWorkspaceVisible =
+    starterWorkspaceProjectIds.every((projectId) => projects.some((project) => project.id === projectId)) &&
+    starterWorkspaceNoteIds.every((noteId) => notes.some((note) => note.id === noteId)) &&
+    starterWorkspaceAtomIds.every((atomId) => atoms.some((atom) => atom.id === atomId)) &&
+    deprecatedStarterProjectIds.every((projectId) => !projects.some((project) => project.id === projectId)) &&
+    deprecatedStarterNoteIds.every((noteId) => !notes.some((note) => note.id === noteId)) &&
+    deprecatedStarterAtomIds.every((atomId) => !atoms.some((atom) => atom.id === atomId))
 
   const clearNoticeTimer = useCallback(() => {
     if (!noticeTimerRef.current) return
@@ -1086,77 +1225,166 @@ function App() {
   }, [])
 
   const loadData = useCallback(async () => {
-    const {
-      notes: storedNotes,
-      atoms: storedAtoms,
-      flashcardSets: storedFlashcardSets,
-      projects: storedProjects,
-      profile: storedProfile,
-      settings: storedSettings,
-    } = await loadLocalAppData()
-    const normalizedSettings = normalizeUserSettings(storedSettings)
-    if (!storedSettings) await settingsStore.save(normalizedSettings)
-
-    const projectIds = new Set(storedProjects.map((p) => p.id))
-
-    const normalized = await Promise.all(
-      storedNotes.map(async (note) => {
-        const nextPid =
-          note.projectId === UNASSIGNED_PROJECT_ID || projectIds.has(note.projectId)
-            ? note.projectId
-            : UNASSIGNED_PROJECT_ID
-        const templateId = note.templateId ?? 'blank'
-        const templateData = normalizeTemplateData(templateId, note.content ?? emptyDoc, note.templateData)
-        const content = templateDataToContent(templateData)
-        const blocks = normalizeBlocksForContent(content, note.blocks)
-        const next: Note = {
-          ...note,
-          tags: [],
-          projectId: nextPid,
-          templateId,
-          templateData,
-          blocks,
-          content,
+    try {
+      const {
+        notes: storedNotes,
+        atoms: storedAtoms,
+        flashcardSets: storedFlashcardSets,
+        projects: storedProjects,
+        profile: storedProfile,
+        settings: storedSettings,
+        loadIssues,
+      } = await loadLocalAppData()
+      setLocalLoadIssues(loadIssues.map((issue) => `${issue.area}: ${issue.message}`))
+      const loadIssueAreas = new Set(loadIssues.map((issue) => issue.area))
+      const normalizedSettings = normalizeUserSettings(storedSettings)
+      if (!storedSettings && !loadIssueAreas.has('settings')) {
+        try {
+          await settingsStore.save(normalizedSettings)
+        } catch (error) {
+          console.error('Could not save default settings', error)
+          loadIssues.push({ area: 'settings', message: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
         }
+      }
 
-        const blocksChanged =
-          blocks.length !== (note.blocks?.length ?? 0) ||
-          blocks.some((block, index) => {
-            const previous = note.blocks?.[index]
-            return !previous ||
-              block.id !== previous.id ||
-              block.type !== previous.type ||
-              JSON.stringify(block.content) !== JSON.stringify(previous.content) ||
-              JSON.stringify(block.attrs ?? {}) !== JSON.stringify(previous.attrs ?? {})
-          })
-        const changed =
-          nextPid !== note.projectId ||
-          (note.tags?.length ?? 0) > 0 ||
-          !note.templateId ||
-          !note.templateData ||
-          !note.blocks ||
-          blocksChanged
+      const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
+      if (storedProjects.some((project) => project.description === undefined) && !loadIssueAreas.has('projects')) {
+        try {
+          await projectsStore.saveMany(normalizedProjects)
+        } catch (error) {
+          console.error('Could not normalize projects', error)
+          loadIssues.push({ area: 'projects', message: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+        }
+      }
+      setProjects(normalizedProjects)
 
-        if (changed) await notesStore.save(next)
+      const projectIds = new Set(storedProjects.map((p) => p.id))
 
-        return next
-      }),
-    )
+      const normalized = await Promise.all(
+        storedNotes.map(async (note) => {
+          const nextPid =
+            note.projectId === UNASSIGNED_PROJECT_ID || projectIds.has(note.projectId)
+              ? note.projectId
+              : UNASSIGNED_PROJECT_ID
+          const templateId: NoteTemplateId =
+            note.templateId === 'report' || note.templateId === 'planner' || note.templateId === 'slideshow'
+              ? note.templateId
+              : 'blank'
+          const baseTemplateData = normalizeTemplateData(templateId, note.content ?? emptyDoc, note.templateData)
+          const headingMigration = templateId === 'blank'
+            ? ensureDocumentHeading(templateDataToContent(baseTemplateData), note.title)
+            : null
+          const templateData = headingMigration
+            ? { ...baseTemplateData, body: headingMigration.content }
+            : baseTemplateData
+          const content = templateDataToContent(templateData)
+          const blocks = normalizeBlocksForContent(content, note.blocks)
+          const next: Note = {
+            ...note,
+            tags: [],
+            projectId: nextPid,
+            templateId,
+            templateData,
+            blocks,
+            content,
+          }
 
-    setNotes(normalized)
-    setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
-    setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
-    const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
-    if (storedProjects.some((project) => project.description === undefined)) {
-      await projectsStore.saveMany(normalizedProjects)
+          const templateMetaChanged =
+            JSON.stringify(note.templateData) !== JSON.stringify(templateData) ||
+            JSON.stringify(note.content) !== JSON.stringify(content)
+
+          const blocksChanged =
+            blocks.length !== (note.blocks?.length ?? 0) ||
+            blocks.some((block, index) => {
+              const previous = note.blocks?.[index]
+              return !previous ||
+                block.id !== previous.id ||
+                block.type !== previous.type ||
+                JSON.stringify(block.content) !== JSON.stringify(previous.content) ||
+                JSON.stringify(block.attrs ?? {}) !== JSON.stringify(previous.attrs ?? {})
+            })
+          const changed =
+            nextPid !== note.projectId ||
+            (note.tags?.length ?? 0) > 0 ||
+            note.templateId !== templateId ||
+            !note.templateData ||
+            !note.blocks ||
+            blocksChanged ||
+            Boolean(headingMigration?.changed) ||
+            templateMetaChanged
+
+          if (changed && !loadIssueAreas.has('notes')) {
+            try {
+              await notesStore.save(next)
+            } catch (error) {
+              console.error('Could not normalize note', error)
+              loadIssues.push({ area: 'notes', message: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+            }
+          }
+
+          return next
+        }),
+      )
+
+      setNotes(normalized)
+      setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
+      setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
+      if (storedProfile && isBadProfileDisplayName(storedProfile.displayName)) {
+        await profileStore.saveLocalWorkspaceProfile({
+          ...storedProfile,
+          displayName: '',
+          initials: '',
+          updatedAt: nowIso(),
+        })
+      }
+      setLocalProfile(storedProfile && !isBadProfileDisplayName(storedProfile.displayName) && storedProfile.displayName.trim() ? storedProfile : null)
+      setUserSettings(normalizedSettings)
+      setAtomSubView(normalizedSettings.preferredAtomSubView ?? 'atoms')
+      setProfileLoaded(true)
+      setSelectedNoteId((current) => current || normalized[0]?.id || '')
+      setLocalLoadIssues(loadIssues.map((issue) => `${issue.area}: ${issue.message}`))
+      if (loadIssues.length) showNotice(`Local data loaded with ${loadIssues.length} issue${loadIssues.length === 1 ? '' : 's'}: ${loadIssues[0].message}`)
+      return true
+    } catch (error) {
+      console.error('Could not load local workspace data', error)
+      setLocalLoadIssues([error instanceof Error ? `${error.name}: ${error.message}` : String(error)])
+      setProfileLoaded(true)
+      showNotice(`Could not load local workspace data: ${error instanceof Error ? error.message : String(error)}`)
+      return false
     }
-    setProjects(normalizedProjects)
-    setLocalProfile(storedProfile ?? null)
-    setUserSettings(normalizedSettings)
-    setAtomSubView(normalizedSettings.preferredAtomSubView ?? 'atoms')
-    setProfileLoaded(true)
-    setSelectedNoteId((current) => current || normalized[0]?.id || '')
-  }, [])
+  }, [showNotice])
+
+  const repairLocalDatabase = async () => {
+    try {
+      const result = await notesStore.repairLocalStorage()
+      const loaded = await loadData()
+      const changed = result.notesRebuilt + result.metasRebuilt + result.bodiesRebuilt
+      if (!loaded) return
+      showNotice(
+        changed
+          ? `Local database repaired: ${pluralize(result.notesRebuilt, 'note')} rebuilt, ${pluralize(result.metasRebuilt, 'meta')} rebuilt, ${pluralize(result.bodiesRebuilt, 'body', 'bodies')} rebuilt.`
+          : result.malformedBodies
+            ? `Local database checked. Found ${pluralize(result.malformedBodies, 'malformed note body', 'malformed note bodies')}.`
+            : 'Local database checked. No note repair needed.',
+      )
+    } catch (error) {
+      console.error('Could not repair local database', error)
+      showNotice(`Could not repair local database: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const seedStarterWorkspace = async () => {
+    try {
+      const result = await upsertStarterWorkspace({ force: true })
+      const loaded = await loadData()
+      if (!loaded) return
+      const total = result.projects + result.atoms + result.notes + result.repairedNotes + result.removedProjects + result.removedNotes + result.removedAtoms
+      showNotice(total ? starterWorkspaceResultMessage(result) : 'Onboarding files already exist.')
+    } catch (error) {
+      console.error('Could not add starter workspace', error)
+      showNotice('Could not add starter workspace.')
+    }
+  }
 
   useEffect(() => {
     void loadData()
@@ -1272,18 +1500,28 @@ function App() {
     pendingNoteSavesRef.current.clear()
     if (!pending.length) return
 
-    const notesToSave = pending.map((item) => item.note)
-    if (notesToSave.length === 1) await notesStore.save(notesToSave[0])
-    else await notesStore.saveMany(notesToSave)
+    try {
+      const notesToSave = pending.map((item) => item.note)
+      if (notesToSave.length === 1) await notesStore.save(notesToSave[0])
+      else await notesStore.saveMany(notesToSave)
 
-    setSaving(false)
-    if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
-    saveStateDelayRef.current = setTimeout(() => {
+      setSaving(false)
+      if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
+      saveStateDelayRef.current = setTimeout(() => {
+        setShowSaveState(true)
+        saveStateDelayRef.current = null
+      }, 3000)
+
+      await runSavedNoteMaintenance(pending.filter((item) => item.maintainContent).map((item) => item.note))
+    } catch (error) {
+      console.error('Could not save note locally', error)
+      pending.forEach((item) => {
+        if (!pendingNoteSavesRef.current.has(item.note.id)) pendingNoteSavesRef.current.set(item.note.id, item)
+      })
+      setSaving(false)
       setShowSaveState(true)
-      saveStateDelayRef.current = null
-    }, 3000)
-
-    await runSavedNoteMaintenance(pending.filter((item) => item.maintainContent).map((item) => item.note))
+      showNotice('Could not save note locally.')
+    }
   }
 
   function scheduleNoteSave(note: Note, maintainContent: boolean) {
@@ -1305,6 +1543,27 @@ function App() {
   }
 
   useEffect(() => {
+    const flush = () => {
+      void flushPendingNoteSaves()
+    }
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+
+    window.addEventListener('blur', flush)
+    window.addEventListener('pagehide', flush)
+    window.addEventListener('beforeunload', flush)
+    document.addEventListener('visibilitychange', flushWhenHidden)
+
+    return () => {
+      window.removeEventListener('blur', flush)
+      window.removeEventListener('pagehide', flush)
+      window.removeEventListener('beforeunload', flush)
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
       if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
@@ -1315,6 +1574,7 @@ function App() {
       optimisticDeleteTimersRef.current.forEach((timer) => clearTimeout(timer))
       if (formatSideFrameRef.current) cancelAnimationFrame(formatSideFrameRef.current)
       if (formatBlockFrameRef.current) cancelAnimationFrame(formatBlockFrameRef.current)
+      if (blockDropFrameRef.current) cancelAnimationFrame(blockDropFrameRef.current)
       void flushPendingNoteSaves()
     }
   }, [])
@@ -1356,11 +1616,13 @@ function App() {
     let markCount = 0
 
     notesToSync.forEach((note) => {
-      const result = applyAtomsToContent(note.content, atomsToUse)
+      const primary = primaryTemplateContent(note)
+      const result = applyAtomsToContent(primary, atomsToUse)
       if (!result.changed) return
-      const templateData = templateDataFor(note.templateId, result.content)
-      const blocks = normalizeBlocksForContent(result.content, note.blocks)
-      updatedNotes.push({ ...note, content: result.content, templateData, blocks, updatedAt: now })
+      const templateData = updatePrimaryTemplateContent(note, result.content)
+      const content = templateDataToContent(templateData)
+      const blocks = normalizeBlocksForContent(content, note.blocks)
+      updatedNotes.push({ ...note, content, templateData, blocks, updatedAt: now })
       markCount += result.count
     })
 
@@ -1492,7 +1754,9 @@ function App() {
       LociFlashcard,
       LociQuote,
       AtomMark,
+      ActiveBlockHighlight,
       AISelectionHighlight,
+      TabIndent,
     ],
     content: primaryTemplateContent(selectedNote),
     editorProps: {
@@ -1536,6 +1800,34 @@ function App() {
     scrollEl.addEventListener('scroll', syncEditorScrollTop, { passive: true })
     return () => scrollEl.removeEventListener('scroll', syncEditorScrollTop)
   }, [activeView, selectedNoteId])
+
+  useEffect(() => {
+    const timers = new WeakMap<Element, number>()
+
+    const onScroll = (event: Event) => {
+      const el = event.currentTarget
+      if (!(el instanceof HTMLElement)) return
+      el.classList.add('is-scrolling')
+
+      const existing = timers.get(el)
+      if (existing) window.clearTimeout(existing)
+
+      timers.set(el, window.setTimeout(() => {
+        el.classList.remove('is-scrolling')
+      }, 720))
+    }
+
+    const els = Array.from(document.querySelectorAll('.scroll-hover'))
+    els.forEach((el) => el.addEventListener('scroll', onScroll, { passive: true }))
+
+    return () => {
+      els.forEach((el) => el.removeEventListener('scroll', onScroll))
+      els.forEach((el) => {
+        const timer = timers.get(el)
+        if (timer) window.clearTimeout(timer)
+      })
+    }
+  }, [activeView, selectedNoteId, blockPicker.open, activeEditorPanel])
 
   useLayoutEffect(() => {
     if (activeView !== 'editor') return
@@ -2032,11 +2324,11 @@ function App() {
   }, [appDialog])
 
   const openProfileModal = () => {
-    const displayName = localProfile?.displayName ?? ''
+    const displayName = localProfile && !isBadProfileDisplayName(localProfile.displayName) ? localProfile.displayName : ''
     const existingHandle = accountProfile?.handle ?? ''
     setProfileDraft({
       displayName,
-      initials: localProfile?.initials ?? '',
+      initials: displayName ? localProfile?.initials ?? '' : '',
       handle: existingHandle || createBaseHandleFromDisplayName(displayName),
       handleEdited: Boolean(existingHandle),
       avatarColor: localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR,
@@ -2144,21 +2436,44 @@ function App() {
     showNotice('User removed.')
   }
 
-  const createDefaultFriendGroup = async () => {
+  const openCreateGroupDialog = () => {
+    setGroupDialogDraft({
+      name: '',
+      memberAccountIds: acceptedFriendships.map((friendship) => friendship.friendAccountId),
+    })
+  }
+
+  const toggleGroupDialogMember = (accountId: string) => {
+    setGroupDialogDraft((current) => {
+      if (!current) return current
+      const memberAccountIds = current.memberAccountIds.includes(accountId)
+        ? current.memberAccountIds.filter((id) => id !== accountId)
+        : [...current.memberAccountIds, accountId]
+      return { ...current, memberAccountIds }
+    })
+  }
+
+  const saveFriendGroupDialog = async () => {
+    if (!groupDialogDraft?.name.trim()) return
     const group = await friendGroupService.createGroup(
-      'Study circle',
+      groupDialogDraft.name,
       authSession.accountId,
-      friendships.filter((friendship) => friendship.status === 'accepted').map((friendship) => friendship.friendAccountId),
+      groupDialogDraft.memberAccountIds,
     )
     setFriendGroups((current) => [group, ...current])
     setCommunityTarget({ kind: 'group', id: group.id })
-    showNotice('Friend group foundation created.')
+    setGroupDialogDraft(null)
+    showNotice('Friend group created.')
   }
 
-  const createTargetedShareForSelectedNote = async (permission: SharedNoteExport['permission'] = 'view', noteId = selectedNote?.id) => {
+  const createTargetedShareForSelectedNote = async (permission: SharedNoteExport['permission'] = 'view', noteId?: string) => {
+    if (!noteId) {
+      showNotice('Search for a note, then press Send or Enter.')
+      return
+    }
     const noteToShare = notes.find((note) => note.id === noteId)
     if (!noteToShare) {
-      showNotice('Open a note before creating a community share.')
+      showNotice('That note could not be found.')
       return
     }
     if (!selectedCommunityFriend && !selectedCommunityGroup) {
@@ -2186,9 +2501,14 @@ function App() {
     showNotice(permission === 'edit' ? 'Editable note share prepared.' : 'Note share prepared.')
   }
 
-  const createCollaborationForSelectedNote = async () => {
-    if (!selectedNote) {
-      showNotice('Open a note before starting a collaboration session.')
+  const createCollaborationForSelectedNote = async (noteId?: string) => {
+    if (!noteId) {
+      showNotice('Search for a note, then choose Edit together.')
+      return
+    }
+    const note = notes.find((n) => n.id === noteId)
+    if (!note) {
+      showNotice('That note could not be found.')
       return
     }
     if (!selectedCommunityFriend && !selectedCommunityGroup) {
@@ -2197,13 +2517,13 @@ function App() {
     }
     const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const }
     const share = selectedCommunityFriend
-      ? await sharingService.sendNoteToFriend(selectedNote.id, selectedCommunityFriend, options)
-      : await sharingService.sendNoteToGroup(selectedNote.id, selectedCommunityGroup as FriendGroup, options)
+      ? await sharingService.sendNoteToFriend(note.id, selectedCommunityFriend, options)
+      : await sharingService.sendNoteToGroup(note.id, selectedCommunityGroup as FriendGroup, options)
     const session = await collaborationService.createSession({
-      localNoteId: selectedNote.id,
+      localNoteId: note.id,
       shareId: share.id,
       ownerAccountId: authSession.accountId,
-      title: selectedNote.title || 'Untitled collaboration',
+      title: note.title || 'Untitled collaboration',
     })
     await communityActivityService.create({
       recipientKind: selectedCommunityFriend ? 'friend' : 'group',
@@ -2213,7 +2533,7 @@ function App() {
       objectType: 'collaborationSession',
       objectId: session.id,
       payload: {
-        noteId: selectedNote.id,
+        noteId: note.id,
         shareId: share.id,
         title: session.title,
       },
@@ -2723,19 +3043,25 @@ function App() {
     const template = getNoteTemplate(templateId)
     if (!template.available) return
     const projectId = projectOverrideId || templateProjectId || UNASSIGNED_PROJECT_ID
-    const templateData = templateDataFor(templateId, template.content)
-      const content = templateDataToContent(templateData)
-      const blocks = templateBlocksFor(templateId, templateData)
-      const note: Note = {
+    const baseTemplateData = templateDataFor(templateId, template.content)
+    const headingMigration = templateId === 'blank'
+      ? ensureDocumentHeading(templateDataToContent(baseTemplateData), template.title)
+      : null
+    const templateData = headingMigration
+      ? { ...baseTemplateData, body: headingMigration.content }
+      : baseTemplateData
+    const content = templateDataToContent(templateData)
+    const blocks = templateBlocksFor(templateId, templateData)
+    const note: Note = {
       id: createId('note'),
       title: template.title,
       projectId,
       templateId,
       templateData,
-        blocks,
+      blocks,
       author: profileDisplayName,
       tags: [],
-        content,
+      content,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     }
@@ -2767,8 +3093,15 @@ function App() {
     }
   }
 
-  const selectedBlocks = selectedNote?.blocks ?? (selectedNote ? normalizeBlocksForContent(selectedNote.content) : [])
-  const selectedBlocksKey = selectedBlocks.map((block) => `${block.id}:${block.type}:${block.updatedAt}:${blockContentNodes(block.content).length}`).join('|')
+  const selectedBlocks = selectedNote?.blocks
+    ? flattenLegacyLociBlocks(selectedNote.blocks)
+    : selectedNote
+      ? normalizeBlocksForContent(selectedNote.content ?? emptyDoc)
+      : []
+  selectedBlocksRef.current = selectedBlocks
+  const selectedBlocksKey = selectedBlocks
+    .map((block) => `${block.id}:${block.type}:${block.updatedAt}:${blockContentNodes(block.content).length}`)
+    .join('|')
   const visibleBlockPickerOptions = blockPickerOptions.filter((option) => {
     const query = blockPicker.query.trim().toLowerCase()
     if (!query) return true
@@ -2778,8 +3111,9 @@ function App() {
   const highlightedFormatBlock = useCallback((range: EditorRange): { block: LociBlock; index: number } | null => {
     if (!editor) return null
     let runningPos = 1
-    for (let index = 0; index < selectedBlocks.length; index += 1) {
-      const block = selectedBlocks[index]
+    const blocks = selectedBlocksRef.current
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
       const blockSize = blockContentNodes(block.content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
       const blockFrom = runningPos
       const blockTo = runningPos + blockSize
@@ -2792,33 +3126,26 @@ function App() {
     return null
   }, [editor, selectedBlocksKey])
 
+  const {
+    measureBlockControls: measureGutterBlockControls,
+    measureBlockDropTargets,
+  } = useBlockGutter({
+    editor,
+    shellRef: blockEditorShellRef,
+    blocks: selectedBlocks,
+    draggedBlockIdRef,
+  })
+
   const measureBlockControls = useCallback(() => {
-    const shell = blockEditorShellRef.current
-    const editorDom = mountedEditorDom(editor)
-    if (!shell || !editorDom) {
-      setBlockControls([])
-      return
-    }
-    const shellRect = shell.getBoundingClientRect()
-    const children = Array.from(editorDom.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
-    let childIndex = 0
-    const controls: BlockControlRect[] = []
-    selectedBlocks.forEach((block) => {
-      const count = Math.max(1, blockContentNodes(block.content).length)
-      const blockChildren = children.slice(childIndex, childIndex + count)
-      childIndex += count
-      if (!blockChildren.length) return
-      const rects = blockChildren.map((child) => child.getBoundingClientRect())
-      const top = Math.min(...rects.map((rect) => rect.top))
-      const bottom = Math.max(...rects.map((rect) => rect.bottom))
-      controls.push({
-        blockId: block.id,
-        top: top - shellRect.top + 3,
-        height: Math.max(24, bottom - top),
-      })
-    })
+    const controls = measureGutterBlockControls()
     setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
-  }, [editor, selectedBlocksKey])
+  }, [measureGutterBlockControls])
+
+  const { markActiveEditorBlock } = useFocusModePlugin({
+    editor,
+    isFocusMode: editorFocusMode && activeView === 'editor',
+    scrollContainerRef: documentScrollRef,
+  })
 
   const scheduleFormatSideControls = useCallback(() => {
     if (formatSideFrameRef.current) return
@@ -2855,16 +3182,21 @@ function App() {
     if (!editor) return
     syncFormatSideControls()
     measureBlockControls()
+    markActiveEditorBlock()
     editor.on('selectionUpdate', scheduleFormatSideControls)
+    editor.on('selectionUpdate', markActiveEditorBlock)
     editor.on('transaction', scheduleFormatSideControls)
     editor.on('transaction', scheduleBlockControls)
+    editor.on('transaction', markActiveEditorBlock)
     window.addEventListener('resize', scheduleEditorResizeMeasurements)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
+      editor.off('selectionUpdate', markActiveEditorBlock)
       editor.off('transaction', scheduleFormatSideControls)
       editor.off('transaction', scheduleBlockControls)
+      editor.off('transaction', markActiveEditorBlock)
       window.removeEventListener('resize', scheduleEditorResizeMeasurements)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
@@ -2873,20 +3205,23 @@ function App() {
         editorResizeFrameRef.current = null
       }
     }
-  }, [editor, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
+
+  useEffect(() => {
+    markActiveEditorBlock()
+    scheduleEditorResizeMeasurements()
+  }, [editorFocusMode, markActiveEditorBlock, scheduleEditorResizeMeasurements])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
-    const index = selectedBlocks.findIndex((block) => block.id === blockId)
-    const insertIndex = index < 0 ? selectedBlocks.length : index + (placement === 'after' ? 1 : 0)
-    const nextBlocks = [...selectedBlocks]
-    nextBlocks.splice(insertIndex, 0, createLociBlock(blankBlockNode(type), type))
+    const newBlock = createLociBlock(blankBlockNode(type), type)
+    const nextBlocks = insertBlockRelative(selectedBlocks, blockId, newBlock, placement)
     persistBlocks(nextBlocks)
     setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
   }
 
   const insertFlashcardAfterActive = () => {
-    if (!selectedNote || !selectedBlocks.length) return
+    if (!selectedNote || !selectedBlocksRef.current.length) return
     const now = nowIso()
     const atom: Atom = {
       id: createId('atom'),
@@ -2902,8 +3237,8 @@ function App() {
     const insertIndex = activeBlockIndex() + 1
     const block = createLociBlock(flashcardBlockDoc(atom.id), 'flashcard')
     block.attrs = { atomId: atom.id }
-    const nextBlocks = [...selectedBlocks]
-    nextBlocks.splice(insertIndex, 0, block)
+    const targetBlockId = selectedBlocksRef.current[Math.max(0, insertIndex - 1)]?.id ?? ''
+    const nextBlocks = targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
     void atomsStore.save(atom)
     setAtoms((current) => [atom, ...current])
     persistBlocks(nextBlocks)
@@ -2916,48 +3251,53 @@ function App() {
       showNotice('Use a valid http(s) image URL or supported image data URL.')
       return
     }
-    if (!selectedBlocks.length) {
+    if (!selectedBlocksRef.current.length) {
       editor?.chain().focus().insertContent(imageBlockDoc(safeSrc).content?.[0] ?? { type: 'image', attrs: { src: safeSrc } }).run()
       return
     }
-    const insertIndex = Math.min(selectedBlocks.length, activeBlockIndex() + 1)
-    const nextBlocks = [...selectedBlocks]
-    nextBlocks.splice(insertIndex, 0, createLociBlock(imageBlockDoc(safeSrc), 'image'))
+    const insertIndex = Math.min(selectedBlocksRef.current.length, activeBlockIndex() + 1)
+    const block = createLociBlock(imageBlockDoc(safeSrc), 'image')
+    const targetBlockId = selectedBlocksRef.current[Math.max(0, insertIndex - 1)]?.id ?? ''
+    const nextBlocks = targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
     persistBlocks(nextBlocks)
     showNotice('Image block added.')
   }
 
   const applyAIBlockPayload = (payload: AIBlockPayload) => {
-    if (!selectedBlocks.length) return
+    if (!selectedBlocksRef.current.length) return
     const content = payload.kind === 'table'
       ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
       : quoteBlockDocFromData(payload.data.quote, payload.data.author)
     const type: LociBlockType = payload.kind === 'table' ? 'table' : 'quote'
-    const targetIndex = payload.targetBlockId ? selectedBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
-    const nextBlocks = [...selectedBlocks]
-    if (targetIndex >= 0 && nextBlocks[targetIndex].type === type) {
-      nextBlocks[targetIndex] = {
-        ...nextBlocks[targetIndex],
+    const flatBlocks = selectedBlocksRef.current
+    const targetIndex = payload.targetBlockId ? flatBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
+    const targetBlock = targetIndex >= 0 ? flatBlocks[targetIndex] : null
+    const nextBlocks = targetBlock?.type === type
+      ? updateBlockById(selectedBlocks, targetBlock.id, (block) => ({
+        ...block,
         content,
         updatedAt: nowIso(),
-      }
-    } else {
-      const insertIndex = Math.min(selectedBlocks.length, activeBlockIndex() + 1)
-      nextBlocks.splice(insertIndex, 0, createLociBlock(content, type))
-    }
+      }))
+      : (() => {
+          const insertIndex = Math.min(flatBlocks.length, activeBlockIndex() + 1)
+          const targetBlockId = flatBlocks[Math.max(0, insertIndex - 1)]?.id ?? ''
+          const block = createLociBlock(content, type)
+          return targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
+        })()
     persistBlocks(nextBlocks)
   }
 
   const activeBlockIndex = () => {
-    if (!editor) return Math.max(0, selectedBlocks.length - 1)
+    const blocks = selectedBlocksRef.current
+    if (!editor) return Math.max(0, blocks.length - 1)
     const selectionFrom = editor.state.selection.from
     let runningPos = 1
-    for (let index = 0; index < selectedBlocks.length; index += 1) {
-      const blockSize = blockContentNodes(selectedBlocks[index].content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
+    for (let index = 0; index < blocks.length; index += 1) {
+      const blockSize = blockContentNodes(blocks[index].content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
       if (selectionFrom <= runningPos + blockSize) return index
       runningPos += blockSize
     }
-    return Math.max(0, selectedBlocks.length - 1)
+    return Math.max(0, blocks.length - 1)
   }
 
   const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn') => {
@@ -3157,7 +3497,7 @@ function App() {
     return (
       <div className="block-controls-layer" aria-hidden={false}>
         {blockControls.map((control) => {
-          const block = selectedBlocks.find((item) => item.id === control.blockId)
+          const block = selectedBlocksRef.current.find((item) => item.id === control.blockId)
           return (
           <span key={control.blockId} className={`block-control-hotspot ${hoveredBlockControlId === control.blockId ? 'is-hovered' : ''}`} style={{ top: control.top, height: control.height }}>
             <span
@@ -3166,7 +3506,7 @@ function App() {
               data-block-type={block?.type ?? ''}
               contentEditable={false}
             >
-              {selectedBlocks.length > 1 && (
+              {selectedBlocksRef.current.length > 1 && (
                 <button className="block-control-button block-control-delete" type="button" aria-label="Delete block" data-block-action="delete" data-block-id={control.blockId}>
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
                 </button>
@@ -3189,33 +3529,48 @@ function App() {
     )
   }
 
-  const measureBlockDropTargets = () => {
-    const shell = blockEditorShellRef.current
-    const editorDom = editor?.view.dom
-    if (!shell || !editorDom) return []
-    const shellRect = shell.getBoundingClientRect()
-    const children = Array.from(editorDom.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
-    if (!children.length) return []
-    let childIndex = 0
-    return selectedBlocks.flatMap((block): BlockDropTarget[] => {
-      const count = Math.max(1, blockContentNodes(block.content).length)
-      const blockChildren = children.slice(childIndex, childIndex + count)
-      childIndex += count
-      if (block.id === draggedBlockId) return []
-      if (!blockChildren.length) return []
-      const rects = blockChildren.map((child) => child.getBoundingClientRect())
-      const top = Math.min(...rects.map((rect) => rect.top))
-      const bottom = Math.max(...rects.map((rect) => rect.bottom))
-      const left = Math.min(...rects.map((rect) => rect.left))
-      const right = Math.max(...rects.map((rect) => rect.right))
-      return [{
-        blockId: block.id,
-        top: top - shellRect.top,
-        height: bottom - top,
-        left: Math.max(0, left - shellRect.left),
-        width: Math.min(shellRect.width, right - left),
-      }]
-    })
+  const getDropPlacement = (clientY: number, target: BlockDropTarget): DropPlacement => {
+    const y = clientY - target.rect.top
+    return y < target.rect.height / 2 ? 'above' : 'below'
+  }
+
+  const nearestBlockDropTarget = (clientX: number, clientY: number) => {
+    const targets = blockDropTargetsRef.current
+    const direct = targets.find((target) =>
+      clientX >= target.rect.left &&
+      clientX <= target.rect.right &&
+      clientY >= target.rect.top &&
+      clientY <= target.rect.bottom,
+    )
+    if (direct) return direct
+    return targets.reduce<BlockDropTarget | null>((nearest, target) => {
+      const centerY = target.rect.top + target.rect.height / 2
+      const distance = Math.abs(clientY - centerY)
+      if (!nearest) return target
+      const nearestDistance = Math.abs(clientY - (nearest.rect.top + nearest.rect.height / 2))
+      return distance < nearestDistance ? target : nearest
+    }, null)
+  }
+
+  const positionBlockDropIndicator = (target: BlockDropTarget, placement: DropPlacement) => {
+    const indicator = blockDropIndicatorRef.current
+    if (!indicator) return
+    const top = placement === 'above'
+      ? target.rect.top - target.shellTop
+      : target.rect.bottom - target.shellTop
+    const left = Math.max(0, target.rect.left - target.shellLeft)
+    const width = Math.max(36, target.rect.width)
+    indicator.dataset.placement = placement
+    indicator.style.opacity = '1'
+    indicator.style.width = `${width}px`
+    indicator.style.height = '2px'
+    indicator.style.transform = `translate3d(${left}px, ${top}px, 0)`
+  }
+
+  const hideBlockDropIndicator = () => {
+    blockDropIntentRef.current = null
+    const indicator = blockDropIndicatorRef.current
+    if (indicator) indicator.style.opacity = '0'
   }
 
   const deleteBlock = (blockId: string) => {
@@ -3227,24 +3582,6 @@ function App() {
       ]
     }
     persistBlocks(selectedBlocks.filter((block) => block.id !== blockId))
-  }
-
-  const moveBlockToIndex = (blockId: string, dropIndex: number) => {
-    const sourceIndex = selectedBlocks.findIndex((block) => block.id === blockId)
-    if (sourceIndex < 0) return
-    const boundedDropIndex = Math.max(0, Math.min(dropIndex, selectedBlocks.length))
-    if (boundedDropIndex === sourceIndex || boundedDropIndex === sourceIndex + 1) return
-    const nextBlocks = [...selectedBlocks]
-    const [block] = nextBlocks.splice(sourceIndex, 1)
-    const adjustedIndex = boundedDropIndex > sourceIndex ? boundedDropIndex - 1 : boundedDropIndex
-    nextBlocks.splice(adjustedIndex, 0, block)
-    persistBlocks(nextBlocks)
-  }
-
-  const moveBlockBelowTarget = (blockId: string, targetBlockId: string) => {
-    const targetIndex = selectedBlocks.findIndex((block) => block.id === targetBlockId)
-    if (targetIndex < 0) return
-    moveBlockToIndex(blockId, targetIndex + 1)
   }
 
   const handleBlockControlsClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -3269,45 +3606,75 @@ function App() {
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('application/x-loci-block', target.dataset.blockId)
     event.dataTransfer.setDragImage(target, 11, 11)
+    draggedBlockIdRef.current = target.dataset.blockId
     setDraggedBlockId(target.dataset.blockId)
-    requestAnimationFrame(() => setBlockDropTargets(measureBlockDropTargets()))
+    requestAnimationFrame(() => {
+      blockDropTargetsRef.current = measureBlockDropTargets()
+    })
   }
 
-  const handleBlockDropTargetDragOver = (event: React.DragEvent<HTMLElement>) => {
+  const handleBlockDropOverlayDragOver = (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
     event.dataTransfer.dropEffect = 'move'
+    const clientX = event.clientX
+    const clientY = event.clientY
+    if (blockDropFrameRef.current) return
+    blockDropFrameRef.current = requestAnimationFrame(() => {
+      blockDropFrameRef.current = null
+      const target = nearestBlockDropTarget(clientX, clientY)
+      const draggedId = draggedBlockIdRef.current
+      if (!target || !draggedId) {
+        hideBlockDropIndicator()
+        return
+      }
+      const placement = getDropPlacement(clientY, target)
+      blockDropIntentRef.current = { draggedId, targetId: target.blockId, placement }
+      positionBlockDropIndicator(target, placement)
+    })
   }
 
-  const handleBlockDropTargetDrop = (event: React.DragEvent<HTMLElement>, targetBlockId: string) => {
-    const blockId = event.dataTransfer.getData('application/x-loci-block') || draggedBlockId
-    if (!blockId) return
+  const handleBlockDropOverlayDrop = (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    moveBlockBelowTarget(blockId, targetBlockId)
+    const draggedId = event.dataTransfer.getData('application/x-loci-block') || draggedBlockIdRef.current
+    const intent = blockDropIntentRef.current?.draggedId ? blockDropIntentRef.current : null
+    if (draggedId && intent) {
+      const nextBlocks = applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
+      if (nextBlocks !== selectedBlocksRef.current) persistBlocks(nextBlocks)
+    }
+    draggedBlockIdRef.current = ''
     setDraggedBlockId('')
-    setBlockDropTargets([])
+    blockDropTargetsRef.current = []
+    hideBlockDropIndicator()
   }
 
   const handleBlockDragEnd = () => {
+    draggedBlockIdRef.current = ''
     setDraggedBlockId('')
-    setBlockDropTargets([])
+    blockDropTargetsRef.current = []
+    hideBlockDropIndicator()
   }
 
   const renderBlockDropOverlay = () =>
     draggedBlockId ? (
-      <div className="block-drop-overlay" aria-hidden>
-        {blockDropTargets.map((target) => (
-          <span
-            key={target.blockId}
-            className="block-drop-target"
-            style={{ top: target.top, left: target.left, width: target.width, height: target.height }}
-            onDragOver={handleBlockDropTargetDragOver}
-            onDrop={(event) => handleBlockDropTargetDrop(event, target.blockId)}
-          />
-        ))}
+      <div className="block-drop-overlay" aria-hidden onDragOver={handleBlockDropOverlayDragOver} onDrop={handleBlockDropOverlayDrop}>
+        <span ref={blockDropIndicatorRef} className="block-drop-indicator" />
       </div>
     ) : null
+
+  useEffect(() => {
+    if (!draggedBlockId) return undefined
+    const refreshDropTargets = () => {
+      blockDropTargetsRef.current = measureBlockDropTargets()
+    }
+    window.addEventListener('resize', refreshDropTargets)
+    documentScrollRef.current?.addEventListener('scroll', refreshDropTargets)
+    return () => {
+      window.removeEventListener('resize', refreshDropTargets)
+      documentScrollRef.current?.removeEventListener('scroll', refreshDropTargets)
+    }
+  }, [draggedBlockId, selectedBlocksKey])
 
   useEffect(() => {
     const restoreDeletedBlock = (event: KeyboardEvent) => {
@@ -3690,7 +4057,15 @@ function App() {
       secondaryPlaceholder: 'What belongs here?',
       confirmLabel: 'Create project',
       onConfirm: async (name, description) => {
-        const project: Project = { id: createId('project'), name, description: description ?? '', color: '#111111', createdAt: nowIso() }
+        const projectName = name.trim()
+        if (!projectName) return
+        const project: Project = {
+          id: createId('project'),
+          name: projectName,
+          description: description?.trim() ?? '',
+          color: '#111111',
+          createdAt: nowIso(),
+        }
         await projectsStore.save(project)
         setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
       },
@@ -4077,6 +4452,11 @@ function App() {
             setSearchActiveIndex(0)
             setSearchOpen(true)
           }}
+          onOpenProjectsRoot={() => {
+            setSelectedProjectId('')
+            setActiveView('projects')
+          }}
+          onRenameNote={(noteId, title) => void persistNote({ title }, noteId)}
           onSetActiveView={setActiveView}
         />
 
@@ -4221,61 +4601,9 @@ function App() {
         )}
 
         {activeView === 'editor' && selectedNote && (
-          <section className="main-pane editor-pane" ref={documentScrollRef}>
+          <section className={`main-pane editor-pane ${editorFocusMode ? 'is-focus-mode' : ''}`} ref={documentScrollRef}>
             <div className="document-scroll">
-              <div className="breadcrumbs">
-                <button
-                  className={`compact-back-button ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
-                  type="button"
-                  aria-label={selectedProject ? `Back to ${selectedProject.name}` : 'Back to Projects'}
-                  onDragOver={handleNoteDropTargetDragOver}
-                  onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
-                  onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
-                  onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-                  onClick={() => {
-                    setSelectedProjectId(selectedProject?.id ?? '')
-                    setActiveView('projects')
-                  }}
-                >
-                  <ArrowLeft size={16} />
-                </button>
-                <button
-                  className={`breadcrumb-button ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
-                  type="button"
-                  onDragOver={handleNoteDropTargetDragOver}
-                  onDragEnter={() => setDragOverProjectId(UNASSIGNED_PROJECT_ID)}
-                  onDragLeave={() => setDragOverProjectId((current) => (current === UNASSIGNED_PROJECT_ID ? '' : current))}
-                  onDrop={(event) => assignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-                  onClick={() => {
-                    setSelectedProjectId('')
-                    setActiveView('projects')
-                  }}
-                >
-                  Projects
-                </button>
-                <span>/</span>
-                <button
-                  className="breadcrumb-button"
-                  type="button"
-                  onClick={() => {
-                    if (selectedProject) {
-                      setSelectedProjectId(selectedProject.id)
-                    } else {
-                      setSelectedProjectId('')
-                    }
-                    setActiveView('projects')
-                  }}
-                >
-                  {selectedProject?.name ?? 'Unassigned'}
-                </button>
-                <span>/</span>
-                <button className="breadcrumb-button is-current" type="button" aria-current="page">
-                  {selectedNote.title}
-                </button>
-              </div>
-
-              <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'}`}>
-                <input className="title-input" value={selectedNote.title} onChange={(event) => void persistNote({ title: event.target.value })} />
+              <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'} ${editorFocusMode ? 'is-focus-mode' : ''}`}>
                 {undoNotice && (
                   <div className="notice notice-with-action">
                     <span>{undoNotice.message}</span>
@@ -4304,13 +4632,27 @@ function App() {
                         <textarea value={selectedTemplateData.recommendations} onChange={(event) => persistTemplateData({ ...selectedTemplateData, recommendations: event.target.value })} />
                       </label>
                     </div>
-                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
-                      <span>Appendix / body</span>
-                      <EditorContent editor={editor} />
-                      {renderBlockControls()}
-                      {renderFormatSideControls()}
-                      {renderBlockDropOverlay()}
-                    </section>
+                    <LociEditor
+                      editor={editor}
+                      isFocusMode={editorFocusMode}
+                      shellRef={(node) => { blockEditorShellRef.current = node }}
+                      className="template-rich-section"
+                      label={<span>Appendix / body</span>}
+                      draggedBlockId={draggedBlockId}
+                      imageCropEditing={imageCropEditing}
+                      imageCropDragging={imageCropDragging}
+                      blockControls={renderBlockControls()}
+                      formatSideControls={renderFormatSideControls()}
+                      blockDropOverlay={renderBlockDropOverlay()}
+                      onClick={handleBlockControlsClick}
+                      onPointerDown={handleImageCropPointerDown}
+                      onPointerMove={handleBlockEditorPointerMove}
+                      onPointerLeave={handleBlockEditorPointerLeave}
+                      onPointerUp={handleImageCropPointerEnd}
+                      onPointerCancel={handleImageCropPointerEnd}
+                      onDragStart={handleBlockDragStart}
+                      onDragEnd={handleBlockDragEnd}
+                    />
                   </div>
                 )}
                 {selectedTemplateData?.kind === 'planner' && (
@@ -4362,13 +4704,27 @@ function App() {
                       </div>
                       <button className="template-soft-action" type="button" onClick={addPlannerSchedule}>Add schedule block</button>
                     </section>
-                    <section ref={(node) => { blockEditorShellRef.current = node }} className={`template-rich-section block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
-                      <span>Notes</span>
-                      <EditorContent editor={editor} />
-                      {renderBlockControls()}
-                      {renderFormatSideControls()}
-                      {renderBlockDropOverlay()}
-                    </section>
+                    <LociEditor
+                      editor={editor}
+                      isFocusMode={editorFocusMode}
+                      shellRef={(node) => { blockEditorShellRef.current = node }}
+                      className="template-rich-section"
+                      label={<span>Notes</span>}
+                      draggedBlockId={draggedBlockId}
+                      imageCropEditing={imageCropEditing}
+                      imageCropDragging={imageCropDragging}
+                      blockControls={renderBlockControls()}
+                      formatSideControls={renderFormatSideControls()}
+                      blockDropOverlay={renderBlockDropOverlay()}
+                      onClick={handleBlockControlsClick}
+                      onPointerDown={handleImageCropPointerDown}
+                      onPointerMove={handleBlockEditorPointerMove}
+                      onPointerLeave={handleBlockEditorPointerLeave}
+                      onPointerUp={handleImageCropPointerEnd}
+                      onPointerCancel={handleImageCropPointerEnd}
+                      onDragStart={handleBlockDragStart}
+                      onDragEnd={handleBlockDragEnd}
+                    />
                   </div>
                 )}
                 {selectedTemplateData?.kind === 'slideshow' && (
@@ -4393,12 +4749,25 @@ function App() {
                       return (
                         <section className="slide-stage">
                           <input value={slide.title} onChange={(event) => updateSlide(slide.id, { title: event.target.value })} placeholder="Slide title" />
-                          <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
-                            <EditorContent editor={editor} />
-                            {renderBlockControls()}
-                            {renderFormatSideControls()}
-                            {renderBlockDropOverlay()}
-                          </div>
+                          <LociEditor
+                            editor={editor}
+                            isFocusMode={editorFocusMode}
+                            shellRef={(node) => { blockEditorShellRef.current = node }}
+                            draggedBlockId={draggedBlockId}
+                            imageCropEditing={imageCropEditing}
+                            imageCropDragging={imageCropDragging}
+                            blockControls={renderBlockControls()}
+                            formatSideControls={renderFormatSideControls()}
+                            blockDropOverlay={renderBlockDropOverlay()}
+                            onClick={handleBlockControlsClick}
+                            onPointerDown={handleImageCropPointerDown}
+                            onPointerMove={handleBlockEditorPointerMove}
+                            onPointerLeave={handleBlockEditorPointerLeave}
+                            onPointerUp={handleImageCropPointerEnd}
+                            onPointerCancel={handleImageCropPointerEnd}
+                            onDragStart={handleBlockDragStart}
+                            onDragEnd={handleBlockDragEnd}
+                          />
                           <label>
                             Speaker notes
                             <textarea value={slide.speakerNotes} onChange={(event) => updateSlide(slide.id, { speakerNotes: event.target.value })} />
@@ -4410,12 +4779,25 @@ function App() {
                   </div>
                 )}
                 {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && (
-                  <div ref={(node) => { blockEditorShellRef.current = node }} className={`block-editor-shell ${draggedBlockId ? 'is-dragging-block' : ''} ${imageCropEditing ? 'is-cropping-image' : ''} ${imageCropDragging ? 'is-cropping-image-dragging' : ''}`} onClick={handleBlockControlsClick} onPointerDown={handleImageCropPointerDown} onPointerMove={handleBlockEditorPointerMove} onPointerLeave={handleBlockEditorPointerLeave} onPointerUp={handleImageCropPointerEnd} onPointerCancel={handleImageCropPointerEnd} onDragStart={handleBlockDragStart} onDragEnd={handleBlockDragEnd}>
-                    <EditorContent editor={editor} />
-                    {renderBlockControls()}
-                    {renderFormatSideControls()}
-                    {renderBlockDropOverlay()}
-                  </div>
+                  <LociEditor
+                    editor={editor}
+                    isFocusMode={editorFocusMode}
+                    shellRef={(node) => { blockEditorShellRef.current = node }}
+                    draggedBlockId={draggedBlockId}
+                    imageCropEditing={imageCropEditing}
+                    imageCropDragging={imageCropDragging}
+                    blockControls={renderBlockControls()}
+                    formatSideControls={renderFormatSideControls()}
+                    blockDropOverlay={renderBlockDropOverlay()}
+                    onClick={handleBlockControlsClick}
+                    onPointerDown={handleImageCropPointerDown}
+                    onPointerMove={handleBlockEditorPointerMove}
+                    onPointerLeave={handleBlockEditorPointerLeave}
+                    onPointerUp={handleImageCropPointerEnd}
+                    onPointerCancel={handleImageCropPointerEnd}
+                    onDragStart={handleBlockDragStart}
+                    onDragEnd={handleBlockDragEnd}
+                  />
                 )}
               </article>
               {blockPicker.open && (
@@ -4467,6 +4849,15 @@ function App() {
                           >
                             <span><Info size={16} /> Atom underlines</span>
                             <strong>{atomUnderlinesVisible ? 'On' : 'Off'}</strong>
+                          </button>
+                          <button
+                            type="button"
+                            className="more-toggle-row"
+                            aria-pressed={editorFocusMode}
+                            onClick={() => setEditorFocusMode((enabled) => !enabled)}
+                          >
+                            <span><Keyboard size={16} /> iA mode</span>
+                            <strong>{editorFocusMode ? 'On' : 'Off'}</strong>
                           </button>
                           <button type="button" onClick={() => void openNoteHistory()}><History size={16} /> Note history</button>
                           <button type="button" onClick={() => void exportNotePdf(selectedNote, selectedProject)}><Download size={16} /> PDF</button>
@@ -4690,6 +5081,7 @@ function App() {
                 deleteNote={(note) => void deleteNote(note)}
                 openNote={openNote}
                 newNote={() => openTemplateChooser(openedProject.id)}
+                renameNote={(noteId, title) => void persistNote({ title }, noteId)}
                 deleteProject={() => void deleteProject(openedProject.id)}
                 updateDescription={(description) => void updateProjectDescription(openedProject.id, description)}
                 updateName={(name) => void updateProjectName(openedProject.id, name)}
@@ -4700,6 +5092,24 @@ function App() {
               <>
                 <PageHeader title="Projects" action={<button type="button" onClick={createProject}><Plus size={17} /> Add project</button>} />
                 <div className="project-grid">
+                  {localDatabaseNeedsRepair && (
+                    <section className="project-empty-state">
+                      <h2>Local database needs attention.</h2>
+                      <p>{localLoadIssues[0] ?? 'Some local workspace data could not load cleanly.'}</p>
+                      <button type="button" onClick={() => void repairLocalDatabase()}>
+                        Repair local database
+                      </button>
+                    </section>
+                  )}
+                  {!starterWorkspaceVisible && (
+                    <section className="project-empty-state">
+                      <h2>{projects.length || unassignedNotes.length ? 'Onboarding files missing.' : 'No projects yet.'}</h2>
+                      <p>Restore the onboarding workspace with guide notes, projects, atoms, and writing examples.</p>
+                      <button type="button" onClick={() => void seedStarterWorkspace()}>
+                        Restore onboarding files
+                      </button>
+                    </section>
+                  )}
                   {projects.map((project) => {
                     const projectNotes = notes.filter((note) => note.projectId === project.id)
                     const recentNote = [...projectNotes].sort(sortByUpdated)[0]
@@ -4795,6 +5205,8 @@ function App() {
                             type="button"
                             className="note-row-delete"
                             aria-label={`Delete ${note.title || 'Untitled Note'}`}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onMouseDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation()
                               void deleteNote(note)
@@ -4829,14 +5241,14 @@ function App() {
             onSearchQueryChange={setCommunitySearchQuery}
             onSearch={() => void searchCommunityUsers()}
             onAddSearchResult={(result) => void addCommunitySearchResult(result)}
-            onCreateGroup={() => void createDefaultFriendGroup()}
+            onCreateGroup={openCreateGroupDialog}
             onSelectTarget={setCommunityTarget}
             onTogglePinnedTarget={togglePinnedCommunityRecipient}
             onAcceptFriend={(friendshipId) => void acceptCommunityFriend(friendshipId)}
             onRejectFriend={(friendshipId) => void rejectCommunityFriend(friendshipId)}
             onRemoveFriend={(friendshipId) => void removeCommunityFriend(friendshipId)}
             onSendNote={(permission, noteId) => void createTargetedShareForSelectedNote(permission, noteId)}
-            onCreateCollaboration={() => void createCollaborationForSelectedNote()}
+            onCreateCollaboration={(noteId) => void createCollaborationForSelectedNote(noteId)}
             formatDay={formatDay}
           />
         )}
@@ -5744,6 +6156,66 @@ function App() {
         </div>
       )}
 
+      {groupDialogDraft && (
+        <div
+          className="modal-backdrop group-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setGroupDialogDraft(null)
+          }}
+        >
+          <section
+            className="app-dialog group-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="group-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                void saveFriendGroupDialog()
+              }}
+            >
+              <h2 id="group-dialog-title">Create group</h2>
+              <p>Name the group and choose the accepted friends to include.</p>
+              <label>
+                Group name
+                <input
+                  value={groupDialogDraft.name}
+                  onChange={(event) => setGroupDialogDraft((current) => current ? { ...current, name: event.target.value } : current)}
+                  placeholder="Study circle"
+                  autoFocus
+                />
+              </label>
+              <div className="group-member-list" aria-label="Group members">
+                {acceptedFriendships.length ? acceptedFriendships.map((friendship) => (
+                  <label className="group-member-row" key={friendship.id}>
+                    <input
+                      type="checkbox"
+                      checked={groupDialogDraft.memberAccountIds.includes(friendship.friendAccountId)}
+                      onChange={() => toggleGroupDialogMember(friendship.friendAccountId)}
+                    />
+                    <span>
+                      <strong>{friendship.friendDisplayName}</strong>
+                      <small>{friendship.friendHandle ? `@${friendship.friendHandle}` : 'Connected'}</small>
+                    </span>
+                  </label>
+                )) : (
+                  <p className="group-member-empty">No accepted friends yet. You can create an empty group.</p>
+                )}
+              </div>
+              <footer>
+                <button type="button" onClick={() => setGroupDialogDraft(null)}>Cancel</button>
+                <button type="submit" className="primary" disabled={!groupDialogDraft.name.trim()}>
+                  Create group
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
       {appDialog && (
         <div
           className="modal-backdrop app-dialog-backdrop"
@@ -6047,15 +6519,6 @@ function buildAtomCards(atoms: Atom[], noteIndexes: NoteIndexes, projectById: Ma
   })
 }
 
-function mountedEditorDom(editor: TiptapEditor | null): HTMLElement | null {
-  if (!editor || editor.isDestroyed) return null
-  try {
-    return editor.view.dom
-  } catch {
-    return null
-  }
-}
-
 function truncateOneLine(value: string, max: number) {
   const t = value.replace(/\s+/g, ' ').trim()
   if (t.length <= max) return t
@@ -6092,14 +6555,41 @@ function sortByCreated(a: Note, b: Note) {
   return titleDelta || a.id.localeCompare(b.id)
 }
 
-function sameBlockControls(a: BlockControlRect[], b: BlockControlRect[]) {
-  return a.length === b.length && a.every((left, index) => {
-    const right = b[index]
-    return Boolean(right) &&
-      left.blockId === right.blockId &&
-      left.top === right.top &&
-      left.height === right.height
+function applyBlockDrop(blocks: LociBlock[], intent: BlockDropIntent): LociBlock[] {
+  if (intent.draggedId === intent.targetId) return blocks
+  const nextBlocks = [...blocks]
+  const draggedIndex = nextBlocks.findIndex((block) => block.id === intent.draggedId)
+  const targetIndex = nextBlocks.findIndex((block) => block.id === intent.targetId)
+  if (draggedIndex < 0 || targetIndex < 0) return blocks
+  const [removed] = nextBlocks.splice(draggedIndex, 1)
+  const nextTargetIndex = nextBlocks.findIndex((block) => block.id === intent.targetId)
+  if (nextTargetIndex < 0) return blocks
+  const insertIndex = intent.placement === 'above' ? nextTargetIndex : nextTargetIndex + 1
+  nextBlocks.splice(insertIndex, 0, removed)
+  return nextBlocks
+}
+
+function insertBlockRelative(blocks: LociBlock[], targetId: string, blockToInsert: LociBlock, placement: 'before' | 'after') {
+  const nextBlocks = [...blocks]
+  const targetIndex = nextBlocks.findIndex((block) => block.id === targetId)
+  if (targetIndex < 0) return [...nextBlocks, blockToInsert]
+  const insertIndex = placement === 'before' ? targetIndex : targetIndex + 1
+  nextBlocks.splice(insertIndex, 0, blockToInsert)
+  return nextBlocks
+}
+
+function updateBlockById(blocks: LociBlock[], blockId: string, updater: (block: LociBlock) => LociBlock): LociBlock[] {
+  let changed = false
+  const next = blocks.map((block) => {
+    if (block.id === blockId) {
+      changed = true
+      return updater(block)
+    }
+
+    return block
   })
+
+  return changed ? next : blocks
 }
 
 function shuffleList<T>(items: T[]) {
@@ -6120,6 +6610,10 @@ function initialsFromName(name: string) {
 
 function normalizeInitials(value: string) {
   return value.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase()
+}
+
+function isBadProfileDisplayName(value: string | undefined) {
+  return value === BAD_PROFILE_DISPLAY_NAME
 }
 
 function createBaseHandleFromDisplayName(displayName: string) {

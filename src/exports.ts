@@ -207,6 +207,35 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
     }
   }
 
+  const renderCodeNode = (node: JSONContent) => {
+    const rawLines = collectCodeText(node).replace(/\r\n?/g, '\n').split('\n')
+    const lines = rawLines.length ? rawLines : ['']
+    const fontSize = 9.5
+    const lineHeight = 5.4
+    const padX = 4
+    const textX = margin + padX
+    const codeWidth = contentWidth - padX * 2
+
+    y += 1
+    lines.forEach((line) => {
+      pdf.setFont('courier', 'normal')
+      pdf.setFontSize(fontSize)
+      const wrapped = pdf.splitTextToSize(line || ' ', codeWidth) as string[]
+      ;(wrapped.length ? wrapped : ['']).forEach((part) => {
+        ensurePage(lineHeight)
+        pdf.setDrawColor(228, 224, 216)
+        pdf.setFillColor(247, 246, 242)
+        pdf.rect(margin, y, contentWidth, lineHeight, 'FD')
+        pdf.setTextColor(36, 35, 33)
+        pdf.setFont('courier', 'normal')
+        pdf.setFontSize(fontSize)
+        pdf.text(part, textX, y + 3.8)
+        y += lineHeight
+      })
+    })
+    y += 5
+  }
+
   const renderNode = (node: JSONContent, list?: { type: 'bullet' | 'ordered'; index: number }) => {
     if (node.type === 'heading') {
       const level = Number(node.attrs?.level) || 2
@@ -253,6 +282,11 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
       if (author && collectText(author).trim()) {
         renderSegments([{ text: collectText(author).trim(), bold: true }], { fontSize: 10.5, lineHeight: 5.5, gapAfter: 5, indent: 6 })
       }
+      return
+    }
+
+    if (node.type === 'codeBlock') {
+      renderCodeNode(node)
       return
     }
 
@@ -503,6 +537,15 @@ function nodeToParagraph(node: JSONContent): Paragraph[] {
     ]
   }
 
+  if (node.type === 'codeBlock') {
+    const lines = collectCodeText(node).replace(/\r\n?/g, '\n').split('\n')
+    return (lines.length ? lines : ['']).map((line) =>
+      new Paragraph({
+        children: [new TextRun({ text: line, font: 'Courier New' })],
+      }),
+    )
+  }
+
   if (node.type === 'paragraph') {
     return [new Paragraph({ children: inlineContent(node) })]
   }
@@ -528,6 +571,12 @@ function inlineContent(node: JSONContent): TextRun[] {
 function collectText(node: JSONContent): string {
   if (node.text) return node.text
   return (node.content ?? []).map(collectText).join(' ')
+}
+
+function collectCodeText(node: JSONContent): string {
+  if (node.text) return node.text
+  if (node.type === 'hardBreak') return '\n'
+  return (node.content ?? []).map(collectCodeText).join('')
 }
 
 function tableRows(node: JSONContent): string[][] {

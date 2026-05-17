@@ -1,5 +1,6 @@
-import { db } from '../db'
+import { db, noteBodyStore } from '../db'
 import type { FlashcardSet, Note, Project } from '../db'
+import type { Table } from 'dexie'
 
 export const projectsStore = {
   listByName: () => db.projects.orderBy('name').toArray(),
@@ -20,18 +21,20 @@ export const projectsStore = {
     snapshotIdsToDelete: string[],
     atomIdsToDelete: string[],
     updatedSets: FlashcardSet[],
-  ) =>
-    db.transaction('rw', [db.projects, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.atoms, db.noteSnapshots, db.flashcardSets], async () => {
+  ) => {
+    const tables = [db.projects, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.atoms, db.noteSnapshots, db.flashcardSets] as unknown as Table<unknown, string>[]
+    return db.transaction('rw', tables, async () => {
       await db.projects.delete(projectId)
       const noteIds = projectNotes.map((note) => note.id)
       if (noteIds.length) {
         await db.notes.bulkDelete(noteIds)
         await db.noteMetas.bulkDelete(noteIds)
-        await db.noteBodies.bulkDelete(noteIds)
+        await noteBodyStore.bulkDeleteNoteBodies(noteIds)
         await Promise.all(noteIds.map((noteId) => db.mediaAssets.where('noteId').equals(noteId).delete()))
       }
       if (snapshotIdsToDelete.length) await db.noteSnapshots.bulkDelete(snapshotIdsToDelete)
       if (atomIdsToDelete.length) await db.atoms.bulkDelete(atomIdsToDelete)
       if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
-    }),
+    })
+  },
 }

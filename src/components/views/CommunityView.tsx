@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, FileText, MoreHorizontal, Plus, Search, Send, Users, X } from 'lucide-react'
 import type { FriendGroup, Friendship, Note, SharedNoteExport } from '../../db'
 import { collectNotePreviewLines } from '../../editor/blocks'
@@ -33,7 +33,7 @@ type CommunityViewProps = {
   onRejectFriend: (friendshipId: string) => void
   onRemoveFriend: (friendshipId: string) => void
   onSendNote: (permission: SharedNoteExport['permission'], noteId?: string) => void
-  onCreateCollaboration: () => void
+  onCreateCollaboration: (noteId: string) => void
   formatDay: (value: string) => string
 }
 
@@ -71,6 +71,7 @@ export function CommunityView({
   formatDay,
 }: CommunityViewProps) {
   const [composerQuery, setComposerQuery] = useState('')
+  const [stagedNoteId, setStagedNoteId] = useState<string | null>(null)
   const communityRecipients = buildCommunityRecipients(friendships, friendGroups, pinnedRecipientIds)
   const composerResults = useMemo(() => {
     const query = composerQuery.trim().toLowerCase()
@@ -82,6 +83,18 @@ export function CommunityView({
       })
       .slice(0, 5)
   }, [composerQuery, notes])
+  const stagedNote = useMemo(
+    () => (stagedNoteId ? notes.find((note) => note.id === stagedNoteId) ?? null : null),
+    [notes, stagedNoteId],
+  )
+  useEffect(() => {
+    if (stagedNoteId && !notes.some((note) => note.id === stagedNoteId)) {
+      setStagedNoteId(null)
+    }
+  }, [notes, stagedNoteId])
+  const hasRecipient = Boolean(selectedFriend || selectedGroup)
+  const canSendStagedNote = hasRecipient && Boolean(stagedNote)
+  const sendNoteTitle = canSendStagedNote ? 'Send drafted note' : 'Pick a note from search (Enter or click), then send'
 
   return (
     <section className="main-pane community-pane">
@@ -89,7 +102,6 @@ export function CommunityView({
         title="Community"
         action={(
           <div className="community-header-actions">
-            <button type="button" onClick={() => onSendNote('view')}><FileText size={17} /> Send note</button>
             <button type="button" aria-label="Create group" title="Create group" onClick={onCreateGroup}>
               <Plus size={17} aria-hidden /> Create group
             </button>
@@ -253,17 +265,35 @@ export function CommunityView({
                     </article>
                   )
                 }) : (
-                  <p className="community-empty community-chat-empty">Send the open note to start.</p>
+                  <p className="community-empty community-chat-empty">Search below, pick a note into the bar, then send to start.</p>
                 )}
               </div>
 
               <div className="community-chat-composer" aria-label="Restricted note actions">
+                {stagedNote && (
+                  <div className="community-composer-draft-bar">
+                    <FileText size={16} aria-hidden className="community-composer-draft-icon" />
+                    <div className="community-composer-draft-text">
+                      <strong>{stagedNote.title || 'Untitled Note'}</strong>
+                      <small>{collectNotePreviewLines(stagedNote.content, 1).join(' ') || 'No preview text yet.'}</small>
+                    </div>
+                    <button
+                      type="button"
+                      className="community-composer-draft-clear"
+                      aria-label="Remove drafted note"
+                      title="Remove drafted note"
+                      onClick={() => setStagedNoteId(null)}
+                    >
+                      <X size={16} aria-hidden />
+                    </button>
+                  </div>
+                )}
                 {composerResults.length > 0 && (
                   <div className="community-note-picker">
                     {composerResults.map((note) => (
                       <button type="button" key={note.id} onClick={() => {
+                        setStagedNoteId(note.id)
                         setComposerQuery('')
-                        onSendNote('view', note.id)
                       }}>
                         <FileText size={15} aria-hidden />
                         <span>
@@ -278,25 +308,63 @@ export function CommunityView({
                   <summary aria-label="More note actions">
                     <Plus size={18} aria-hidden />
                   </summary>
-                  <button type="button" onClick={() => onSendNote('edit')}>Send editable note</button>
-                  <button type="button" onClick={onCreateCollaboration}>Edit together</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!stagedNote) return
+                      onSendNote('edit', stagedNote.id)
+                      setStagedNoteId(null)
+                    }}
+                    disabled={!canSendStagedNote}
+                  >
+                    Send editable note
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!stagedNote) return
+                      onCreateCollaboration(stagedNote.id)
+                      setStagedNoteId(null)
+                    }}
+                    disabled={!canSendStagedNote}
+                  >
+                    Edit together
+                  </button>
                 </details>
                 <div className="community-composer-search">
                   <Search size={16} aria-hidden />
                   <input
                     value={composerQuery}
-                    placeholder="Search notes to send"
+                    placeholder={stagedNote ? 'Search to pick a different note…' : 'Search notes, Enter to draft'}
                     onChange={(event) => setComposerQuery(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        const firstResult = composerResults[0]
+                      if (event.key !== 'Enter' || !hasRecipient) return
+                      if (composerResults.length > 0) {
+                        event.preventDefault()
+                        setStagedNoteId(composerResults[0].id)
                         setComposerQuery('')
-                        onSendNote('view', firstResult?.id)
+                        return
+                      }
+                      if (stagedNote) {
+                        event.preventDefault()
+                        onSendNote('view', stagedNote.id)
+                        setStagedNoteId(null)
                       }
                     }}
                   />
                 </div>
-                <button type="button" className="community-composer-send" onClick={() => onSendNote('view')} aria-label="Send selected note">
+                <button
+                  type="button"
+                  className="community-composer-send"
+                  onClick={() => {
+                    if (!stagedNote) return
+                    onSendNote('view', stagedNote.id)
+                    setStagedNoteId(null)
+                  }}
+                  aria-label={sendNoteTitle}
+                  title={sendNoteTitle}
+                  disabled={!canSendStagedNote}
+                >
                   <Send size={17} aria-hidden />
                 </button>
               </div>
@@ -305,7 +373,7 @@ export function CommunityView({
             <div className="community-no-target">
               <Users size={34} aria-hidden />
               <h2>Select a recipient</h2>
-              <p>Choose a row to send the open note.</p>
+              <p>Choose a recipient, then search for a note to send.</p>
             </div>
           )}
         </section>

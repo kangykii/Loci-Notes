@@ -7,6 +7,42 @@ import { sanitizeImageUrl } from '../utils/urlValidation'
 export type EditorRange = { from: number; to: number }
 
 export const aiSelectionHighlightKey = new PluginKey<EditorRange | null>('aiSelectionHighlight')
+export const activeBlockHighlightKey = new PluginKey('activeBlockHighlight')
+
+export const ActiveBlockHighlight = Extension.create({
+  name: 'activeBlockHighlight',
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: activeBlockHighlightKey,
+        props: {
+          decorations(state) {
+            const { $from } = state.selection
+            if ($from.depth === 0) return null
+            const topLevelPos = $from.before(1)
+            return DecorationSet.create(state.doc, [
+              Decoration.node(topLevelPos, topLevelPos + $from.node(1).nodeSize, {
+                'data-loci-active-block': 'true',
+              }),
+            ])
+          },
+        },
+      }),
+    ]
+  },
+})
+
+export const TabIndent = Extension.create({
+  name: 'tabIndent',
+  priority: 1000,
+
+  addKeyboardShortcuts() {
+    return {
+      Tab: () => this.editor.commands.insertContent('    '),
+    }
+  },
+})
 
 export const LociFlashcard = TiptapNode.create({
   name: 'lociFlashcard',
