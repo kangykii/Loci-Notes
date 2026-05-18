@@ -1,5 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { SyntheticEvent } from 'react'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -13,8 +14,10 @@ import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowLeft,
+  ArrowRight,
   Brain,
   ChevronDown,
+  ChevronRight,
   Download,
   FileText,
   Heading1,
@@ -109,7 +112,6 @@ import { AIResultDialog } from './components/dialogs/AIResultDialog'
 import { PageHeader } from './components/layout/PageHeader'
 import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
-import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { LociEditor } from './components/editor/LociEditor'
 import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
@@ -191,6 +193,9 @@ import { sharingService } from './services/sharingService'
 import { initialUpdateState, updateService } from './services/updateService'
 import type { UpdateState } from './services/updateService'
 import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
+import { INK_READING_WOMAN, INK_WALKING_WOMAN, INK_WALKMAN_BOY } from './assets/marginalia/parts.generated'
+import type { InkCharacter as InkCharacterAsset } from './assets/marginalia/parts.generated'
+import { getGreeting, getSubtagline, getTipByIndex } from './home/tips'
 import './App.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
@@ -198,6 +203,36 @@ type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolea
 type View = 'home' | 'editor' | 'projects' | 'community' | 'atoms' | 'settings'
 type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
 type StudyDirection = 'term' | 'definition'
+
+function InkCharacter({
+  character,
+  slotClass,
+  dataInk,
+  visitKey,
+}: {
+  character: InkCharacterAsset
+  slotClass: string
+  dataInk: number
+  visitKey: number
+}) {
+  const setLoaded = (event: SyntheticEvent<HTMLImageElement>) => event.currentTarget.classList.add('is-loaded')
+  return (
+    <figure key={`${slotClass}-${visitKey}`} className={`margin-ink ${slotClass} ink-figure`} data-ink={dataInk} aria-hidden>
+      <img className="ink-base" src={character.base} alt="" onLoad={setLoaded} />
+      {character.parts.map((part) => (
+        <img
+          key={part.class}
+          className={`ink-part ${part.class}`}
+          src={part.src}
+          alt=""
+          onLoad={setLoaded}
+          style={{ top: `${part.topPct}%`, left: `${part.leftPct}%`, width: `${part.widthPct}%`, height: `${part.heightPct}%` }}
+        />
+      ))}
+    </figure>
+  )
+}
+
 type AtomDialog = {
   phrase: string
   definition: string
@@ -1067,7 +1102,8 @@ function App() {
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
   const [, setShowSaveState] = useState(true)
   const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
-  const [dashboardNow] = useState(() => new Date())
+  const [dashboardNow, setDashboardNow] = useState(() => new Date())
+  const [homeVisitCount, setHomeVisitCount] = useState(0)
   const notesRef = useRef<Note[]>([])
   const atomsRef = useRef<Atom[]>([])
   const noteIndexCacheRef = useRef<Map<string, NoteIndexCacheEntry>>(new Map())
@@ -1085,6 +1121,8 @@ function App() {
   const highlighterColorRef = useRef<string>(DEFAULT_HIGHLIGHTER_COLOR)
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
+  const homeScrollRef = useRef<HTMLElement | null>(null)
+  const previousViewRef = useRef<View>('home')
   const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
@@ -2231,6 +2269,44 @@ function App() {
       maxActivity,
     }
   }, [atoms, dashboardNow, noteIndexes, notes, projectById, projects])
+
+  const firstName = profileDisplayName.split(/\s+/)[0] ?? ''
+  const homeGreeting = useMemo(
+    () => getGreeting(dashboardNow, homeVisitCount, firstName),
+    [dashboardNow, firstName, homeVisitCount],
+  )
+  const homeSubtagline = useMemo(() => getSubtagline(homeVisitCount), [homeVisitCount])
+  const homeTip = useMemo(() => getTipByIndex(homeVisitCount), [homeVisitCount])
+  const recentHomeNotes = useMemo(() => notes.slice(0, 5), [notes])
+
+  useEffect(() => {
+    if (activeView === 'home' && previousViewRef.current !== 'home') {
+      setDashboardNow(new Date())
+      setHomeVisitCount((count) => count + 1)
+    }
+    previousViewRef.current = activeView
+  }, [activeView])
+
+  useEffect(() => {
+    if (activeView !== 'home') return
+    const node = homeScrollRef.current
+    if (!node) return
+    let frame = 0
+    const updateScroll = () => {
+      frame = 0
+      node.style.setProperty('--ink-scroll', `${node.scrollTop}px`)
+    }
+    const onScroll = () => {
+      if (frame) return
+      frame = window.requestAnimationFrame(updateScroll)
+    }
+    updateScroll()
+    node.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      node.removeEventListener('scroll', onScroll)
+      if (frame) window.cancelAnimationFrame(frame)
+    }
+  }, [activeView, homeVisitCount])
 
   const searchNormalized = useMemo(() => normalizeSearch(searchQuery), [searchQuery])
 
@@ -4460,141 +4536,98 @@ function App() {
         />
 
         {activeView === 'home' && (
-          <section className="main-pane dashboard-pane">
-            <div className="home-intro-strip">
-              <div>
-                <strong>Good to see you</strong>
-              </div>
-              <p>{notes.length} notes · {atoms.length} atoms · {projects.length} projects</p>
-            </div>
-            <div className="dashboard-bento">
-              <DashboardPanel title="Today Snapshot" className="bento-tile bento-hero">
-                <div className="snapshot-main">
-                  <strong>{notes.length}</strong>
-                  <span>notes in motion</span>
-                </div>
-                <div className="snapshot-metrics">
-                  <span><b>{atoms.length}</b> atoms</span>
-                  <span><b>{projects.length}</b> projects</span>
-                  <span><b>{dashboardStats.looseFileCount}</b> loose</span>
-                </div>
-                <div className="soft-orbit" aria-hidden>
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              </DashboardPanel>
+          <section className="home-editorial" ref={homeScrollRef}>
+            <div className="home-editorial-inner">
+              <header className="home-greeting">
+                <p className="home-eyebrow">Loci Notes</p>
+                <h1>{homeGreeting}</h1>
+                <p className="home-subtagline">{homeSubtagline}</p>
+                <InkCharacter character={INK_WALKMAN_BOY} slotClass="margin-ink--welcome" dataInk={0} visitKey={homeVisitCount} />
+              </header>
 
-              <DashboardPanel title="Continue Writing" className="bento-tile bento-continue">
+              <section className="home-section" aria-labelledby="continue-writing-title">
+                <p className="home-eyebrow home-eyebrow--accent" id="continue-writing-title">Continue writing</p>
                 {dashboardStats.recentNote ? (
-                  <button
-                    className="continue-note-card"
-                    type="button"
-                    onClick={() => openNote(dashboardStats.recentNote.id)}
-                  >
-                    <div className="continue-note-card-head">
-                      <span className="continue-note-project">{dashboardStats.recentProjectName}</span>
-                      <strong>{dashboardStats.recentNote.title}</strong>
-                    </div>
-                    <div
-                      className={`continue-note-preview${dashboardStats.recentNotePreviewLines.length ? '' : ' is-empty'}`}
-                    >
-                      {dashboardStats.recentNotePreviewLines.length
-                        ? dashboardStats.recentNotePreviewLines.map((line, index) => (
-                            <span key={index} className="continue-note-preview-row">{line}</span>
-                          ))
-                        : (
-                            <span className="continue-note-preview-row">Empty file</span>
-                          )}
-                    </div>
-                    <div className="continue-note-footer">
-                      <span className="continue-note-date">{formatDay(dashboardStats.recentNote.updatedAt)}</span>
-                      <span className="open-note-pill">Open note</span>
-                    </div>
+                  <button className="home-hero-card" type="button" onClick={() => openNote(dashboardStats.recentNote.id)}>
+                    <span className="home-hero-card-bleed" aria-hidden />
+                    <span className="home-hero-card-glass">
+                      <span className="home-hero-card-text">
+                        <span className="home-hero-project">{dashboardStats.recentProjectName} · {formatDay(dashboardStats.recentNote.updatedAt)}</span>
+                        <strong className="home-hero-title">{dashboardStats.recentNote.title}</strong>
+                        <span className="home-hero-preview">{dashboardStats.recentNotePreviewLines[0] ?? 'Empty file'}</span>
+                      </span>
+                      <span className="home-hero-arrow" aria-hidden><ArrowRight size={18} /></span>
+                    </span>
                   </button>
                 ) : (
-                  <div className="dashboard-empty">No notes yet.</div>
+                  <button className="home-hero-card home-hero-card--empty" type="button" onClick={() => openTemplateChooser()}>
+                    <span className="home-hero-card-bleed" aria-hidden />
+                    <span className="home-hero-card-glass">
+                      <span className="home-hero-card-text">
+                        <span className="home-hero-project">No notes yet</span>
+                        <strong className="home-hero-title">Start your first note</strong>
+                        <span className="home-hero-preview">A small sentence is enough to begin.</span>
+                      </span>
+                      <span className="home-hero-arrow" aria-hidden><ArrowRight size={18} /></span>
+                    </span>
+                  </button>
                 )}
-              </DashboardPanel>
+              </section>
 
-              <DashboardPanel title="Daily Streak" className="bento-tile bento-streak">
-                <div className="streak-stack">
-                  <div className="streak-counter">
-                    <strong>{dashboardStats.dailyStreak}</strong>
-                    <span>day{dashboardStats.dailyStreak === 1 ? '' : 's'}</span>
-                  </div>
-                  <p>{dashboardStats.wroteToday ? 'You wrote today.' : 'Write today to extend it.'}</p>
-                </div>
-                <button type="button" onClick={() => openTemplateChooser()}>Write note</button>
-              </DashboardPanel>
-
-              <DashboardPanel title="Projects Pulse" className="bento-tile bento-projects">
-                {dashboardStats.topProjects.length ? (
-                  dashboardStats.topProjects.map(({ project, fileCount, atomCount }) => (
+              <section className="home-section" aria-labelledby="home-tip-title">
+                <p className="home-eyebrow home-eyebrow--accent" id="home-tip-title">Tip</p>
+                <div className="home-tip-card">
+                  <blockquote>{homeTip.body}</blockquote>
+                  {homeTip.cta && (
                     <button
-                      className="project-pulse-row"
+                      className="home-tip-cta"
                       type="button"
-                      key={project.id}
                       onClick={() => {
-                        setSelectedProjectId(project.id)
-                        setActiveView('projects')
+                        if (homeTip.cta?.action === 'newNote') openTemplateChooser()
+                        if (homeTip.cta?.action === 'openAtoms') setActiveView('atoms')
+                        if (homeTip.cta?.action === 'openProjects') {
+                          setSelectedProjectId('')
+                          setActiveView('projects')
+                        }
+                        if (homeTip.cta?.action === 'openSearch') {
+                          setSearchQuery('')
+                          setSearchActiveIndex(0)
+                          setSearchOpen(true)
+                        }
                       }}
                     >
-                      <span style={{ background: project.color }} />
-                      <strong>{project.name}</strong>
-                      <small>{fileCount} files · {atomCount} atoms</small>
+                      {homeTip.cta.label}
+                      <ArrowRight size={14} aria-hidden />
                     </button>
-                  ))
-                ) : (
-                  <div className="dashboard-empty">No projects yet.</div>
-                )}
-              </DashboardPanel>
-
-              <DashboardPanel title="Loose Files Inbox" className="bento-tile bento-inbox">
-                <strong>{dashboardStats.looseFileCount}</strong>
-                <p>{dashboardStats.looseFileCount === 1 ? 'file waiting to be sorted' : 'files waiting to be sorted'}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedProjectId('')
-                    setActiveView('projects')
-                  }}
-                >
-                  Sort files
-                </button>
-              </DashboardPanel>
-
-              <DashboardPanel title="Writing Activity" className="bento-tile bento-activity">
-                <div className="activity-bars" aria-label="Notes updated in the last seven days">
-                  {dashboardStats.activity.map((day, index) => (
-                    <span key={`${day.label}-${index}`}>
-                      <i style={{ height: `${Math.max(12, (day.count / dashboardStats.maxActivity) * 100)}%` }} />
-                      <b>{day.label}</b>
-                    </span>
-                  ))}
+                  )}
                 </div>
-              </DashboardPanel>
+                <InkCharacter character={INK_READING_WOMAN} slotClass="margin-ink--tip" dataInk={1} visitKey={homeVisitCount} />
+              </section>
 
-              <div className="bento-growth-actions-row">
-                <DashboardPanel title="Knowledge Growth" className="bento-tile bento-growth">
-                  <strong>{atoms.length}</strong>
-                  <p>{dashboardStats.recentAtomCount} new this week</p>
-                  <div className="growth-line" aria-hidden>
-                    <span />
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </DashboardPanel>
-
-                <DashboardPanel title="Quick Actions" className="bento-tile bento-actions">
-                  <div className="widget-actions stacked">
-                    <button type="button" onClick={() => openTemplateChooser()}><Plus size={16} /> New note</button>
-                    <button type="button" onClick={() => { setSelectedProjectId(''); setActiveView('projects') }}><Layers3 size={16} /> Projects</button>
-                    <button type="button" onClick={() => setActiveView('atoms')}><Brain size={16} /> {atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</button>
-                  </div>
-                </DashboardPanel>
-              </div>
+              <section className="home-section home-recent" aria-labelledby="recent-notes-title">
+                <div className="home-recent-head">
+                  <h2 id="recent-notes-title">Recent notes</h2>
+                  <button type="button" className="home-link" onClick={() => setActiveView('projects')}>View all</button>
+                </div>
+                {recentHomeNotes.length ? (
+                  <ul className="home-recent-list">
+                    {recentHomeNotes.map((note) => (
+                      <li key={note.id}>
+                        <button type="button" onClick={() => openNote(note.id)}>
+                          <span className="home-recent-text">
+                            <strong>{note.title}</strong>
+                            <small>{projectById.get(note.projectId)?.name ?? 'Loose file'} · {formatDay(note.updatedAt)}</small>
+                          </span>
+                          <ChevronRight className="home-recent-chevron" size={16} aria-hidden />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="home-recent-empty">No recent notes yet.</p>
+                )}
+                <InkCharacter character={INK_WALKING_WOMAN} slotClass="margin-ink--recent" dataInk={2} visitKey={homeVisitCount} />
+              </section>
             </div>
           </section>
         )}
