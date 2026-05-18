@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { SyntheticEvent } from 'react'
+import type { CSSProperties, SyntheticEvent } from 'react'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -195,14 +195,19 @@ import type { UpdateState } from './services/updateService'
 import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
 import { INK_READING_WOMAN, INK_WALKING_WOMAN, INK_WALKMAN_BOY } from './assets/marginalia/parts.generated'
 import type { InkCharacter as InkCharacterAsset } from './assets/marginalia/parts.generated'
+import { EDITOR_CITY_MARGINALIA } from './assets/marginalia/city.generated'
+import { cityMarginaliaIndexForNote, editorMarginaliaOpacityFromText } from './marginalia/editorMarginalia'
+import { useImageLoadCoordinator } from './marginalia/useImageLoadCoordinator'
 import { getGreeting, getSubtagline, getTipByIndex } from './home/tips'
 import './App.css'
+import './styles/marginalia.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
 
 type View = 'home' | 'editor' | 'projects' | 'community' | 'atoms' | 'settings'
 type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
 type StudyDirection = 'term' | 'definition'
+const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
 
 function InkCharacter({
   character,
@@ -1054,6 +1059,8 @@ function App() {
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [editorFocusMode, setEditorFocusMode] = useState(false)
+  const [editorCityMarginaliaOpacity, setEditorCityMarginaliaOpacity] = useState(1)
+  const { imageLoadStates, ensureImageLoaded } = useImageLoadCoordinator()
   const [, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
   const [notice, setNotice] = useState('')
@@ -1162,6 +1169,9 @@ function App() {
   const openedProject = projects.find((project) => project.id === selectedProjectId)
   const selectedTemplateData = selectedNote
     ? normalizeTemplateData(selectedNote.templateId ?? 'blank', selectedNote.content ?? emptyDoc, selectedNote.templateData)
+    : null
+  const selectedEditorCityMarginalia = selectedNote && EDITOR_CITY_MARGINALIA_COUNT > 0
+    ? EDITOR_CITY_MARGINALIA[cityMarginaliaIndexForNote(selectedNote.id, EDITOR_CITY_MARGINALIA_COUNT)]
     : null
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const atomById = useMemo(() => new Map(atoms.map((atom) => [atom.id, atom])), [atoms])
@@ -1707,6 +1717,12 @@ function App() {
     if (options.trackHistory !== false) {
       noteOpenHistoryRef.current = [noteId, ...noteOpenHistoryRef.current.filter((id) => id !== noteId)]
     }
+    const currentNote = notesRef.current.find((note) => note.id === noteId)
+    if (currentNote) {
+      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(currentNote.content ?? emptyDoc)))
+    } else {
+      setEditorCityMarginaliaOpacity(1)
+    }
     setSelectedNoteId(noteId)
     setActiveView('editor')
     void notesStore.getBody(noteId).then((body) => {
@@ -1809,6 +1825,7 @@ function App() {
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
+      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(updatedEditor.getText()))
       if (suppressEditorPersistRef.current) return
       const id = selectedNoteIdRef.current
       const note = notesRef.current.find((item) => item.id === id)
@@ -1826,6 +1843,19 @@ function App() {
   useEffect(() => {
     editorRef.current = editor ?? null
   }, [editor])
+
+  useEffect(() => {
+    if (activeView !== 'editor') return
+    if (editor) {
+      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(editor.getText()))
+      return
+    }
+    if (!selectedNote) {
+      setEditorCityMarginaliaOpacity(1)
+      return
+    }
+    setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(selectedNote.content ?? emptyDoc)))
+  }, [activeView, editor, selectedNote])
 
   useEffect(() => {
     const scrollEl = documentScrollRef.current
@@ -2269,6 +2299,14 @@ function App() {
       maxActivity,
     }
   }, [atoms, dashboardNow, noteIndexes, notes, projectById, projects])
+  const homeHeroCityMarginalia = dashboardStats.recentNote && EDITOR_CITY_MARGINALIA_COUNT > 0
+    ? EDITOR_CITY_MARGINALIA[cityMarginaliaIndexForNote(dashboardStats.recentNote.id, EDITOR_CITY_MARGINALIA_COUNT)]
+    : null
+  const homeHeroBackgroundImage = homeHeroCityMarginalia?.src ?? ''
+  const homeHeroImageState = homeHeroBackgroundImage ? imageLoadStates[homeHeroBackgroundImage] : undefined
+  const homeHeroImageReady = homeHeroImageState === 'ready'
+  const selectedEditorImageState = selectedEditorCityMarginalia?.src ? imageLoadStates[selectedEditorCityMarginalia.src] : undefined
+  const selectedEditorImageReady = selectedEditorImageState === 'ready'
 
   const firstName = profileDisplayName.split(/\s+/)[0] ?? ''
   const homeGreeting = useMemo(
@@ -2286,6 +2324,14 @@ function App() {
     }
     previousViewRef.current = activeView
   }, [activeView])
+
+  useEffect(() => {
+    ensureImageLoaded(selectedEditorCityMarginalia?.src, 'critical')
+  }, [ensureImageLoaded, selectedEditorCityMarginalia?.src])
+
+  useEffect(() => {
+    ensureImageLoaded(homeHeroBackgroundImage, 'critical')
+  }, [ensureImageLoaded, homeHeroBackgroundImage])
 
   useEffect(() => {
     if (activeView !== 'home') return
@@ -4549,7 +4595,11 @@ function App() {
                 <p className="home-eyebrow home-eyebrow--accent" id="continue-writing-title">Continue writing</p>
                 {dashboardStats.recentNote ? (
                   <button className="home-hero-card" type="button" onClick={() => openNote(dashboardStats.recentNote.id)}>
-                    <span className="home-hero-card-bleed" aria-hidden />
+                    <span
+                      className={`home-hero-card-bleed home-hero-card-bleed--image ${homeHeroImageReady ? 'is-image-ready' : ''} ${homeHeroImageState === 'failed' ? 'is-image-failed' : ''}`}
+                      style={{ '--home-hero-bleed-image': `url("${homeHeroBackgroundImage}")` } as CSSProperties}
+                      aria-hidden
+                    />
                     <span className="home-hero-card-glass">
                       <span className="home-hero-card-text">
                         <span className="home-hero-project">{dashboardStats.recentProjectName} · {formatDay(dashboardStats.recentNote.updatedAt)}</span>
@@ -4634,6 +4684,20 @@ function App() {
 
         {activeView === 'editor' && selectedNote && (
           <section className={`main-pane editor-pane ${editorFocusMode ? 'is-focus-mode' : ''}`} ref={documentScrollRef}>
+            {selectedEditorCityMarginalia && (
+              <figure
+                className={`editor-page-marginalia ${selectedEditorImageReady ? 'is-image-ready' : ''} ${selectedEditorImageState === 'failed' ? 'is-image-failed' : ''}`}
+                style={{ opacity: editorCityMarginaliaOpacity }}
+                aria-hidden
+              >
+                <img
+                  key={`${selectedEditorCityMarginalia.id}-${selectedNote.id}`}
+                  className="editor-page-marginalia-image"
+                  src={selectedEditorCityMarginalia.src}
+                  alt=""
+                />
+              </figure>
+            )}
             <div className="document-scroll">
               <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'} ${editorFocusMode ? 'is-focus-mode' : ''}`}>
                 {undoNotice && (
@@ -4866,80 +4930,80 @@ function App() {
                   </div>
                 </div>
               )}
-              <EditorBottomToolbar
-                wrapRef={floatingEditorWrapRef}
-                activePanel={activeEditorPanel}
-                atomUnderlinesVisible={atomUnderlinesVisible}
-                editorFocusMode={editorFocusMode}
-                aiPromptFocused={aiPromptFocused}
-                aiRunning={aiRunning}
-                activeAICommand={activeAICommand}
-                visibleAICommand={visibleAICommand}
-                aiPrompt={aiPrompt}
-                aiPromptInputRef={aiPromptInputRef}
-                aiPromptHintVisible={aiPromptHintVisible}
-                aiPromptHint={aiPromptHint}
-                highlighterArmed={highlighterArmed}
-                highlighterColor={userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR}
-                highlightPaletteOpen={highlightPaletteOpen}
-                highlighterColors={HIGHLIGHTER_COLORS}
-                onToggleAtomUnderlines={() => setAtomUnderlinesVisible((visible) => !visible)}
-                onToggleFocusMode={() => setEditorFocusMode((enabled) => !enabled)}
-                onOpenNoteHistory={() => void openNoteHistory()}
-                onExportPdf={() => void exportNotePdf(selectedNote, selectedProject)}
-                onExportDocx={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}
-                onDeleteNote={() => void deleteNote()}
-                onAtomise={atomiseSelection}
-                onToggleHighlight={() => toggleHighlight()}
-                onToggleHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
-                onSelectHighlightColor={selectHighlighterColor}
-                onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
-                onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
-                onPromptMouseDown={() => {
-                  const range = captureAIContextRange()
-                  if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-                }}
-                onPromptFocus={() => {
-                  const range = captureAIContextRange()
-                  if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-                  setAiPromptFocused(true)
-                  setActiveEditorPanel(null)
-                }}
-                onPromptBlur={() => {
-                  setAiPromptFocused(false)
-                  if (!aiRunning) clearAIContextRange()
-                }}
-                onPromptChange={(event) => {
-                  setAiPrompt(event.target.value)
-                  if (event.target.value.trim().toLowerCase() !== aiPromptHintDismissedFor) {
-                    setAiPromptHintDismissedFor('')
-                  }
-                }}
-                onPromptKeyDown={(event) => {
-                  if (event.key === 'Tab' && event.shiftKey) {
-                    event.preventDefault()
-                    cycleAICommand(1)
-                    return
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    setAiPromptFocused(false)
-                    clearAIContextRange()
-                    aiPromptInputRef.current?.blur()
-                    return
-                  }
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    submitAIPrompt()
-                  }
-                }}
-                onDismissPromptHint={(event) => {
-                  event.preventDefault()
-                  setAiPromptHintVisible(false)
-                  setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
-                }}
-              />
             </div>
+            <EditorBottomToolbar
+              wrapRef={floatingEditorWrapRef}
+              activePanel={activeEditorPanel}
+              atomUnderlinesVisible={atomUnderlinesVisible}
+              editorFocusMode={editorFocusMode}
+              aiPromptFocused={aiPromptFocused}
+              aiRunning={aiRunning}
+              activeAICommand={activeAICommand}
+              visibleAICommand={visibleAICommand}
+              aiPrompt={aiPrompt}
+              aiPromptInputRef={aiPromptInputRef}
+              aiPromptHintVisible={aiPromptHintVisible}
+              aiPromptHint={aiPromptHint}
+              highlighterArmed={highlighterArmed}
+              highlighterColor={userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR}
+              highlightPaletteOpen={highlightPaletteOpen}
+              highlighterColors={HIGHLIGHTER_COLORS}
+              onToggleAtomUnderlines={() => setAtomUnderlinesVisible((visible) => !visible)}
+              onToggleFocusMode={() => setEditorFocusMode((enabled) => !enabled)}
+              onOpenNoteHistory={() => void openNoteHistory()}
+              onExportPdf={() => void exportNotePdf(selectedNote, selectedProject)}
+              onExportDocx={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}
+              onDeleteNote={() => void deleteNote()}
+              onAtomise={atomiseSelection}
+              onToggleHighlight={() => toggleHighlight()}
+              onToggleHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
+              onSelectHighlightColor={selectHighlighterColor}
+              onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
+              onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
+              onPromptMouseDown={() => {
+                const range = captureAIContextRange()
+                if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+              }}
+              onPromptFocus={() => {
+                const range = captureAIContextRange()
+                if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+                setAiPromptFocused(true)
+                setActiveEditorPanel(null)
+              }}
+              onPromptBlur={() => {
+                setAiPromptFocused(false)
+                if (!aiRunning) clearAIContextRange()
+              }}
+              onPromptChange={(event) => {
+                setAiPrompt(event.target.value)
+                if (event.target.value.trim().toLowerCase() !== aiPromptHintDismissedFor) {
+                  setAiPromptHintDismissedFor('')
+                }
+              }}
+              onPromptKeyDown={(event) => {
+                if (event.key === 'Tab' && event.shiftKey) {
+                  event.preventDefault()
+                  cycleAICommand(1)
+                  return
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setAiPromptFocused(false)
+                  clearAIContextRange()
+                  aiPromptInputRef.current?.blur()
+                  return
+                }
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  submitAIPrompt()
+                }
+              }}
+              onDismissPromptHint={(event) => {
+                event.preventDefault()
+                setAiPromptHintVisible(false)
+                setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
+              }}
+            />
           </section>
         )}
 

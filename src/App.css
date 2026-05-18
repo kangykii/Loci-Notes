@@ -149,28 +149,6 @@ body {
     0 10px 28px -12px rgba(17, 17, 17, 0.12);
 }
 
-.home-hero-card-bleed {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background:
-    radial-gradient(circle at 25% 30%, rgba(255, 255, 255, 0.55), transparent 60%),
-    linear-gradient(135deg, #f2c8b3 0%, #d8b9a4 65%, #b69380 100%);
-  filter: saturate(1.05);
-}
-
-.home-hero-card-bleed::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, transparent 35%, rgba(17, 13, 8, 0.18) 100%);
-  pointer-events: none;
-}
-
-.home-hero-card--empty .home-hero-card-bleed {
-  background: linear-gradient(135deg, #f6efe6 0%, #ece4d8 100%);
-}
-
 .home-hero-card-glass {
   position: relative;
   z-index: 1;
@@ -1141,6 +1119,8 @@ select:focus-visible {
 }
 
 .main-pane.editor-pane {
+  position: relative;
+  isolation: isolate;
   overflow-x: hidden;
   scrollbar-gutter: stable;
 }
@@ -1153,7 +1133,7 @@ select:focus-visible {
 
 .document-scroll {
   min-height: min-content;
-  padding: 22px clamp(40px, 8vw, 128px) 154px;
+  padding: 66px clamp(40px, 8vw, 128px) 154px;
 }
 
 .icon-button,
@@ -1174,14 +1154,14 @@ select:focus-visible {
   width: min(100%, 840px);
   max-width: 840px;
   margin-inline: auto;
-  padding: 36px 20px 0;
+  padding: 84px 20px 0;
 }
 
 .editor-pane.is-focus-mode .document-scroll {
   min-height: 100%;
   display: grid;
   align-content: center;
-  padding: clamp(28px, 6vh, 72px) clamp(48px, 12vw, 188px) 140px;
+  padding: clamp(52px, 10vh, 116px) clamp(48px, 12vw, 188px) 140px;
 }
 
 .document-card.is-focus-mode {
