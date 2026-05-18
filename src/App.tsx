@@ -21,7 +21,6 @@ import {
   Heading2,
   Heading3,
   Highlighter,
-  History,
   Home,
   ImageIcon,
   Info,
@@ -29,7 +28,6 @@ import {
   ListTodo,
   Layers3,
   LinkIcon,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -114,6 +112,7 @@ import type { CommunityTarget } from './components/views/CommunityView'
 import { DashboardPanel } from './components/views/DashboardPanel'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { LociEditor } from './components/editor/LociEditor'
+import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
 import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
 import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
 import type { BlockControlRect, BlockDropTarget } from './components/editor/useBlockGutter'
@@ -1020,7 +1019,7 @@ function App() {
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [editorFocusMode, setEditorFocusMode] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
   const [notice, setNotice] = useState('')
   const [undoNotice, setUndoNotice] = useState<{ message: string; action: () => void } | null>(null)
@@ -1066,7 +1065,7 @@ function App() {
   const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
   const [groupDialogDraft, setGroupDialogDraft] = useState<GroupDialogDraft | null>(null)
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
-  const [showSaveState, setShowSaveState] = useState(true)
+  const [, setShowSaveState] = useState(true)
   const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
   const [dashboardNow] = useState(() => new Date())
   const notesRef = useRef<Note[]>([])
@@ -4834,158 +4833,79 @@ function App() {
                   </div>
                 </div>
               )}
-              <div className="floating-editor-wrap" ref={floatingEditorWrapRef}>
-                {activeEditorPanel === 'more' && (
-                  <div className="floating-editor-panel">
-                    {activeEditorPanel === 'more' && (
-                      <>
-                        <span className="panel-kicker">More options</span>
-                        <div className="more-option-grid">
-                          <button
-                            type="button"
-                            className="more-toggle-row"
-                            aria-pressed={atomUnderlinesVisible}
-                            onClick={() => setAtomUnderlinesVisible((visible) => !visible)}
-                          >
-                            <span><Info size={16} /> Atom underlines</span>
-                            <strong>{atomUnderlinesVisible ? 'On' : 'Off'}</strong>
-                          </button>
-                          <button
-                            type="button"
-                            className="more-toggle-row"
-                            aria-pressed={editorFocusMode}
-                            onClick={() => setEditorFocusMode((enabled) => !enabled)}
-                          >
-                            <span><Keyboard size={16} /> iA mode</span>
-                            <strong>{editorFocusMode ? 'On' : 'Off'}</strong>
-                          </button>
-                          <button type="button" onClick={() => void openNoteHistory()}><History size={16} /> Note history</button>
-                          <button type="button" onClick={() => void exportNotePdf(selectedNote, selectedProject)}><Download size={16} /> PDF</button>
-                          <button type="button" onClick={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}><FileText size={16} /> DOCX</button>
-                          <button type="button" className="danger" onClick={() => void deleteNote()}><Trash2 size={16} /> Delete note</button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-                <div
-                  className={`floating-editor-bar scroll-hover ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`}
-                  role="toolbar"
-                  aria-label="Editor tools"
-                >
-                  <button type="button" onClick={atomiseSelection}><Sparkles size={16} /> Atomise</button>
-                  <button type="button" onClick={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}><Heading2 size={16} /> Format</button>
-                  <div className="highlight-tool">
-                    <button
-                      type="button"
-                      className={`highlight-button ${highlighterArmed ? 'is-armed' : ''}`}
-                      aria-label="Highlight"
-                      title={highlighterArmed ? 'Highlight mode active' : 'Highlight selected text'}
-                      aria-pressed={highlighterArmed}
-                      aria-expanded={highlightPaletteOpen}
-                      onClick={() => toggleHighlight()}
-                      onDoubleClick={(event) => {
-                        event.preventDefault()
-                        setHighlightPaletteOpen((open) => !open)
-                      }}
-                    >
-                      <svg className="highlight-icon" viewBox="0 0 24 24" aria-hidden>
-                        <path d="M4 20h16" />
-                        <path d="M14.5 4.5 19 9l-8.7 8.7-4.5-4.5z" />
-                        <path d="m5.8 13.2-1.2 4.2 4.2-1.2" />
-                      </svg>
-                      <span className="highlight-swatch" style={{ background: userSettings.highlighterColor }} aria-hidden />
-                    </button>
-                    {highlightPaletteOpen && (
-                      <div className="highlight-palette" aria-label="Highlight colours">
-                        {HIGHLIGHTER_COLORS.map((color) => (
-                          <button
-                            type="button"
-                            key={color}
-                            className={color === userSettings.highlighterColor ? 'is-active' : ''}
-                            style={{ background: color }}
-                            aria-label={`Use highlight colour ${color}`}
-                            onClick={() => selectHighlighterColor(color)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <label
-                    className={`floating-ai-prompt ${aiPromptFocused ? 'is-open' : ''}`}
-                    onMouseDown={() => {
-                      const range = captureAIContextRange()
-                      if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-                    }}
-                  >
-                    <Sparkles size={16} aria-hidden />
-                    {visibleAICommand && (
-                      <span className={`ai-mode-pill ai-mode-pill--${activeAICommand}`}>
-                        <span aria-hidden />
-                        {visibleAICommand.label}
-                      </span>
-                    )}
-                    <input
-                      ref={aiPromptInputRef}
-                      value={aiPrompt}
-                      onFocus={() => {
-                        const range = captureAIContextRange()
-                        if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-                        setAiPromptFocused(true)
-                        setActiveEditorPanel(null)
-                      }}
-                      onBlur={() => {
-                        setAiPromptFocused(false)
-                        if (!aiRunning) clearAIContextRange()
-                      }}
-                      onChange={(event) => {
-                        setAiPrompt(event.target.value)
-                        if (event.target.value.trim().toLowerCase() !== aiPromptHintDismissedFor) {
-                          setAiPromptHintDismissedFor('')
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Tab' && event.shiftKey) {
-                          event.preventDefault()
-                          cycleAICommand(1)
-                          return
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault()
-                          setAiPromptFocused(false)
-                          clearAIContextRange()
-                          aiPromptInputRef.current?.blur()
-                          return
-                        }
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          submitAIPrompt()
-                        }
-                      }}
-                      disabled={aiRunning}
-                      placeholder={aiRunning ? 'Working...' : defaultPromptForCommand(activeAICommand, hasExplicitAIContext) || 'Tell AI what to do...'}
-                    />
-                    {aiPromptHintVisible && aiPromptHint && (
-                      <span className="ai-prompt-hint">
-                        {aiPromptHint}
-                        <button
-                          type="button"
-                          aria-label="Dismiss prompt hint"
-                          onClick={(event) => {
-                            event.preventDefault()
-                            setAiPromptHintVisible(false)
-                            setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
-                          }}
-                        >
-                          <X size={12} />
-                        </button>
-                      </span>
-                    )}
-                  </label>
-                  <span className={`floating-save-state ${showSaveState ? 'is-visible' : ''}`}>{showSaveState ? (saving ? 'Saving...' : 'Saved') : ''}</span>
-                  <button type="button" aria-label="More options" onClick={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}><MoreHorizontal size={18} /></button>
-                </div>
-              </div>
+              <EditorBottomToolbar
+                wrapRef={floatingEditorWrapRef}
+                activePanel={activeEditorPanel}
+                atomUnderlinesVisible={atomUnderlinesVisible}
+                editorFocusMode={editorFocusMode}
+                aiPromptFocused={aiPromptFocused}
+                aiRunning={aiRunning}
+                activeAICommand={activeAICommand}
+                visibleAICommand={visibleAICommand}
+                aiPrompt={aiPrompt}
+                aiPromptInputRef={aiPromptInputRef}
+                aiPromptHintVisible={aiPromptHintVisible}
+                aiPromptHint={aiPromptHint}
+                highlighterArmed={highlighterArmed}
+                highlighterColor={userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR}
+                highlightPaletteOpen={highlightPaletteOpen}
+                highlighterColors={HIGHLIGHTER_COLORS}
+                onToggleAtomUnderlines={() => setAtomUnderlinesVisible((visible) => !visible)}
+                onToggleFocusMode={() => setEditorFocusMode((enabled) => !enabled)}
+                onOpenNoteHistory={() => void openNoteHistory()}
+                onExportPdf={() => void exportNotePdf(selectedNote, selectedProject)}
+                onExportDocx={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}
+                onDeleteNote={() => void deleteNote()}
+                onAtomise={atomiseSelection}
+                onToggleHighlight={() => toggleHighlight()}
+                onToggleHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
+                onSelectHighlightColor={selectHighlighterColor}
+                onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
+                onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
+                onPromptMouseDown={() => {
+                  const range = captureAIContextRange()
+                  if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+                }}
+                onPromptFocus={() => {
+                  const range = captureAIContextRange()
+                  if (editor) editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
+                  setAiPromptFocused(true)
+                  setActiveEditorPanel(null)
+                }}
+                onPromptBlur={() => {
+                  setAiPromptFocused(false)
+                  if (!aiRunning) clearAIContextRange()
+                }}
+                onPromptChange={(event) => {
+                  setAiPrompt(event.target.value)
+                  if (event.target.value.trim().toLowerCase() !== aiPromptHintDismissedFor) {
+                    setAiPromptHintDismissedFor('')
+                  }
+                }}
+                onPromptKeyDown={(event) => {
+                  if (event.key === 'Tab' && event.shiftKey) {
+                    event.preventDefault()
+                    cycleAICommand(1)
+                    return
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    setAiPromptFocused(false)
+                    clearAIContextRange()
+                    aiPromptInputRef.current?.blur()
+                    return
+                  }
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    submitAIPrompt()
+                  }
+                }}
+                onDismissPromptHint={(event) => {
+                  event.preventDefault()
+                  setAiPromptHintVisible(false)
+                  setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
+                }}
+              />
             </div>
           </section>
         )}

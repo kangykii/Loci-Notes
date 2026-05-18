@@ -1,1 +1,488 @@
 /* Focus Mode rules live at the end of App.css so they win over global editor block typography. */
+
+.floating-editor-wrap {
+  position: fixed;
+  left: calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2);
+  bottom: 28px;
+  z-index: 40;
+  display: grid;
+  justify-items: center;
+  width: min(940px, calc(100vw - var(--sidebar-width) - 48px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.floating-editor-bar {
+  pointer-events: auto;
+  position: relative;
+  width: 100%;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(28, 28, 30, 0.14);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.58),
+    inset 0 -18px 42px rgba(28, 28, 30, 0.035),
+    0 24px 72px rgba(17, 17, 17, 0.18),
+    0 3px 14px rgba(17, 17, 17, 0.08);
+  padding: 0;
+  color: #1c1c1e;
+  -webkit-backdrop-filter: blur(34px) saturate(1.65) brightness(1.07);
+  backdrop-filter: blur(34px) saturate(1.65) brightness(1.07);
+}
+
+.floating-editor-bar.is-prompt-open,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) {
+  gap: 0;
+}
+
+.floating-editor-bar.is-thinking {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.58),
+    inset 0 -18px 42px rgba(28, 28, 30, 0.035),
+    0 24px 72px rgba(17, 17, 17, 0.18),
+    0 3px 14px rgba(17, 17, 17, 0.08);
+}
+
+.toolbar-zone {
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.toolbar-zone-left {
+  min-width: 132px;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.toolbar-zone-right {
+  min-width: 78px;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.floating-editor-bar.is-prompt-open .toolbar-zone,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-zone,
+.floating-editor-bar.is-prompt-open .toolbar-structural-divider,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-structural-divider {
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.toolbar-divider {
+  width: 0.5px;
+  height: 16px;
+  flex: 0 0 auto;
+  background: rgba(28, 28, 30, 0.1);
+}
+
+.toolbar-structural-divider {
+  width: 0;
+  height: 0;
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+.floating-editor-bar button,
+.floating-editor-panel button {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #1c1c1e;
+  font: inherit;
+}
+
+.floating-editor-bar button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.floating-editor-bar button:hover,
+.floating-editor-panel button:hover {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.toolbar-text-button {
+  letter-spacing: 0;
+}
+
+.toolbar-text-button--primary {
+  color: #1c1c1e;
+  font-weight: 500;
+}
+
+.toolbar-text-button--muted {
+  color: #6f6f73;
+  font-weight: 400;
+}
+
+.toolbar-more-button {
+  width: 28px;
+  color: #6f6f73;
+}
+
+.toolbar-more-button svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.highlight-tool {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.highlight-button {
+  position: relative;
+  width: 32px;
+  border: 1px solid rgba(28, 28, 30, 0.08);
+  color: #6f6f73;
+}
+
+.highlight-button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+
+.highlight-button.is-armed {
+  border-color: rgba(28, 28, 30, 0.82);
+  background: #1c1c1e;
+  color: #fff;
+}
+
+.highlight-swatch {
+  position: absolute;
+  right: 6px;
+  bottom: 7px;
+  width: 7px;
+  height: 7px;
+  border: 0.5px solid rgba(28, 28, 30, 0.16);
+  border-radius: 999px;
+}
+
+.highlight-button.is-armed .highlight-swatch {
+  width: 8px;
+  height: 8px;
+  border-color: rgba(255, 255, 255, 0.82);
+}
+
+.highlight-palette {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0.5px solid #e5e5e5;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: none;
+  padding: 7px;
+}
+
+.highlight-palette button {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border: 0.5px solid rgba(28, 28, 30, 0.12);
+  border-radius: 7px;
+  padding: 0;
+}
+
+.highlight-palette button.is-active {
+  outline: 2px solid #1c1c1e;
+  outline-offset: 2px;
+}
+
+.floating-ai-prompt {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-width: 120px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: #6f6f73;
+  padding: 0;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: none;
+  transition: max-width 180ms ease, flex-basis 180ms ease;
+}
+
+.floating-ai-prompt.is-open,
+.floating-ai-prompt:focus-within {
+  height: 100%;
+  max-width: none;
+  flex-basis: 100%;
+  border-radius: 18px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.floating-editor-bar.is-thinking .floating-ai-prompt {
+  background: transparent;
+  box-shadow: none;
+}
+
+.floating-ai-prompt > svg,
+.floating-ai-prompt input,
+.ai-mode-pill,
+.ai-prompt-hint {
+  position: relative;
+  z-index: 1;
+}
+
+.floating-ai-prompt > svg {
+  display: none;
+}
+
+.floating-ai-prompt .ai-mode-pill {
+  display: inline-flex;
+  margin-left: 10px;
+}
+
+.ai-mode-pill {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 0.5px solid rgba(28, 28, 30, 0.1);
+  background: rgba(255, 255, 255, 0.72);
+  color: #1c1c1e;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ai-mode-pill span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #ffe08a;
+}
+
+.ai-mode-pill--atomise span {
+  background: #9af4c7;
+}
+
+.ai-mode-pill--mark span {
+  background: #ffb36d;
+}
+
+.ai-mode-pill--summarise span {
+  background: #9ac7ff;
+}
+
+.ai-mode-pill--rewrite span {
+  background: #d9a8ff;
+}
+
+.ai-mode-pill--continue span {
+  background: #ffe08a;
+}
+
+.floating-ai-prompt input {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #1c1c1e;
+  padding: 1rem 1.25rem;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.floating-ai-prompt .ai-mode-pill + input {
+  padding-left: 0;
+}
+
+.floating-ai-prompt input::placeholder {
+  color: #6f6f73;
+}
+
+.ai-prompt-hint {
+  position: absolute;
+  right: 8px;
+  bottom: calc(100% + 10px);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0.5px solid #e5e5e5;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: none;
+  color: #1c1c1e;
+  padding: 7px 8px 7px 12px;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ai-prompt-hint button {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  padding: 0;
+}
+
+.floating-editor-panel {
+  position: absolute;
+  right: 20px;
+  bottom: calc(100% + 8px);
+  width: 220px;
+  display: grid;
+  pointer-events: auto;
+  border: 0.5px solid #e5e5e5;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: none;
+  padding: 6px;
+}
+
+.more-option-grid {
+  display: grid;
+  gap: 2px;
+}
+
+.more-option-grid button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0 10px;
+  text-align: left;
+  font-size: 13px;
+  color: #1c1c1e;
+  font: inherit;
+  font-weight: 400;
+}
+
+.more-option-grid button:hover {
+  background: rgba(242, 242, 247, 0.84);
+}
+
+.more-option-grid button svg {
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  color: #1c1c1e;
+  stroke-width: 1.8;
+}
+
+.more-option-grid .danger {
+  color: #ff3b30;
+}
+
+.more-option-grid .more-toggle-row {
+  justify-content: space-between;
+}
+
+.more-toggle-row span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ios-switch {
+  width: 34px;
+  height: 20px;
+  justify-content: flex-start;
+  border-radius: 999px;
+  background: #d1d1d6;
+  padding: 2px;
+  transition: background 160ms ease;
+}
+
+.ios-switch span {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 160ms ease;
+}
+
+.more-toggle-row[aria-pressed="true"] .ios-switch {
+  background: #34c759;
+}
+
+.more-toggle-row[aria-pressed="true"] .ios-switch span {
+  transform: translateX(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-ai-prompt {
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .floating-editor-wrap {
+    left: 50%;
+    width: calc(100vw - 28px);
+    bottom: 14px;
+  }
+
+  .floating-editor-bar {
+    gap: 10px;
+  }
+
+  .toolbar-zone-left {
+    min-width: 112px;
+    gap: 8px;
+  }
+
+  .toolbar-zone-right {
+    min-width: 72px;
+    gap: 8px;
+  }
+
+  .floating-ai-prompt {
+    flex-basis: 44vw;
+  }
+
+  .floating-editor-panel {
+    right: 12px;
+  }
+
+  .ai-prompt-hint {
+    right: 0;
+    max-width: calc(100vw - 44px);
+    white-space: normal;
+  }
+}
