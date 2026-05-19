@@ -86,6 +86,8 @@ import type {
   StarterWorkspaceUpsertResult,
   UserProfile,
   UserSettings,
+  FlashcardReviewState,
+  StudyRating,
 } from './db'
 import { exportNoteDocx, exportNotePdf } from './exports'
 import { requestAIText } from './ai/aiClient'
@@ -102,6 +104,8 @@ import {
   parseAIQuotePayload,
   parseAITablePayload,
   parseAtomCandidates,
+  parseFlashcardQuizPayload,
+  parseFlashcardShortAnswerMark,
   routeAITask,
   sanitizeAIInsertText,
   taskUsesWritingStyle,
@@ -196,6 +200,7 @@ import { profileService } from './services/profileService'
 import { sharingService } from './services/sharingService'
 import { initialUpdateState, updateService } from './services/updateService'
 import type { UpdateState } from './services/updateService'
+import { applyStudyRating, reviewStateForCard, sortDueAtomIds } from './study/spacedRepetition'
 import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
 import { INK_READING_WOMAN, INK_WALKING_WOMAN, INK_WALKMAN_BOY } from './assets/marginalia/parts.generated'
 import type { InkCharacter as InkCharacterAsset } from './assets/marginalia/parts.generated'
@@ -209,8 +214,19 @@ import './styles/marginalia.css'
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
 
 type View = 'home' | 'editor' | 'projects' | 'community' | 'atoms' | 'settings'
-type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'study'
+type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'set-open' | 'study' | 'match' | 'quiz-setup' | 'quiz'
 type StudyDirection = 'term' | 'definition'
+type StudyMode = 'flashcards' | 'match' | 'quiz'
+type QuizAnswerWith = 'term' | 'definition' | 'both'
+type QuizSetupOptions = {
+  questionCount: number
+  answerWith: QuizAnswerWith
+  includeTrueFalse: boolean
+  includeMultipleChoice: boolean
+  includeMatching: boolean
+  includeWritten: boolean
+}
+
 const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
 
 function InkCharacter({
@@ -301,6 +317,52 @@ type AtomCard = {
   projectIds: string[]
   projectNames: string[]
 }
+
+type MatchTile = {
+  id: string
+  atomId: string
+  text: string
+  kind: 'term' | 'definition'
+}
+
+type MatchSelection = Pick<MatchTile, 'id' | 'atomId' | 'kind'> | null
+
+type QuizAnswerState = {
+  selectedChoice?: string
+  trueFalseAnswer?: boolean
+  matchingPairs?: Record<string, string>
+  shortAnswer?: string
+}
+
+type QuizQuestionResult = {
+  correct: boolean
+  feedback?: string
+  score?: number
+}
+
+type QuizResultState = {
+  resultsByQuestionId: Record<string, QuizQuestionResult>
+  score: number
+  total: number
+  marking: boolean
+}
+
+const DEFAULT_QUIZ_SETUP_OPTIONS: QuizSetupOptions = {
+  questionCount: 10,
+  answerWith: 'definition',
+  includeTrueFalse: false,
+  includeMultipleChoice: true,
+  includeMatching: false,
+  includeWritten: false,
+}
+
+function formatQuizAnswerWith(value: QuizAnswerWith) {
+  if (value === 'term') return 'Term'
+  if (value === 'definition') return 'Definition'
+  return 'Both'
+}
+
+const isSetWorkspace = (view: AtomSubView) => view !== 'atoms'
 
 type LociWorkerRequest =
   | { id: string; type: 'index-notes'; notes: Array<{ id: string; title: string; updatedAt: string; content: JSONContent }> }
@@ -878,7 +940,7 @@ const Sidebar = memo(function Sidebar({
           onSetActiveView('atoms')
         }}>
           <AtomIcon size={18} />
-          <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
+          <span className="nav-label">{isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}</span>
         </button>
         <button
           className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
@@ -1036,6 +1098,7 @@ function App() {
   const [selectedAtomIds, setSelectedAtomIds] = useState<string[]>([])
   const [atomSubView, setAtomSubView] = useState<AtomSubView>('atoms')
   const [atomHeadingMenuOpen, setAtomHeadingMenuOpen] = useState(false)
+  const [atomHeadingHoverTarget, setAtomHeadingHoverTarget] = useState<'atoms' | 'sets' | null>(null)
   const [editingFlashcardSetId, setEditingFlashcardSetId] = useState<string | null>(null)
   const [flashcardSetTitleEditing, setFlashcardSetTitleEditing] = useState(false)
   const [flashcardSetDraftName, setFlashcardSetDraftName] = useState('')
@@ -1043,6 +1106,7 @@ function App() {
   const [flashcardSetDraftAtomIds, setFlashcardSetDraftAtomIds] = useState<string[]>([])
   const [flashcardSetAtomQuery, setFlashcardSetAtomQuery] = useState('')
   const [studyingFlashcardSetId, setStudyingFlashcardSetId] = useState<string | null>(null)
+  const [studyMode, setStudyMode] = useState<StudyMode | null>(null)
   const [studyAtomIds, setStudyAtomIds] = useState<string[]>([])
   const [studyIndex, setStudyIndex] = useState(0)
   const [studyFlipped, setStudyFlipped] = useState(false)
@@ -1050,6 +1114,18 @@ function App() {
   const [studyShuffle, setStudyShuffle] = useState(false)
   const [studyKnownAtomIds, setStudyKnownAtomIds] = useState<string[]>([])
   const [studyLearningAtomIds, setStudyLearningAtomIds] = useState<string[]>([])
+  const [reviewStates, setReviewStates] = useState<FlashcardReviewState[]>([])
+  const [aiHintRunningAtomId, setAiHintRunningAtomId] = useState<string | null>(null)
+  const [matchTiles, setMatchTiles] = useState<MatchTile[]>([])
+  const [matchSelection, setMatchSelection] = useState<MatchSelection>(null)
+  const [matchMatchedAtomIds, setMatchMatchedAtomIds] = useState<string[]>([])
+  const [matchMistakes, setMatchMistakes] = useState(0)
+  const [studyElapsedMs, setStudyElapsedMs] = useState(0)
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, QuizAnswerState>>({})
+  const [quizResult, setQuizResult] = useState<QuizResultState | null>(null)
+  const [quizGenerating, setQuizGenerating] = useState(false)
+  const [quizSetupOptions, setQuizSetupOptions] = useState<QuizSetupOptions>(DEFAULT_QUIZ_SETUP_OPTIONS)
+  const [quizAnswerMenuOpen, setQuizAnswerMenuOpen] = useState(false)
   const [draggedNoteIds, setDraggedNoteIds] = useState<string[]>([])
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
@@ -1126,6 +1202,7 @@ function App() {
   const atomsTitleSwitcherRef = useRef<HTMLDivElement | null>(null)
   const atomProjectFilterRef = useRef<HTMLDivElement | null>(null)
   const flashcardProjectFilterRef = useRef<HTMLDivElement | null>(null)
+  const quizAnswerDropdownRef = useRef<HTMLDivElement | null>(null)
   const aiContextRangeRef = useRef<EditorRange | null>(null)
   const highlighterArmedRef = useRef(false)
   const updateCheckRanRef = useRef(false)
@@ -1152,6 +1229,8 @@ function App() {
   const editorFocusModeVisualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorFocusModeVisualFrameRef = useRef<number | null>(null)
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const studySessionStartedAtRef = useRef<number | null>(null)
+  const studySessionPersistedRef = useRef(false)
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const formatSideFrameRef = useRef<number | null>(null)
   const formatBlockFrameRef = useRef<number | null>(null)
@@ -1427,7 +1506,7 @@ function App() {
 
       setNotes(normalized)
       setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
-      setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
+      setFlashcardSets(storedFlashcardSets.map(normalizeFlashcardSet))
       if (storedProfile && isBadProfileDisplayName(storedProfile.displayName)) {
         await profileStore.saveLocalWorkspaceProfile({
           ...storedProfile,
@@ -2134,9 +2213,13 @@ function App() {
     const closeOnOutsidePointer = (event: MouseEvent) => {
       if (atomsTitleSwitcherRef.current?.contains(event.target as Node)) return
       setAtomHeadingMenuOpen(false)
+      setAtomHeadingHoverTarget(null)
     }
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setAtomHeadingMenuOpen(false)
+      if (event.key === 'Escape') {
+        setAtomHeadingMenuOpen(false)
+        setAtomHeadingHoverTarget(null)
+      }
     }
     document.addEventListener('mousedown', closeOnOutsidePointer)
     document.addEventListener('keydown', closeOnEscape)
@@ -2163,6 +2246,23 @@ function App() {
       document.removeEventListener('keydown', closeOnEscape)
     }
   }, [atomProjectMenuOpen])
+
+  useEffect(() => {
+    if (!quizAnswerMenuOpen) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      if (quizAnswerDropdownRef.current?.contains(event.target as Node)) return
+      setQuizAnswerMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setQuizAnswerMenuOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [quizAnswerMenuOpen])
 
   useEffect(() => {
     if (!openProjectMenuId) return
@@ -2256,6 +2356,10 @@ function App() {
     () => atomCards.filter((card) => flashcardSetDraftAtomIds.includes(card.atom.id)),
     [atomCards, flashcardSetDraftAtomIds],
   )
+  const studyingSetAtoms = useMemo(
+    () => studyingFlashcardSet?.atomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom)) ?? [],
+    [atomById, studyingFlashcardSet],
+  )
   const flashcardSetPickerCards = useMemo(() => {
     const query = normalizeSearch(flashcardSetAtomQuery)
     return atomCards.filter((card) => {
@@ -2275,6 +2379,28 @@ function App() {
   const studyLearningCount = studyLearningAtomIds.length
   const studyTotalCount = studyKnownCount + studyAtoms.length
   const studyRoundComplete = studyTotalCount > 0 && studyAtoms.length === 0
+  const activeStudyHint = activeStudyAtom && studyingFlashcardSet?.aiHintsByAtomId
+    ? studyingFlashcardSet.aiHintsByAtomId[activeStudyAtom.id]?.hint
+    : undefined
+  const matchComplete = studyingSetAtoms.length > 0 && matchMatchedAtomIds.length === studyingSetAtoms.length
+  const matchAverageMs = studyingFlashcardSet?.matchSessionCount
+    ? Math.round((studyingFlashcardSet.matchTotalMs ?? 0) / studyingFlashcardSet.matchSessionCount)
+    : 0
+  const activeQuiz = studyingFlashcardSet?.cachedQuiz
+  const quizQuestionCount = activeQuiz?.questions.length ?? 0
+  const quizAnsweredCount = activeQuiz?.questions.filter((question) => {
+    const answer = quizAnswers[question.id]
+    if (question.type === 'multiple-choice') return Boolean(answer?.selectedChoice)
+    if (question.type === 'true-false') return typeof answer?.trueFalseAnswer === 'boolean'
+    if (question.type === 'matching') return question.pairs.every((pair) => Boolean(answer?.matchingPairs?.[pair.left]))
+    return Boolean(answer?.shortAnswer?.trim())
+  }).length ?? 0
+  const quizSetupAvailableCount = Math.min(10, studyingSetAtoms.length || 10)
+  const quizSetupFormatCount = Number(quizSetupOptions.includeTrueFalse) + Number(quizSetupOptions.includeMultipleChoice) + Number(quizSetupOptions.includeMatching) + Number(quizSetupOptions.includeWritten)
+  const quizSetupQuestionCount = Math.min(10, Math.max(1, quizSetupOptions.questionCount || 1), studyingSetAtoms.length || 10)
+  const quizSetupCanStart = Boolean(studyingSetAtoms.length && quizSetupFormatCount && quizSetupQuestionCount > 0)
+  const quizReadyToMark = Boolean(activeQuiz && quizQuestionCount > 0 && quizAnsweredCount === quizQuestionCount && !quizResult?.marking)
+  const quizMarked = Boolean(quizResult && !quizResult.marking)
 
   const aiCommands = useMemo(
     () => {
@@ -2791,9 +2917,80 @@ function App() {
     void saveUserSettings({ ...userSettings, aiProviders: nextProviders })
   }
 
+  const syncFlashcardSet = (nextSet: FlashcardSet | undefined) => {
+    if (!nextSet) return
+    const normalized = normalizeFlashcardSet(nextSet)
+    setFlashcardSets((current) =>
+      current.map((set) => (set.id === normalized.id ? normalized : set))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    )
+  }
+
+  const persistStudySession = async () => {
+    if (!studyingFlashcardSetId || studySessionStartedAtRef.current === null || studySessionPersistedRef.current) return
+    const durationMs = Date.now() - studySessionStartedAtRef.current
+    if (durationMs < 1000) return
+    studySessionPersistedRef.current = true
+    setStudyElapsedMs(durationMs)
+    const updatedSet = await flashcardSetsStore.updateStudyTiming(studyingFlashcardSetId, durationMs, nowIso(), studyMode ?? undefined)
+    syncFlashcardSet(updatedSet)
+  }
+
+  const beginStudySession = (setId: string, mode: StudyMode) => {
+    setStudyingFlashcardSetId(setId)
+    setStudyMode(mode)
+    studySessionStartedAtRef.current = Date.now()
+    studySessionPersistedRef.current = false
+    setStudyElapsedMs(0)
+  }
+
+  const stopStudySession = () => {
+    void persistStudySession()
+    studySessionStartedAtRef.current = null
+  }
+
+  const stopActiveStudySession = () => {
+    if (atomSubView === 'study' || atomSubView === 'match' || atomSubView === 'quiz-setup' || atomSubView === 'quiz') {
+      stopStudySession()
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (!studyingFlashcardSetId || studySessionStartedAtRef.current === null || studySessionPersistedRef.current) return
+      const durationMs = Date.now() - studySessionStartedAtRef.current
+      if (durationMs >= 1000) {
+        void flashcardSetsStore.updateStudyTiming(studyingFlashcardSetId, durationMs, nowIso(), studyMode ?? undefined)
+      }
+    }
+  }, [studyingFlashcardSetId, studyMode])
+
+  useEffect(() => {
+    if (atomSubView !== 'match' || studySessionStartedAtRef.current === null || studySessionPersistedRef.current) return
+    const updateElapsed = () => {
+      if (studySessionStartedAtRef.current === null) return
+      setStudyElapsedMs(Date.now() - studySessionStartedAtRef.current)
+    }
+    updateElapsed()
+    const timerId = window.setInterval(updateElapsed, 1000)
+    return () => window.clearInterval(timerId)
+  }, [atomSubView, studyMode, matchComplete])
+
+  useEffect(() => {
+    if (
+      (atomSubView === 'study' && studyRoundComplete) ||
+      (atomSubView === 'match' && matchComplete) ||
+      (atomSubView === 'quiz' && quizMarked)
+    ) {
+      void persistStudySession()
+    }
+  }, [atomSubView, matchComplete, quizMarked, studyRoundComplete])
+
   const switchAtomWorkspace = (nextView: 'atoms' | 'sets') => {
+    if (isSetWorkspace(atomSubView)) stopActiveStudySession()
     setAtomSubView(nextView)
     setAtomHeadingMenuOpen(false)
+    setAtomHeadingHoverTarget(null)
     if (nextView === 'atoms') {
       setEditingFlashcardSetId(null)
       setStudyingFlashcardSetId(null)
@@ -4367,16 +4564,29 @@ function App() {
     if (!name || !flashcardSetDraftAtomIds.length) return
     const now = nowIso()
     const existing = editingFlashcardSet
+    const nextAtomIds = Array.from(new Set(flashcardSetDraftAtomIds))
     const next: FlashcardSet = {
       id: existing?.id ?? createId('set'),
       name,
       description: flashcardSetDraftDescription.trim(),
-      atomIds: Array.from(new Set(flashcardSetDraftAtomIds)),
+      atomIds: nextAtomIds,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       lastStudiedAt: existing?.lastStudiedAt,
+      totalStudyMs: existing?.totalStudyMs,
+      lastStudyDurationMs: existing?.lastStudyDurationMs,
+      studySessionCount: existing?.studySessionCount,
+      matchBestMs: existing?.matchBestMs,
+      matchTotalMs: existing?.matchTotalMs,
+      matchSessionCount: existing?.matchSessionCount,
+      aiHintsByAtomId: existing?.aiHintsByAtomId,
+      cachedQuiz: existing?.cachedQuiz,
     }
     await flashcardSetsStore.save(next)
+    if (existing) {
+      const removedAtomIds = existing.atomIds.filter((atomId) => !nextAtomIds.includes(atomId))
+      if (removedAtomIds.length) void flashcardSetsStore.deleteReviewStatesForAtoms(existing.id, removedAtomIds)
+    }
     setFlashcardSets((current) =>
       [next, ...current.filter((set) => set.id !== next.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     )
@@ -4395,8 +4605,46 @@ function App() {
         await flashcardSetsStore.delete(set.id)
         setFlashcardSets((current) => current.filter((item) => item.id !== set.id))
         if (studyingFlashcardSetId === set.id) {
+          studySessionStartedAtRef.current = null
+          studySessionPersistedRef.current = true
           setStudyingFlashcardSetId(null)
+          setStudyMode(null)
+          setStudyElapsedMs(0)
           setAtomSubView('sets')
+        }
+      },
+    })
+  }
+
+  const resetFlashcardSetStudyProgress = async (set: FlashcardSet) => {
+    setAppDialog({
+      kind: 'confirm',
+      title: 'Reset study progress',
+      message: `Reset all study progress for "${set.name}"? Cards, Match times, AI hints, and quiz progress will start fresh.`,
+      confirmLabel: 'Reset',
+      intent: 'danger',
+      onConfirm: async () => {
+        const updatedSet = await flashcardSetsStore.resetStudyProgress(set.id, nowIso())
+        syncFlashcardSet(updatedSet)
+        if (studyingFlashcardSetId === set.id) {
+          studySessionStartedAtRef.current = null
+          studySessionPersistedRef.current = true
+          setStudyMode(null)
+          setStudyAtomIds([])
+          setStudyIndex(0)
+          setStudyFlipped(false)
+          setStudyKnownAtomIds([])
+          setStudyLearningAtomIds([])
+          setReviewStates([])
+          setAiHintRunningAtomId(null)
+          setMatchTiles([])
+          setMatchSelection(null)
+          setMatchMatchedAtomIds([])
+          setMatchMistakes(0)
+          setStudyElapsedMs(0)
+          setQuizAnswers({})
+          setQuizGenerating(false)
+          setAtomSubView('set-open')
         }
       },
     })
@@ -4408,21 +4656,83 @@ function App() {
     )
   }
 
+  const openFlashcardSet = (set: FlashcardSet) => {
+    const availableIds = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
+    if (!availableIds.length) return
+    stopActiveStudySession()
+    setStudyingFlashcardSetId(set.id)
+    setAtomSubView('set-open')
+  }
+
+  const openQuizSetup = (set: FlashcardSet) => {
+    const availableIds = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
+    if (!availableIds.length) return
+    stopActiveStudySession()
+    setStudyingFlashcardSetId(set.id)
+    setQuizAnswers({})
+    setQuizResult(null)
+    setQuizGenerating(false)
+    setQuizSetupOptions((current) => ({
+      ...current,
+      questionCount: Math.min(10, Math.max(1, Math.min(current.questionCount, availableIds.length))),
+    }))
+    setAtomSubView('quiz-setup')
+  }
+
   const startFlashcardStudy = async (set: FlashcardSet) => {
     const availableIds = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
-    const nextIds = studyShuffle ? shuffleList(availableIds) : availableIds
-    if (!nextIds.length) return
-    const now = nowIso()
-    const updatedSet = { ...set, lastStudiedAt: now }
-    await flashcardSetsStore.save(updatedSet)
-    setFlashcardSets((current) => current.map((item) => (item.id === set.id ? updatedSet : item)))
-    setStudyingFlashcardSetId(set.id)
+    if (!availableIds.length) return
+    const states = await flashcardSetsStore.listReviewStates(set.id)
+    const dueIds = sortDueAtomIds(availableIds, states, nowIso())
+    const nextIds = studyShuffle ? shuffleList(dueIds) : dueIds
+    beginStudySession(set.id, 'flashcards')
+    setReviewStates(states)
     setStudyAtomIds(nextIds)
     setStudyIndex(0)
     setStudyFlipped(false)
     setStudyKnownAtomIds([])
     setStudyLearningAtomIds([])
     setAtomSubView('study')
+  }
+
+  const startMatchStudy = (set: FlashcardSet) => {
+    const availableAtoms = set.atomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom))
+    if (!availableAtoms.length) return
+    beginStudySession(set.id, 'match')
+    setMatchTiles(shuffleList([
+      ...availableAtoms.map((atom) => ({ id: `${atom.id}-term`, atomId: atom.id, text: atom.phrase, kind: 'term' as const })),
+      ...availableAtoms.map((atom) => ({ id: `${atom.id}-definition`, atomId: atom.id, text: atom.definition, kind: 'definition' as const })),
+    ]))
+    setMatchSelection(null)
+    setMatchMatchedAtomIds([])
+    setMatchMistakes(0)
+    setAtomSubView('match')
+  }
+
+  const markStudyCard = async (rating: StudyRating) => {
+    if (!activeStudyAtom || !studyingFlashcardSetId) return
+    const atomId = activeStudyAtom.id
+    const now = nowIso()
+    const existing = reviewStates.find((state) => state.atomId === atomId)
+    const nextState = applyStudyRating(
+      reviewStateForCard(existing, studyingFlashcardSetId, atomId, now),
+      rating,
+      now,
+    )
+    await flashcardSetsStore.saveReviewState(nextState)
+    setReviewStates((current) => [nextState, ...current.filter((state) => state.atomId !== atomId)])
+    if (rating === 'again' || rating === 'hard') {
+      setStudyLearningAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
+    } else {
+      setStudyKnownAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
+      setStudyLearningAtomIds((current) => current.filter((id) => id !== atomId))
+    }
+    setStudyAtomIds((current) => current.filter((id) => id !== atomId))
+    setStudyIndex((current) => {
+      if (studyAtoms.length <= 1) return 0
+      return Math.min(current, studyAtoms.length - 2)
+    })
+    setStudyFlipped(false)
   }
 
   const moveStudyCard = (direction: 1 | -1) => {
@@ -4433,43 +4743,219 @@ function App() {
     setStudyFlipped(false)
   }
 
-  const markStudyCardAgain = () => {
-    if (!activeStudyAtom) return
-    const atomId = activeStudyAtom.id
-    setStudyLearningAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
-    setStudyAtomIds((current) => {
-      if (current.length <= 1) return current
-      const withoutCurrent = current.filter((id) => id !== atomId)
-      return [...withoutCurrent, atomId]
-    })
-    setStudyIndex((current) => {
-      if (studyAtoms.length <= 1) return 0
-      return Math.min(current, studyAtoms.length - 2)
-    })
-    setStudyFlipped(false)
-  }
-
-  const markStudyCardKnown = () => {
-    if (!activeStudyAtom) return
-    const atomId = activeStudyAtom.id
-    setStudyKnownAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
-    setStudyLearningAtomIds((current) => current.filter((id) => id !== atomId))
-    setStudyAtomIds((current) => current.filter((id) => id !== atomId))
-    setStudyIndex((current) => {
-      if (studyAtoms.length <= 1) return 0
-      return Math.min(current, studyAtoms.length - 2)
-    })
-    setStudyFlipped(false)
-  }
-
-  const restartStudyRound = () => {
+  const restartStudyRound = async () => {
     if (!studyingFlashcardSet) return
     const availableIds = studyingFlashcardSet.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
-    setStudyAtomIds(studyShuffle ? shuffleList(availableIds) : availableIds)
+    const states = await flashcardSetsStore.listReviewStates(studyingFlashcardSet.id)
+    const dueIds = sortDueAtomIds(availableIds, states, nowIso())
+    setReviewStates(states)
+    setStudyAtomIds(studyShuffle ? shuffleList(dueIds) : dueIds)
     setStudyKnownAtomIds([])
     setStudyLearningAtomIds([])
     setStudyIndex(0)
     setStudyFlipped(false)
+  }
+
+  const chooseMatchTile = (tile: MatchTile) => {
+    if (matchMatchedAtomIds.includes(tile.atomId)) return
+    if (!matchSelection) {
+      setMatchSelection({ id: tile.id, atomId: tile.atomId, kind: tile.kind })
+      return
+    }
+    if (matchSelection.id === tile.id) {
+      setMatchSelection(null)
+      return
+    }
+    if (matchSelection.kind === tile.kind) {
+      setMatchSelection({ id: tile.id, atomId: tile.atomId, kind: tile.kind })
+      return
+    }
+    if (matchSelection.atomId === tile.atomId) {
+      setMatchMatchedAtomIds((current) => (current.includes(tile.atomId) ? current : [...current, tile.atomId]))
+    } else {
+      setMatchMistakes((current) => current + 1)
+    }
+    setMatchSelection(null)
+  }
+
+  const requestSetAIText = async (taskType: AITaskType, set: FlashcardSet, userContent: string) => {
+    const providerId = userSettings.defaultAIProvider
+    const providerMeta = aiProviders.find((provider) => provider.id === providerId) ?? aiProviders[0]
+    const provider = userSettings.aiProviders[providerId]
+    if (!provider.enabled || !provider.apiKey.trim()) {
+      showNotice(`Add a ${providerMeta.name} API key in Settings first.`)
+      setActiveView('settings')
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: 'error',
+        aiLastProvider: providerId,
+        aiLastError: `Missing ${providerMeta.name} API key.`,
+        aiLastRequestAt: nowIso(),
+      })
+      throw new Error(`Missing ${providerMeta.name} API key.`)
+    }
+    const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const result = await requestAIText({
+        providerId,
+        provider,
+        providerMeta,
+        taskInstruction: `${AI_SYSTEM_INSTRUCTION}\n\n${AI_TASK_CONTRACTS[taskType]}`,
+        userContent,
+        promptCacheKey: set.id,
+        signal: controller.signal,
+      })
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: 'success',
+        aiLastProvider: providerId,
+        aiLastUsage: result.usage,
+        aiLastError: undefined,
+        aiLastRequestAt: nowIso(),
+      })
+      return result.responseText
+    } catch (error) {
+      const message = error instanceof Error && error.name === 'AbortError'
+        ? 'AI request timed out.'
+        : error instanceof Error
+          ? error.message
+          : 'AI request failed.'
+      showNotice(`${providerMeta.name}: ${message}`)
+      void saveUserSettings({
+        ...userSettings,
+        aiLastStatus: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'error',
+        aiLastProvider: providerId,
+        aiLastError: message,
+        aiLastRequestAt: nowIso(),
+      })
+      throw error
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+  }
+
+  const generateAIHint = async (atom: Atom) => {
+    if (!studyingFlashcardSet || aiHintRunningAtomId) return
+    setAiHintRunningAtomId(atom.id)
+    try {
+      const text = await requestSetAIText(
+        'flashcard_hint',
+        studyingFlashcardSet,
+        `Set: ${studyingFlashcardSet.name}\nTerm: ${atom.phrase}\nDefinition: ${atom.definition}`,
+      )
+      const hint = cleanAIDraftFormatting(sanitizeAIInsertText(text)).slice(0, 220)
+      const updatedSet = await flashcardSetsStore.cacheAIHint(studyingFlashcardSet.id, atom.id, hint, nowIso())
+      syncFlashcardSet(updatedSet)
+    } catch (error) {
+      console.error('Could not generate flashcard hint', error)
+    } finally {
+      setAiHintRunningAtomId(null)
+    }
+  }
+
+  const startQuizStudy = async (set: FlashcardSet) => {
+    const availableAtoms = set.atomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom))
+    if (!availableAtoms.length || quizGenerating || !quizSetupCanStart) return
+    beginStudySession(set.id, 'quiz')
+    setQuizAnswers({})
+    setQuizResult(null)
+    setQuizGenerating(true)
+    setAtomSubView('quiz')
+    try {
+      const generatedAt = nowIso()
+      const requestedQuestionCount = Math.min(10, Math.max(1, quizSetupOptions.questionCount), availableAtoms.length)
+      const quizAtoms = shuffleList(availableAtoms).slice(0, requestedQuestionCount)
+      const questionFormats = [
+        quizSetupOptions.includeTrueFalse ? 'true-false' : '',
+        quizSetupOptions.includeMultipleChoice ? 'multiple-choice' : '',
+        quizSetupOptions.includeMatching ? 'matching' : '',
+        quizSetupOptions.includeWritten ? 'short-answer' : '',
+      ].filter(Boolean)
+      const response = await requestSetAIText(
+        'flashcard_quiz',
+        set,
+        [
+          `Set: ${set.name}`,
+          set.description ? `Description: ${set.description}` : '',
+          `Question count: create exactly ${requestedQuestionCount} questions. Do not exceed 10 questions.`,
+          `Answer with: ${quizSetupOptions.answerWith}. If "term", prompt with definitions and expect terms. If "definition", prompt with terms and expect definitions. If "both", mix both directions.`,
+          `Question formats: ${questionFormats.join(', ')}`,
+          'Distribute questions across the selected formats. Only use the selected formats.',
+          'For multiple-choice questions, make the answer one of the choices exactly.',
+          'For true-false questions, use a boolean answer.',
+          'For matching questions, provide pairs with left and right text.',
+          'For short-answer questions, do not require typo checking; provide the expected answer and a simple self-check rubric.',
+          'Atoms:',
+          ...quizAtoms.map((atom) => `- ${atom.id}: ${atom.phrase} — ${atom.definition}`),
+        ].filter(Boolean).join('\n'),
+      )
+      const parsedQuiz = parseFlashcardQuizPayload(response, quizAtoms.map((atom) => atom.id), generatedAt)
+      const quiz = { ...parsedQuiz, questions: parsedQuiz.questions.slice(0, requestedQuestionCount) }
+      const updatedSet = await flashcardSetsStore.cacheQuiz(set.id, quiz)
+      syncFlashcardSet(updatedSet)
+    } catch (error) {
+      console.error('Could not generate quiz', error)
+      if (set.cachedQuiz) showNotice('Using the latest cached quiz.')
+      else setAtomSubView('set-open')
+    } finally {
+      setQuizGenerating(false)
+    }
+  }
+
+  const updateQuizAnswer = (questionId: string, patch: QuizAnswerState) => {
+    if (quizMarked) return
+    setQuizAnswers((current) => ({
+      ...current,
+      [questionId]: { ...(current[questionId] ?? {}), ...patch },
+    }))
+  }
+
+  const markQuiz = async () => {
+    if (!studyingFlashcardSet?.cachedQuiz || quizResult?.marking || !quizReadyToMark) return
+    const quiz = studyingFlashcardSet.cachedQuiz
+    const resultsByQuestionId: Record<string, QuizQuestionResult> = {}
+    setQuizResult({ resultsByQuestionId: {}, score: 0, total: quiz.questions.length, marking: true })
+    for (const question of quiz.questions) {
+      const answer = quizAnswers[question.id] ?? {}
+      if (question.type === 'multiple-choice') {
+        resultsByQuestionId[question.id] = { correct: answer.selectedChoice === question.answer }
+      } else if (question.type === 'true-false') {
+        resultsByQuestionId[question.id] = { correct: answer.trueFalseAnswer === question.answer }
+      } else if (question.type === 'matching') {
+        resultsByQuestionId[question.id] = {
+          correct: question.pairs.every((pair) => answer.matchingPairs?.[pair.left] === pair.right),
+        }
+      } else {
+        const shortAnswer = answer.shortAnswer?.trim() ?? ''
+        try {
+          const response = await requestSetAIText(
+            'flashcard_short_answer_mark',
+            studyingFlashcardSet,
+            `Question: ${question.prompt}\nExpected answer: ${question.expectedAnswer}\nRubric: ${question.rubric}\nStudent answer: ${shortAnswer}`,
+          )
+          const mark = parseFlashcardShortAnswerMark(response)
+          resultsByQuestionId[question.id] = { correct: mark.correct, score: mark.score, feedback: mark.feedback }
+        } catch (error) {
+          console.error('Could not mark short answer', error)
+          resultsByQuestionId[question.id] = { correct: false, score: 0, feedback: 'Could not mark this written answer.' }
+        }
+      }
+    }
+    const score = Object.values(resultsByQuestionId).filter((result) => result.correct).length
+    setQuizResult({ resultsByQuestionId, score, total: quiz.questions.length, marking: false })
+  }
+
+  const retakeQuiz = () => {
+    setQuizAnswers({})
+    setQuizResult(null)
+  }
+
+  const startNewQuizSetup = (set: FlashcardSet) => {
+    setQuizAnswers({})
+    setQuizResult(null)
+    openQuizSetup(set)
   }
 
   const deleteProject = async (projectId: string) => {
@@ -5937,16 +6423,25 @@ function App() {
                     aria-expanded={atomHeadingMenuOpen}
                     onClick={() => setAtomHeadingMenuOpen((open) => !open)}
                   >
-                    {atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}
+                    {isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}
                     <ChevronDown size={18} aria-hidden />
                   </button>
                   {atomHeadingMenuOpen && (
-                    <div className="atoms-title-menu" role="menu">
+                    <div
+                      className="atoms-title-menu"
+                      role="menu"
+                      data-highlight={atomHeadingHoverTarget ?? (isSetWorkspace(atomSubView) ? 'sets' : 'atoms')}
+                      onPointerLeave={() => setAtomHeadingHoverTarget(null)}
+                    >
+                      <span className="atoms-title-menu-highlight" aria-hidden />
                       <button
                         type="button"
                         role="menuitemradio"
                         aria-checked={atomSubView === 'atoms'}
                         className={atomSubView === 'atoms' ? 'is-active' : ''}
+                        onPointerEnter={() => setAtomHeadingHoverTarget('atoms')}
+                        onFocus={() => setAtomHeadingHoverTarget('atoms')}
+                        onBlur={() => setAtomHeadingHoverTarget(null)}
                         onClick={() => switchAtomWorkspace('atoms')}
                       >
                         <span>Atoms</span>
@@ -5955,8 +6450,11 @@ function App() {
                       <button
                         type="button"
                         role="menuitemradio"
-                        aria-checked={atomSubView !== 'atoms'}
-                        className={atomSubView !== 'atoms' ? 'is-active' : ''}
+                        aria-checked={isSetWorkspace(atomSubView)}
+                        className={isSetWorkspace(atomSubView) ? 'is-active' : ''}
+                        onPointerEnter={() => setAtomHeadingHoverTarget('sets')}
+                        onFocus={() => setAtomHeadingHoverTarget('sets')}
+                        onBlur={() => setAtomHeadingHoverTarget(null)}
                         onClick={() => switchAtomWorkspace('sets')}
                       >
                         <span>Sets</span>
@@ -6047,8 +6545,11 @@ function App() {
                       Create set
                     </button>
                   )}
-                  {(atomSubView === 'set-edit' || atomSubView === 'study') && (
-                    <button className="atoms-select-action" type="button" onClick={() => setAtomSubView('sets')}>
+                  {atomSubView === 'set-edit' && (
+                    <button className="atoms-select-action" type="button" onClick={() => {
+                      stopActiveStudySession()
+                      setAtomSubView('sets')
+                    }}>
                       <ArrowLeft size={15} />
                       Back to sets
                     </button>
@@ -6057,6 +6558,18 @@ function App() {
               }
             />
             <div className="atoms-page">
+              {(atomSubView === 'set-open' || atomSubView === 'study' || atomSubView === 'match' || atomSubView === 'quiz-setup' || atomSubView === 'quiz') && (
+                <div className="flashcard-back-row">
+                  <button type="button" onClick={() => {
+                    stopActiveStudySession()
+                    setAtomSubView('sets')
+                  }}>
+                    <ArrowLeft size={15} aria-hidden />
+                    Back to sets
+                  </button>
+                </div>
+              )}
+
               {atomSubView === 'atoms' && (
                 <VirtualGrid
                   className="atom-card-grid atom-card-grid--virtual"
@@ -6133,13 +6646,13 @@ function App() {
                           tabIndex={setAtoms.length ? 0 : -1}
                           aria-disabled={!setAtoms.length}
                           onClick={() => {
-                            if (setAtoms.length) void startFlashcardStudy(set)
+                            if (setAtoms.length) openFlashcardSet(set)
                           }}
                           onKeyDown={(event) => {
                             if (!setAtoms.length) return
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
-                              void startFlashcardStudy(set)
+                              openFlashcardSet(set)
                             }
                           }}
                         >
@@ -6150,6 +6663,7 @@ function App() {
                           <footer>
                             <span>{setAtoms.length} card{setAtoms.length === 1 ? '' : 's'}</span>
                             {set.lastStudiedAt && <span>Studied {formatDay(set.lastStudiedAt)}</span>}
+                            {Boolean(set.totalStudyMs) && <span>{formatDuration(set.totalStudyMs ?? 0)} studied</span>}
                             <span className="flashcard-set-actions">
                               <button
                                 type="button"
@@ -6159,6 +6673,15 @@ function App() {
                                 }}
                               >
                                 Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  void resetFlashcardSetStudyProgress(set)
+                                }}
+                              >
+                                Reset
                               </button>
                               <button
                                 type="button"
@@ -6305,12 +6828,195 @@ function App() {
                 </div>
               )}
 
+              {atomSubView === 'set-open' && studyingFlashcardSet && (
+                <div className="flashcard-set-open">
+                  <section className="flashcard-set-stats" aria-label="Set study stats">
+                    <div>
+                      <span>Cards</span>
+                      <strong>{studyingSetAtoms.length}</strong>
+                    </div>
+                    <div>
+                      <span>Last studied</span>
+                      <strong>{studyingFlashcardSet.lastStudiedAt ? formatDay(studyingFlashcardSet.lastStudiedAt) : 'Not yet'}</strong>
+                    </div>
+                    <div>
+                      <span>Total study</span>
+                      <strong>{formatDuration(studyingFlashcardSet.totalStudyMs ?? 0)}</strong>
+                    </div>
+                    <div>
+                      <span>Fastest match</span>
+                      <strong>{studyingFlashcardSet.matchBestMs ? formatTimer(studyingFlashcardSet.matchBestMs) : 'No time'}</strong>
+                    </div>
+                    <div>
+                      <span>Avg match</span>
+                      <strong>{matchAverageMs ? formatTimer(matchAverageMs) : 'No time'}</strong>
+                    </div>
+                    <button type="button" onClick={() => void resetFlashcardSetStudyProgress(studyingFlashcardSet)}>
+                      Reset study progress
+                    </button>
+                  </section>
+                  <div className="flashcard-mode-picker">
+                    <header>
+                      <span>Choose study mode</span>
+                      <h3>{studyingFlashcardSet.name}</h3>
+                      {studyingFlashcardSet.description?.trim() && <p>{studyingFlashcardSet.description.trim()}</p>}
+                    </header>
+                    <div className="flashcard-mode-grid">
+                      <button type="button" onClick={() => void startFlashcardStudy(studyingFlashcardSet)}>
+                        <Brain size={18} aria-hidden />
+                        <span>Flashcards</span>
+                        <small>Review due cards with Again, Hard, Good, Easy.</small>
+                      </button>
+                      <button type="button" onClick={() => startMatchStudy(studyingFlashcardSet)}>
+                        <Layers3 size={18} aria-hidden />
+                        <span>Match</span>
+                        <small>Pair terms with definitions in a shuffled board.</small>
+                      </button>
+                      <button type="button" onClick={() => openQuizSetup(studyingFlashcardSet)}>
+                        <Sparkles size={18} aria-hidden />
+                        <span>Quiz</span>
+                        <small>Set up a custom exam before AI generates it.</small>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {atomSubView === 'quiz-setup' && studyingFlashcardSet && (
+                <div className="flashcard-quiz-setup">
+                  <header>
+                    <span>{studyingFlashcardSet.name}</span>
+                    <h3>Set up your test</h3>
+                    <p>Choose the exam settings first. Loci will generate the quiz after you start.</p>
+                  </header>
+                  <section className="flashcard-quiz-setup-card">
+                    <div className="flashcard-quiz-setting-row">
+                      <div>
+                        <strong>Questions</strong>
+                        <small>(Max. 10)</small>
+                      </div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={quizSetupAvailableCount}
+                        value={quizSetupQuestionCount}
+                        onChange={(event) => {
+                          const nextCount = Number(event.target.value)
+                          setQuizSetupOptions((current) => ({
+                            ...current,
+                            questionCount: Math.min(quizSetupAvailableCount, Math.max(1, Number.isFinite(nextCount) ? nextCount : 1)),
+                          }))
+                        }}
+                      />
+                    </div>
+                    <div className="flashcard-quiz-setting-row">
+                      <strong>Answer with</strong>
+                      <div className="flashcard-quiz-answer-dropdown" ref={quizAnswerDropdownRef}>
+                        <button
+                          type="button"
+                          aria-haspopup="listbox"
+                          aria-expanded={quizAnswerMenuOpen}
+                          onClick={() => setQuizAnswerMenuOpen((open) => !open)}
+                        >
+                          <span>{formatQuizAnswerWith(quizSetupOptions.answerWith)}</span>
+                          <ChevronDown size={15} aria-hidden />
+                        </button>
+                        {quizAnswerMenuOpen && (
+                          <div className="flashcard-quiz-answer-menu" role="listbox" aria-label="Answer with">
+                            {(['term', 'definition', 'both'] as QuizAnswerWith[]).map((option) => (
+                              <button
+                                type="button"
+                                key={option}
+                                role="option"
+                                aria-selected={quizSetupOptions.answerWith === option}
+                                className={quizSetupOptions.answerWith === option ? 'is-active' : ''}
+                                onClick={() => {
+                                  setQuizSetupOptions((current) => ({ ...current, answerWith: option }))
+                                  setQuizAnswerMenuOpen(false)
+                                }}
+                              >
+                                {formatQuizAnswerWith(option)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                  <section className="flashcard-quiz-setup-card">
+                    <div className="flashcard-quiz-setup-heading">
+                      <div>
+                        <strong>Question Types</strong>
+                      </div>
+                      <small>Choose any mix.</small>
+                    </div>
+                    <div className="flashcard-quiz-toggle-list">
+                      <label>
+                        <span>
+                          <strong>True/False</strong>
+                          <small>Decide whether a statement is correct.</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={quizSetupOptions.includeTrueFalse}
+                          onChange={(event) => setQuizSetupOptions((current) => ({ ...current, includeTrueFalse: event.target.checked }))}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          <strong>Multiple choice</strong>
+                          <small>Pick from card-style options.</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={quizSetupOptions.includeMultipleChoice}
+                          onChange={(event) => setQuizSetupOptions((current) => ({ ...current, includeMultipleChoice: event.target.checked }))}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          <strong>Matching</strong>
+                          <small>Pair related terms and definitions.</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={quizSetupOptions.includeMatching}
+                          onChange={(event) => setQuizSetupOptions((current) => ({ ...current, includeMatching: event.target.checked }))}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          <strong>Written</strong>
+                          <small>Type your answer without typo checking.</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={quizSetupOptions.includeWritten}
+                          onChange={(event) => setQuizSetupOptions((current) => ({ ...current, includeWritten: event.target.checked }))}
+                        />
+                      </label>
+                    </div>
+                  </section>
+                  <div className="flashcard-study-controls">
+                    <button type="button" onClick={() => setAtomSubView('set-open')}>Back to modes</button>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={!quizSetupCanStart || quizGenerating}
+                      onClick={() => void startQuizStudy(studyingFlashcardSet)}
+                    >
+                      {quizGenerating ? 'Starting...' : 'Start quiz'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {atomSubView === 'study' && (
                 <div className="flashcard-study">
                   <header>
                     <div>
                       <span>{studyingFlashcardSet?.name ?? 'Study set'}</span>
-                      <h3>{studyRoundComplete ? 'Round complete' : studyAtoms.length ? `${studyIndex + 1} of ${studyAtoms.length}` : 'No cards to study'}</h3>
+                      <h3>{studyMode === 'flashcards' && studyRoundComplete ? 'Round complete' : studyAtoms.length ? `${studyIndex + 1} of ${studyAtoms.length}` : 'No cards to study'}</h3>
                     </div>
                     <div className="flashcard-study-options">
                       <button
@@ -6342,7 +7048,7 @@ function App() {
                     <div className="flashcard-study-progress" aria-label="Study progress">
                       <span>{studyAtoms.length} in round</span>
                       <span>{studyLearningCount} learning</span>
-                      <span>{studyKnownCount} known</span>
+                      <span>{studyKnownCount} scheduled</span>
                     </div>
                   )}
                   {activeStudyAtom ? (
@@ -6380,10 +7086,23 @@ function App() {
                           </div>
                         </div>
                       </button>
+                      <section className="flashcard-hint-panel">
+                        <button
+                          type="button"
+                          disabled={aiHintRunningAtomId === activeStudyAtom.id}
+                          onClick={() => void generateAIHint(activeStudyAtom)}
+                        >
+                          <Sparkles size={14} aria-hidden />
+                          {activeStudyHint ? 'Refresh AI hint' : aiHintRunningAtomId === activeStudyAtom.id ? 'Making hint...' : 'AI hint'}
+                        </button>
+                        {activeStudyHint && <p>{activeStudyHint}</p>}
+                      </section>
                       <div className="flashcard-study-controls">
                         <button type="button" aria-label="Previous card" onClick={() => moveStudyCard(-1)}>{'<'}</button>
-                        <button type="button" onClick={markStudyCardAgain}>Again</button>
-                        <button type="button" className="primary" onClick={markStudyCardKnown}>Know</button>
+                        <button type="button" onClick={() => void markStudyCard('again')}>Again</button>
+                        <button type="button" onClick={() => void markStudyCard('hard')}>Hard</button>
+                        <button type="button" className="primary" onClick={() => void markStudyCard('good')}>Good</button>
+                        <button type="button" onClick={() => void markStudyCard('easy')}>Easy</button>
                         <button type="button" aria-label="Next card" onClick={() => moveStudyCard(1)}>{'>'}</button>
                       </div>
                     </>
@@ -6392,15 +7111,225 @@ function App() {
                       <span>Session</span>
                       <h3>All cards known</h3>
                       <p>
-                        You cleared this round. Restart the set whenever you want another pass.
+                        You scheduled this round. Restart when you want another pass.
                       </p>
-                      <button type="button" onClick={restartStudyRound}>Restart round</button>
+                      <button type="button" onClick={() => void restartStudyRound()}>Restart round</button>
                     </section>
                   ) : (
                     <section className="flashcard-empty-state">
                       <h3>This set has no available cards</h3>
                       <p>Add atoms to the set before studying.</p>
                       {studyingFlashcardSet && <button type="button" onClick={() => openEditFlashcardSet(studyingFlashcardSet)}>Edit set</button>}
+                    </section>
+                  )}
+                </div>
+              )}
+
+              {atomSubView === 'match' && (
+                <div className="flashcard-study flashcard-match">
+                  <header>
+                    <div>
+                      <span>{studyingFlashcardSet?.name ?? 'Match set'}</span>
+                      <h3>{matchComplete ? 'Matched' : 'Match terms to definitions'}</h3>
+                    </div>
+                    <div className="flashcard-study-options">
+                      <button type="button" onClick={() => studyingFlashcardSet && startMatchStudy(studyingFlashcardSet)}>
+                        Restart
+                      </button>
+                    </div>
+                  </header>
+                  <div className="flashcard-study-progress" aria-label="Match progress">
+                    <span>{matchMatchedAtomIds.length} of {studyingSetAtoms.length} matched</span>
+                    <span>Time {formatTimer(studyElapsedMs)}</span>
+                    {Boolean(studyingFlashcardSet?.matchBestMs) && <span>Fastest {formatTimer(studyingFlashcardSet?.matchBestMs ?? 0)}</span>}
+                    {Boolean(matchAverageMs) && <span>Avg {formatTimer(matchAverageMs)}</span>}
+                    <span>{matchMistakes} mistake{matchMistakes === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="flashcard-match-board" aria-label="Match cards">
+                    {matchTiles.map((tile) => (
+                      <button
+                        type="button"
+                        key={tile.id}
+                        className={`${matchSelection?.id === tile.id ? 'is-selected' : ''} ${matchMatchedAtomIds.includes(tile.atomId) ? 'is-matched' : ''}`}
+                        onClick={() => chooseMatchTile(tile)}
+                      >
+                        <span>{tile.text}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {matchComplete && (
+                    <section className="flashcard-study-complete">
+                      <span>Session</span>
+                      <h3>All pairs matched</h3>
+                      <p>You matched every term in this set in {formatTimer(studyElapsedMs)}.</p>
+                      <button type="button" onClick={() => {
+                        void persistStudySession()
+                        if (studyingFlashcardSet) startMatchStudy(studyingFlashcardSet)
+                      }}>Play again</button>
+                    </section>
+                  )}
+                </div>
+              )}
+
+              {atomSubView === 'quiz' && (
+                <div className="flashcard-study flashcard-quiz">
+                  <header>
+                    <div>
+                      <span>{studyingFlashcardSet?.name ?? 'Quiz set'}</span>
+                      <h3>{quizGenerating ? 'Generating quiz' : quizMarked ? 'Quiz results' : 'AI quiz'}</h3>
+                    </div>
+                    <div className="flashcard-study-options">
+                      {studyingFlashcardSet && quizMarked && (
+                        <>
+                          <button type="button" onClick={retakeQuiz}>Retake same quiz</button>
+                          <button type="button" onClick={() => startNewQuizSetup(studyingFlashcardSet)}>New quiz</button>
+                        </>
+                      )}
+                    </div>
+                  </header>
+                  <div className="flashcard-study-progress" aria-label="Quiz progress">
+                    <span>{quizAnsweredCount} of {quizQuestionCount} answered</span>
+                    {activeQuiz && <span>Generated {formatDay(activeQuiz.generatedAt)}</span>}
+                    {quizMarked && quizResult && <span>Score {quizResult.score} of {quizResult.total}</span>}
+                  </div>
+                  {quizGenerating && (
+                    <section className="flashcard-empty-state">
+                      <Sparkles size={22} aria-hidden />
+                      <h3>Building a fresh quiz</h3>
+                      <p>Loci is using your setup choices across every card in this set.</p>
+                    </section>
+                  )}
+                  {!quizGenerating && activeQuiz && (
+                    <div className="flashcard-quiz-list">
+                      {quizResult?.marking && (
+                        <section className="flashcard-empty-state">
+                          <Sparkles size={22} aria-hidden />
+                          <h3>Marking quiz</h3>
+                          <p>Loci is checking your answers and preparing your score.</p>
+                        </section>
+                      )}
+                      {quizMarked && quizResult && (
+                        <section className="flashcard-quiz-result">
+                          <span>Score</span>
+                          <h3>{quizResult.score} / {quizResult.total}</h3>
+                          <p>{Math.round((quizResult.score / Math.max(1, quizResult.total)) * 100)}% correct</p>
+                          <div>
+                            <button type="button" onClick={retakeQuiz}>Retake same quiz</button>
+                            {studyingFlashcardSet && <button type="button" className="primary" onClick={() => startNewQuizSetup(studyingFlashcardSet)}>New quiz</button>}
+                          </div>
+                        </section>
+                      )}
+                      {activeQuiz.questions.map((question, index) => {
+                        const answer = quizAnswers[question.id] ?? {}
+                        const result = quizResult?.resultsByQuestionId[question.id]
+                        return (
+                          <section className={`flashcard-quiz-question ${quizMarked && result?.correct ? 'is-correct' : ''} ${quizMarked && result && !result.correct ? 'is-incorrect' : ''}`} key={question.id}>
+                            <span>Question {index + 1} · {formatQuizQuestionType(question.type)}</span>
+                            <h4>{question.prompt}</h4>
+                            {question.type === 'multiple-choice' ? (
+                              <>
+                                <div className="flashcard-quiz-choices">
+                                  {question.choices.map((choice, choiceIndex) => (
+                                    <button
+                                      type="button"
+                                      key={choice}
+                                      disabled={quizMarked}
+                                      className={`${answer.selectedChoice === choice ? 'is-selected' : ''} ${quizMarked && choice === question.answer ? 'is-correct-choice' : ''} ${quizMarked && answer.selectedChoice === choice && choice !== question.answer ? 'is-incorrect-choice' : ''}`}
+                                      onClick={() => updateQuizAnswer(question.id, { selectedChoice: choice })}
+                                    >
+                                      <span>{String.fromCharCode(65 + choiceIndex)}</span>
+                                      <strong>{choice}</strong>
+                                    </button>
+                                  ))}
+                                </div>
+                                {quizMarked && (
+                                  <p className={result?.correct ? 'is-correct' : 'is-incorrect'}>
+                                    Answer: {question.answer}. {question.explanation ?? ''}
+                                  </p>
+                                )}
+                              </>
+                            ) : question.type === 'true-false' ? (
+                              <>
+                                <div className="flashcard-quiz-choices flashcard-quiz-choices--boolean">
+                                  {[true, false].map((choice) => (
+                                    <button
+                                      type="button"
+                                      key={String(choice)}
+                                      disabled={quizMarked}
+                                      className={`${answer.trueFalseAnswer === choice ? 'is-selected' : ''} ${quizMarked && choice === question.answer ? 'is-correct-choice' : ''} ${quizMarked && answer.trueFalseAnswer === choice && choice !== question.answer ? 'is-incorrect-choice' : ''}`}
+                                      onClick={() => updateQuizAnswer(question.id, { trueFalseAnswer: choice })}
+                                    >
+                                      <strong>{choice ? 'True' : 'False'}</strong>
+                                    </button>
+                                  ))}
+                                </div>
+                                {quizMarked && (
+                                  <p className={result?.correct ? 'is-correct' : 'is-incorrect'}>
+                                    Answer: {question.answer ? 'True' : 'False'}. {question.explanation ?? ''}
+                                  </p>
+                                )}
+                              </>
+                            ) : question.type === 'matching' ? (
+                              <>
+                                <div className="flashcard-quiz-matching">
+                                  {question.pairs.map((pair) => (
+                                    <label key={pair.left}>
+                                      <span>{pair.left}</span>
+                                      <select
+                                        disabled={quizMarked}
+                                        value={answer.matchingPairs?.[pair.left] ?? ''}
+                                        onChange={(event) => updateQuizAnswer(question.id, {
+                                          matchingPairs: { ...(answer.matchingPairs ?? {}), [pair.left]: event.target.value },
+                                        })}
+                                      >
+                                        <option value="">Choose match</option>
+                                        {question.pairs.map((option) => <option key={option.right} value={option.right}>{option.right}</option>)}
+                                      </select>
+                                    </label>
+                                  ))}
+                                </div>
+                                {quizMarked && (
+                                  <p className={result?.correct ? 'is-correct' : 'is-incorrect'}>
+                                    Correct matches: {question.pairs.map((pair) => `${pair.left} -> ${pair.right}`).join('; ')}
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <textarea
+                                  value={answer.shortAnswer ?? ''}
+                                  disabled={quizMarked}
+                                  onChange={(event) => updateQuizAnswer(question.id, { shortAnswer: event.target.value })}
+                                  placeholder="Write your answer..."
+                                />
+                                {quizMarked && (
+                                  <p className={result?.correct ? 'is-correct' : 'is-incorrect'}>
+                                    Expected: {question.expectedAnswer}. {result?.feedback ?? question.rubric}
+                                  </p>
+                                )}
+                              </>
+                            )}
+                          </section>
+                        )
+                      })}
+                      {!quizMarked && (
+                        <div className="flashcard-study-controls">
+                          <button
+                            type="button"
+                            className="primary"
+                            disabled={!quizReadyToMark || quizResult?.marking}
+                            onClick={() => void markQuiz()}
+                          >
+                            {quizResult?.marking ? 'Marking...' : 'Mark quiz'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!quizGenerating && !activeQuiz && (
+                    <section className="flashcard-empty-state">
+                      <h3>No quiz generated yet</h3>
+                      <p>Generate a quiz once AI is configured in Settings.</p>
                     </section>
                   )}
                 </div>
@@ -7271,6 +8200,47 @@ function shuffleList<T>(items: T[]) {
     ;[shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]]
   }
   return shuffled
+}
+
+function formatQuizQuestionType(type: string) {
+  if (type === 'multiple-choice') return 'Multiple choice'
+  if (type === 'true-false') return 'True/False'
+  if (type === 'matching') return 'Matching'
+  return 'Written'
+}
+
+function normalizeFlashcardSet(set: FlashcardSet): FlashcardSet {
+  return {
+    ...set,
+    atomIds: set.atomIds ?? [],
+    totalStudyMs: Math.max(0, set.totalStudyMs ?? 0),
+    lastStudyDurationMs: Math.max(0, set.lastStudyDurationMs ?? 0),
+    studySessionCount: Math.max(0, set.studySessionCount ?? 0),
+    matchBestMs: Math.max(0, set.matchBestMs ?? 0),
+    matchTotalMs: Math.max(0, set.matchTotalMs ?? 0),
+    matchSessionCount: Math.max(0, set.matchSessionCount ?? 0),
+    aiHintsByAtomId: set.aiHintsByAtomId ?? {},
+  }
+}
+
+function formatTimer(ms: number) {
+  const totalSeconds = Math.floor(Math.max(0, ms) / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${hours}:${remainingMinutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+}
+
+function formatDuration(ms: number) {
+  const totalMinutes = Math.floor(Math.max(0, ms) / 60000)
+  if (totalMinutes < 1) return '0 min'
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (!hours) return `${minutes} min`
+  if (!minutes) return `${hours} hr`
+  return `${hours} hr ${minutes} min`
 }
 
 function initialsFromName(name: string) {

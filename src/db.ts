@@ -290,6 +290,66 @@ export type Atom = {
   isStarter?: boolean
 }
 
+export type StudyRating = 'again' | 'hard' | 'good' | 'easy'
+
+export type FlashcardAIHintCache = Record<string, {
+  hint: string
+  generatedAt: string
+}>
+
+export type FlashcardQuizChoiceQuestion = {
+  id: string
+  type: 'multiple-choice'
+  prompt: string
+  choices: string[]
+  answer: string
+  explanation?: string
+  atomIds: string[]
+}
+
+export type FlashcardQuizTrueFalseQuestion = {
+  id: string
+  type: 'true-false'
+  prompt: string
+  answer: boolean
+  explanation?: string
+  atomIds: string[]
+}
+
+export type FlashcardQuizMatchingPair = {
+  left: string
+  right: string
+}
+
+export type FlashcardQuizMatchingQuestion = {
+  id: string
+  type: 'matching'
+  prompt: string
+  pairs: FlashcardQuizMatchingPair[]
+  atomIds: string[]
+}
+
+export type FlashcardQuizShortAnswerQuestion = {
+  id: string
+  type: 'short-answer'
+  prompt: string
+  expectedAnswer: string
+  rubric: string
+  atomIds: string[]
+}
+
+export type FlashcardQuizQuestion =
+  | FlashcardQuizChoiceQuestion
+  | FlashcardQuizTrueFalseQuestion
+  | FlashcardQuizMatchingQuestion
+  | FlashcardQuizShortAnswerQuestion
+
+export type CachedFlashcardQuiz = {
+  id: string
+  generatedAt: string
+  questions: FlashcardQuizQuestion[]
+}
+
 export type FlashcardSet = {
   id: string
   name: string
@@ -298,6 +358,28 @@ export type FlashcardSet = {
   createdAt: string
   updatedAt: string
   lastStudiedAt?: string
+  totalStudyMs?: number
+  lastStudyDurationMs?: number
+  studySessionCount?: number
+  matchBestMs?: number
+  matchTotalMs?: number
+  matchSessionCount?: number
+  aiHintsByAtomId?: FlashcardAIHintCache
+  cachedQuiz?: CachedFlashcardQuiz
+}
+
+export type FlashcardReviewState = {
+  id: string
+  setId: string
+  atomId: string
+  dueAt: string
+  intervalDays: number
+  easeFactor: number
+  reviewCount: number
+  lapseCount: number
+  lastRating?: StudyRating
+  createdAt: string
+  updatedAt: string
 }
 
 export type NoteTemplateId = 'blank' | 'report' | 'planner' | 'slideshow'
@@ -455,6 +537,7 @@ class LociNotesDatabase extends Dexie {
   noteSnapshots!: Dexie.Table<NoteSnapshot, string>
   userProfiles!: Dexie.Table<UserProfile, string>
   userSettings!: Dexie.Table<UserSettings, string>
+  flashcardReviewStates!: Dexie.Table<FlashcardReviewState, string>
   authSessions!: Dexie.Table<AuthSession, string>
   accountProfiles!: Dexie.Table<AccountProfile, string>
   friendships!: Dexie.Table<Friendship, string>
@@ -764,6 +847,35 @@ class LociNotesDatabase extends Dexie {
       mediaAssets: 'id, noteId, kind, updatedAt',
       atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
       flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
+    })
+    this.version(17).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      flashcardReviewStates: 'id, setId, atomId, [setId+atomId], dueAt, updatedAt',
       projects: 'id, name',
       noteSnapshots: 'id, noteId, savedAt',
       userProfiles: 'id',

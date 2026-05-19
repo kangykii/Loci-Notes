@@ -10,10 +10,11 @@ export const atomsStore = {
   saveMany: (atoms: Atom[]) => db.atoms.bulkPut(atoms),
 
   deleteManyAndUnlink: (atomIds: string[], touchedNotes: Note[], updatedSets: FlashcardSet[]) => {
-    const tables = [db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.flashcardSets] as unknown as Table<unknown, string>[]
+    const tables = [db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.flashcardSets, db.flashcardReviewStates] as unknown as Table<unknown, string>[]
     const notesTable = db.notes as unknown as { bulkPut(items: Note[]): Promise<unknown> }
     return db.transaction('rw', tables, async () => {
       await db.atoms.bulkDelete(atomIds)
+      await Promise.all(atomIds.map((atomId) => db.flashcardReviewStates.where('atomId').equals(atomId).delete()))
       if (touchedNotes.length) {
         await notesTable.bulkPut(touchedNotes)
         await db.noteMetas.bulkPut(touchedNotes.map(noteToMeta))
