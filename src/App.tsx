@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, SyntheticEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent } from 'react'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -15,6 +15,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowLeft,
   ArrowRight,
+  Atom as AtomIcon,
   Brain,
   ChevronDown,
   ChevronRight,
@@ -31,8 +32,10 @@ import {
   ListTodo,
   Layers3,
   LinkIcon,
-  PanelLeftClose,
-  PanelLeftOpen,
+  Maximize2,
+  Minimize2,
+  MoreVertical,
+  Pin,
   Plus,
   RemoveFormatting,
   Search,
@@ -46,6 +49,7 @@ import {
   X,
 } from 'lucide-react'
 import { AtomMark } from './AtomMark'
+import { AuthorshipMark } from './AuthorshipMark'
 import {
   appendNoteSnapshot,
   createId,
@@ -315,6 +319,9 @@ type LociWorkerResponse =
 
 const PROJECT_QUICK_NAV_ROW_HEIGHT = 37
 const PROJECT_QUICK_NAV_MAX_HEIGHT = 240
+const APP_FULLSCREEN_STORAGE_KEY = 'loci-notes:app-fullscreen'
+const SIDEBAR_FLICK_THRESHOLD = 72
+const SIDEBAR_FLICK_COOLDOWN_MS = 380
 
 type EditorPanel = 'format' | 'more'
 
@@ -347,6 +354,13 @@ type BlockDropIntent = {
 type FormatSideControlsRect = {
   blockId: string
   type: FormatBlockType
+  top: number
+  left: number
+}
+
+type AuthorshipMenuState = {
+  from: number
+  to: number
   top: number
   left: number
 }
@@ -389,7 +403,7 @@ type AppDialog =
       onConfirm: (value: string, secondaryValue?: string) => void | Promise<void>
     }
 
-const HIGHLIGHTER_COLORS = ['#fff1a8', '#dff4cc', '#d9ecff', '#ffe3d2', '#eadfff'] as const
+const HIGHLIGHTER_COLORS = ['rgba(62, 50, 32, 0.18)', 'rgba(46, 52, 64, 0.14)', 'rgba(26, 26, 26, 0.1)', 'rgba(244, 244, 242, 0.82)'] as const
 const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0]
 
 function defaultUserSettings(): UserSettings {
@@ -697,10 +711,57 @@ const NOTE_SAVE_DEBOUNCE_MS = 150
 const NOTICE_TOAST_MS = 4000
 const OPTIMISTIC_UNDO_MS = 6000
 
-const DEFAULT_PROFILE_COLOR = '#4c4439'
+const DEFAULT_PROFILE_COLOR = '#2E3440'
 const BAD_PROFILE_DISPLAY_NAME = 'Your nMae'
 
-const PROFILE_COLORS = ['#4c4439', '#111111', '#5d6b52', '#6c5a7c', '#8a5a44', '#3f6673']
+const PROFILE_COLORS = ['#2E3440', '#1A1A1A', '#3E3220', '#F4F4F2', '#5A5260', '#7F7981']
+const RECENT_PROJECT_NOTE_LIMIT = 5
+const PROJECT_ACCENT_FALLBACKS = ['#2E3440', '#3E3220', '#4C6B5E', '#7A5C3F', '#635B75', '#8A4B52', '#49677A']
+const PROJECT_COLORS = ['#2E3440', '#3E3220', '#4C6B5E', '#7A5C3F', '#635B75', '#8A4B52', '#49677A', '#6D6A52']
+
+type ProjectCardSummary = {
+  project: Project
+  notes: Note[]
+  recentNotes: Note[]
+  latestActivityAt: number
+}
+
+function hashString(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash)
+}
+
+function projectDisplayColor(project: Project) {
+  const color = project.color?.trim()
+  if (color && color.toLowerCase() !== '#1a1a1a') return color
+  return PROJECT_ACCENT_FALLBACKS[hashString(`${project.id}:${project.name}`) % PROJECT_ACCENT_FALLBACKS.length]
+}
+
+function hexToRgb(hex: string) {
+  const normalized = hex.trim().replace('#', '')
+  const value = normalized.length === 3
+    ? normalized.split('').map((char) => `${char}${char}`).join('')
+    : normalized
+  if (!/^[0-9a-fA-F]{6}$/.test(value)) return null
+  return {
+    r: parseInt(value.slice(0, 2), 16),
+    g: parseInt(value.slice(2, 4), 16),
+    b: parseInt(value.slice(4, 6), 16),
+  }
+}
+
+function hexToRgba(hex: string, alpha: number) {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return `rgba(46, 52, 64, ${alpha})`
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`
+}
+
+function avatarTextColor(backgroundColor: string) {
+  return backgroundColor.toLowerCase() === '#f4f4f2' ? '#1A1A1A' : '#F4F4F2'
+}
 
 type ProfileDraft = {
   displayName: string
@@ -738,6 +799,8 @@ type SidebarProps = {
   onOpenProjectsRoot: () => void
   onRenameNote: (noteId: string, title: string) => void
   onSetActiveView: (view: View) => void
+  fullscreenActive: boolean
+  onToggleFullscreen: () => void
 }
 
 const Sidebar = memo(function Sidebar({
@@ -763,72 +826,11 @@ const Sidebar = memo(function Sidebar({
   onOpenProjectsRoot,
   onRenameNote,
   onSetActiveView,
+  fullscreenActive,
+  onToggleFullscreen,
 }: SidebarProps) {
-  const [sidebarPinned, setSidebarPinned] = useState(false)
-  const [sidebarHovered, setSidebarHovered] = useState(false)
   const [editingNoteId, setEditingNoteId] = useState('')
   const [editingNoteTitle, setEditingNoteTitle] = useState('')
-  const sidebarOpenTimerRef = useRef<number | null>(null)
-  const sidebarCloseTimerRef = useRef<number | null>(null)
-
-  const clearSidebarOpenTimer = useCallback(() => {
-    if (!sidebarOpenTimerRef.current) return
-    clearTimeout(sidebarOpenTimerRef.current)
-    sidebarOpenTimerRef.current = null
-  }, [])
-
-  const clearSidebarCloseTimer = useCallback(() => {
-    if (!sidebarCloseTimerRef.current) return
-    clearTimeout(sidebarCloseTimerRef.current)
-    sidebarCloseTimerRef.current = null
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      clearSidebarOpenTimer()
-      clearSidebarCloseTimer()
-    }
-  }, [clearSidebarCloseTimer, clearSidebarOpenTimer])
-
-  const handleSidebarPointerEnter = () => {
-    clearSidebarCloseTimer()
-    if (sidebarPinned || sidebarHovered || sidebarOpenTimerRef.current) return
-    sidebarOpenTimerRef.current = window.setTimeout(() => {
-      sidebarOpenTimerRef.current = null
-      setSidebarHovered(true)
-    }, 40)
-  }
-
-  const handleSidebarPointerLeave = () => {
-    clearSidebarOpenTimer()
-    if (sidebarPinned || sidebarCloseTimerRef.current) return
-    sidebarCloseTimerRef.current = window.setTimeout(() => {
-      sidebarCloseTimerRef.current = null
-      setSidebarHovered(false)
-    }, 180)
-  }
-
-  const toggleSidebarPinned = () => {
-    clearSidebarOpenTimer()
-    clearSidebarCloseTimer()
-    setSidebarPinned((value) => !value)
-  }
-
-  const collapseSidebarIfUnpinned = () => {
-    if (sidebarPinned) return
-    clearSidebarOpenTimer()
-    clearSidebarCloseTimer()
-    setSidebarHovered(false)
-  }
-
-  const sidebarOpen = sidebarPinned || sidebarHovered
-  const sidebarClassName = [
-    'sidebar',
-    sidebarOpen ? 'is-open' : 'is-collapsed',
-    sidebarPinned ? 'is-pinned' : '',
-  ]
-    .filter(Boolean)
-    .join(' ')
   const projectQuickNavHeight = Math.min(projectQuickNotes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
   const projectQuickNavStyle = {
     '--project-quick-nav-height': `${projectQuickNavHeight}px`,
@@ -847,15 +849,10 @@ const Sidebar = memo(function Sidebar({
   }
 
   return (
-    <aside
-      className={sidebarClassName}
-      onPointerEnter={handleSidebarPointerEnter}
-      onPointerLeave={handleSidebarPointerLeave}
-    >
-      <div className="sidebar-actions">
+    <aside className="sidebar">
+      <div className="sidebar-section sidebar-actions">
         <button className="nav-action" type="button" onClick={() => {
           onOpenSearch()
-          collapseSidebarIfUnpinned()
         }}>
           <Search size={18} />
           <span className="nav-label">Search</span>
@@ -863,33 +860,24 @@ const Sidebar = memo(function Sidebar({
 
         <button className="nav-action" type="button" onClick={() => {
           onNewNote()
-          collapseSidebarIfUnpinned()
         }}>
           <Plus size={18} />
           <span className="nav-label">New Note</span>
         </button>
       </div>
 
-      <nav className="primary-nav" aria-label="Primary">
+      <nav className="sidebar-section primary-nav" aria-label="Primary">
+        <span className="sidebar-section-label">Navigation</span>
         <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => {
           onSetActiveView('home')
-          collapseSidebarIfUnpinned()
         }}>
           <Home size={18} />
           <span className="nav-label">Home</span>
         </button>
-        <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => {
-          onSetActiveView('community')
-          collapseSidebarIfUnpinned()
-        }}>
-          <Users size={18} />
-          <span className="nav-label">Community</span>
-        </button>
         <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => {
           onSetActiveView('atoms')
-          collapseSidebarIfUnpinned()
         }}>
-          <Brain size={18} />
+          <AtomIcon size={18} />
           <span className="nav-label">{atomSubView === 'sets' || atomSubView === 'set-edit' || atomSubView === 'study' ? 'Sets' : 'Atoms'}</span>
         </button>
         <button
@@ -900,18 +888,17 @@ const Sidebar = memo(function Sidebar({
           onDragLeave={() => onDragLeaveProject(UNASSIGNED_PROJECT_ID)}
           onDrop={(event) => onAssignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
           onClick={() => {
-            onSetActiveView('projects')
-            collapseSidebarIfUnpinned()
-          }}
-          onDoubleClick={() => {
             onOpenProjectsRoot()
-            collapseSidebarIfUnpinned()
           }}
         >
           <Layers3 size={18} />
-          <span className="nav-label">{activeProject?.name ?? 'Projects'}</span>
+          <span className="nav-label">Projects</span>
         </button>
-        {sidebarOpen && activeProject && projectQuickNotes.length > 0 && (
+      </nav>
+
+      {activeProject && projectQuickNotes.length > 0 && (
+        <div className="sidebar-section sidebar-project-section">
+          <span className="sidebar-section-label">{activeProject.name}</span>
           <VirtualList
             className="project-quick-nav scroll-hover"
             style={projectQuickNavStyle}
@@ -923,7 +910,6 @@ const Sidebar = memo(function Sidebar({
               <div className={`quick-note-row ${note.id === activeNoteId ? 'is-active' : ''}`}>
                 <button type="button" onClick={() => {
                   onOpenNote(note.id)
-                  collapseSidebarIfUnpinned()
                 }}>
                   {editingNoteId === note.id ? (
                     <input
@@ -966,29 +952,36 @@ const Sidebar = memo(function Sidebar({
               </div>
             )}
           />
-        )}
-      </nav>
+        </div>
+      )}
 
       <div className="sidebar-bottom">
-        <button className="profile-row" type="button" onClick={onOpenProfile} aria-label="Open profile">
-          <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
-          <div className="profile-text">
-            <strong>{profileDisplayName}</strong>
-            <span>{profileHandleLabel}</span>
-          </div>
-        </button>
-
-        <div className="sidebar-bottom-controls">
-          <button
-            className="sidebar-pin"
-            type="button"
-            aria-label={sidebarPinned ? 'Collapse sidebar' : 'Pin sidebar open'}
-            aria-pressed={sidebarPinned}
-            onClick={toggleSidebarPinned}
-          >
-            {sidebarPinned ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        <nav className="sidebar-section secondary-nav" aria-label="Community">
+          <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
+            <Users size={18} />
+            <span className="nav-label">Community</span>
           </button>
-          {sidebarOpen && (
+        </nav>
+
+        <div className="sidebar-section sidebar-profile-section">
+          <button className="profile-row" type="button" onClick={onOpenProfile} aria-label="Open profile">
+            <div className="avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>
+            <div className="profile-text">
+              <strong>{profileDisplayName}</strong>
+              <span>{profileHandleLabel}</span>
+            </div>
+          </button>
+
+          <div className="sidebar-bottom-controls">
+            <button
+              className="sidebar-fullscreen"
+              type="button"
+              aria-label={fullscreenActive ? 'Exit fullscreen layout' : 'Enter fullscreen layout'}
+              aria-pressed={fullscreenActive}
+              onClick={onToggleFullscreen}
+            >
+              {fullscreenActive ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
             <button
               className={`sidebar-settings ${activeView === 'settings' ? 'active' : ''}`}
               type="button"
@@ -996,9 +989,9 @@ const Sidebar = memo(function Sidebar({
               onClick={() => onSetActiveView('settings')}
             >
               <Settings size={18} />
-              <span>Settings</span>
+              <span className="nav-label">Settings</span>
             </button>
-          )}
+          </div>
         </div>
       </div>
     </aside>
@@ -1031,6 +1024,12 @@ function App() {
   })
   const [selectedNoteId, setSelectedNoteId] = useState('')
   const [activeView, setActiveView] = useState<View>('home')
+  const [appFullscreen, setAppFullscreen] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(APP_FULLSCREEN_STORAGE_KEY) === 'true'
+  })
+  const [appImmersiveFullscreen, setAppImmersiveFullscreen] = useState(false)
+  const [sidebarRevealAnimating, setSidebarRevealAnimating] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [flippedAtomIds, setFlippedAtomIds] = useState<string[]>([])
   const [atomSelectionMode, setAtomSelectionMode] = useState(false)
@@ -1057,8 +1056,12 @@ function App() {
   const [atomSearchQuery, setAtomSearchQuery] = useState('')
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
+  const [openProjectMenuId, setOpenProjectMenuId] = useState('')
+  const [openLooseNoteMenuId, setOpenLooseNoteMenuId] = useState('')
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [editorFocusMode, setEditorFocusMode] = useState(false)
+  const [editorFocusModeVisual, setEditorFocusModeVisual] = useState(false)
+  const [editorAuthenticWriterMode, setEditorAuthenticWriterMode] = useState(false)
   const [editorCityMarginaliaOpacity, setEditorCityMarginaliaOpacity] = useState(1)
   const { imageLoadStates, ensureImageLoaded } = useImageLoadCoordinator()
   const [, setSaving] = useState(false)
@@ -1087,6 +1090,7 @@ function App() {
   const [blockPicker, setBlockPicker] = useState<BlockPickerState>({ open: false, blockId: '', placement: 'after', query: '' })
   const [draggedBlockId, setDraggedBlockId] = useState('')
   const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
+  const [authorshipMenu, setAuthorshipMenu] = useState<AuthorshipMenuState | null>(null)
   const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
   const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
   const [imageCropEditing, setImageCropEditing] = useState(false)
@@ -1129,7 +1133,13 @@ function App() {
   const lastPaintedHighlightRangeRef = useRef('')
   const documentScrollRef = useRef<HTMLElement | null>(null)
   const homeScrollRef = useRef<HTMLElement | null>(null)
+  const appShellRef = useRef<HTMLElement | null>(null)
   const previousViewRef = useRef<View>('home')
+  const sidebarFlickAtRef = useRef(0)
+  const sidebarRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sidebarRevealCleanupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const floatingToolbarFrameRef = useRef<number | null>(null)
+  const floatingToolbarDeferredMeasureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
@@ -1139,6 +1149,8 @@ function App() {
   const noteSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const atomSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editorFocusModeVisualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editorFocusModeVisualFrameRef = useRef<number | null>(null)
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const formatSideFrameRef = useRef<number | null>(null)
@@ -1242,6 +1254,25 @@ function App() {
       .filter((note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId))
       .sort(sortByUpdated)
   }, [notes, projects])
+  const projectCards = useMemo<ProjectCardSummary[]>(() => {
+    return projects
+      .map((project) => {
+        const projectNotes = [...(noteIndexes.notesByProjectId.get(project.id) ?? [])].sort(sortByUpdated)
+        const latestActivityAt = projectNotes[0] ? new Date(projectNotes[0].updatedAt).getTime() : 0
+        return {
+          project,
+          notes: projectNotes,
+          recentNotes: projectNotes.slice(0, RECENT_PROJECT_NOTE_LIMIT),
+          latestActivityAt,
+        }
+      })
+      .sort((a, b) => {
+        const aPinnedAt = a.project.pinnedAt ? new Date(a.project.pinnedAt).getTime() : 0
+        const bPinnedAt = b.project.pinnedAt ? new Date(b.project.pinnedAt).getTime() : 0
+        if (aPinnedAt || bPinnedAt) return bPinnedAt - aPinnedAt || a.project.name.localeCompare(b.project.name)
+        return b.latestActivityAt - a.latestActivityAt || a.project.name.localeCompare(b.project.name)
+      })
+  }, [noteIndexes, projects])
 
   useEffect(() => {
     notesRef.current = notes
@@ -1254,6 +1285,27 @@ function App() {
   useEffect(() => {
     selectedNoteIdRef.current = selectedNoteId
   }, [selectedNoteId])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(APP_FULLSCREEN_STORAGE_KEY, String(appFullscreen))
+    } catch {
+      // Ignore storage failures; fullscreen still works for the current session.
+    }
+  }, [appFullscreen])
+
+  useEffect(() => {
+    if (!appFullscreen) setAppImmersiveFullscreen(false)
+  }, [appFullscreen])
+
+  useEffect(() => {
+    return () => {
+      if (sidebarRevealTimeoutRef.current) clearTimeout(sidebarRevealTimeoutRef.current)
+      if (sidebarRevealCleanupTimeoutRef.current) clearTimeout(sidebarRevealCleanupTimeoutRef.current)
+      if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
+      if (floatingToolbarFrameRef.current) cancelAnimationFrame(floatingToolbarFrameRef.current)
+    }
+  }, [])
 
   const runWorkerJob = useCallback(<T extends LociWorkerResponse>(message: LociWorkerJob): Promise<T> | null => {
     const worker = lociWorkerRef.current
@@ -1790,7 +1842,7 @@ function App() {
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ link: false }),
+      StarterKit.configure({ link: false, dropcursor: false }),
       TextStyle,
       Highlight.configure({ multicolor: true }),
       Link.configure({
@@ -1807,6 +1859,7 @@ function App() {
       LociFlashcard,
       LociQuote,
       AtomMark,
+      AuthorshipMark,
       ActiveBlockHighlight,
       AISelectionHighlight,
       TabIndent,
@@ -2045,6 +2098,30 @@ function App() {
   }, [activeEditorPanel])
 
   useEffect(() => {
+    if (!authorshipMenu) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target.closest('.authorship-popover') : null
+      if (target) return
+      setAuthorshipMenu(null)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    return () => document.removeEventListener('mousedown', closeOnOutsidePointer)
+  }, [authorshipMenu])
+
+  useEffect(() => {
+    if (!editor) return
+    const closeWhenSelectionClears = () => {
+      if (editor.state.selection.empty) setAuthorshipMenu(null)
+    }
+    editor.on('selectionUpdate', closeWhenSelectionClears)
+    editor.on('transaction', closeWhenSelectionClears)
+    return () => {
+      editor.off('selectionUpdate', closeWhenSelectionClears)
+      editor.off('transaction', closeWhenSelectionClears)
+    }
+  }, [editor])
+
+  useEffect(() => {
     if (activeEditorPanel !== 'format') return
     setFormatDialogQuery('')
     queueMicrotask(() => {
@@ -2086,6 +2163,42 @@ function App() {
       document.removeEventListener('keydown', closeOnEscape)
     }
   }, [atomProjectMenuOpen])
+
+  useEffect(() => {
+    if (!openProjectMenuId) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.project-card-menu')) return
+      setOpenProjectMenuId('')
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenProjectMenuId('')
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [openProjectMenuId])
+
+  useEffect(() => {
+    if (!openLooseNoteMenuId) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.project-loose-note-menu')) return
+      setOpenLooseNoteMenuId('')
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenLooseNoteMenuId('')
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [openLooseNoteMenuId])
 
   useEffect(() => {
     if (!flashcardSetTitleEditing) return
@@ -3262,11 +3375,132 @@ function App() {
     setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
   }, [measureGutterBlockControls])
 
+  const updateFloatingToolbarPosition = useCallback(() => {
+    const wrap = floatingEditorWrapRef.current
+    if (!wrap) return
+    if (activeView !== 'editor') {
+      wrap.style.removeProperty('--floating-toolbar-center-x')
+      wrap.style.removeProperty('--floating-toolbar-max-width')
+      return
+    }
+
+    const noteCard = document.querySelector<HTMLElement>('.document-card')
+    if (!noteCard) return
+
+    const rect = noteCard.getBoundingClientRect()
+    const viewportPadding = window.matchMedia('(max-width: 760px)').matches ? 14 : 24
+    const centerX = rect.left + rect.width / 2
+    const clampedCenterX = Math.min(window.innerWidth - viewportPadding, Math.max(viewportPadding, centerX))
+    const maxWidth = Math.max(
+      260,
+      Math.min(
+        940,
+        rect.width - 24,
+        window.innerWidth - viewportPadding * 2,
+      ),
+    )
+
+    wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
+    wrap.style.setProperty('--floating-toolbar-max-width', `${maxWidth}px`)
+  }, [activeView])
+
+  const scheduleFloatingToolbarPosition = useCallback(() => {
+    if (floatingToolbarFrameRef.current) return
+    floatingToolbarFrameRef.current = requestAnimationFrame(() => {
+      floatingToolbarFrameRef.current = null
+      updateFloatingToolbarPosition()
+    })
+  }, [updateFloatingToolbarPosition])
+
+  const queueFloatingToolbarRemeasure = useCallback((delayMs = 0) => {
+    scheduleFloatingToolbarPosition()
+    if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
+    floatingToolbarDeferredMeasureRef.current = setTimeout(() => {
+      floatingToolbarDeferredMeasureRef.current = null
+      scheduleFloatingToolbarPosition()
+    }, delayMs)
+  }, [scheduleFloatingToolbarPosition])
+
   const { markActiveEditorBlock } = useFocusModePlugin({
     editor,
     isFocusMode: editorFocusMode && activeView === 'editor',
     scrollContainerRef: documentScrollRef,
   })
+
+  useEffect(() => {
+    if (editorFocusModeVisualTimerRef.current) {
+      clearTimeout(editorFocusModeVisualTimerRef.current)
+      editorFocusModeVisualTimerRef.current = null
+    }
+    if (editorFocusModeVisualFrameRef.current) {
+      cancelAnimationFrame(editorFocusModeVisualFrameRef.current)
+      editorFocusModeVisualFrameRef.current = null
+    }
+
+    if (editorFocusMode && activeView === 'editor') {
+      setEditorFocusModeVisual(false)
+      markActiveEditorBlock()
+      const scrollContainer = documentScrollRef.current
+      if (!scrollContainer) {
+        editorFocusModeVisualTimerRef.current = setTimeout(() => {
+          editorFocusModeVisualTimerRef.current = null
+          setEditorFocusModeVisual(true)
+        }, 320)
+        return () => {
+          if (editorFocusModeVisualTimerRef.current) {
+            clearTimeout(editorFocusModeVisualTimerRef.current)
+            editorFocusModeVisualTimerRef.current = null
+          }
+        }
+      }
+
+      const startedAt = performance.now()
+      let lastScrollTop = scrollContainer.scrollTop
+      let stableFrames = 0
+      const revealWhenScrollSettles = (timestamp: number) => {
+        const currentScrollTop = scrollContainer.scrollTop
+        const moved = Math.abs(currentScrollTop - lastScrollTop) > 0.5
+        stableFrames = moved ? 0 : stableFrames + 1
+        lastScrollTop = currentScrollTop
+
+        const elapsed = timestamp - startedAt
+        if ((elapsed >= 340 && stableFrames >= 6) || elapsed >= 1100) {
+          editorFocusModeVisualFrameRef.current = null
+          setEditorFocusModeVisual(true)
+          return
+        }
+
+        editorFocusModeVisualFrameRef.current = requestAnimationFrame(revealWhenScrollSettles)
+      }
+
+      editorFocusModeVisualFrameRef.current = requestAnimationFrame(revealWhenScrollSettles)
+      return () => {
+        if (editorFocusModeVisualFrameRef.current) {
+          cancelAnimationFrame(editorFocusModeVisualFrameRef.current)
+          editorFocusModeVisualFrameRef.current = null
+        }
+        if (editorFocusModeVisualTimerRef.current) {
+          clearTimeout(editorFocusModeVisualTimerRef.current)
+          editorFocusModeVisualTimerRef.current = null
+        }
+      }
+    }
+
+    editorFocusModeVisualTimerRef.current = setTimeout(() => {
+      editorFocusModeVisualTimerRef.current = null
+      setEditorFocusModeVisual(false)
+    }, 40)
+    return () => {
+      if (editorFocusModeVisualTimerRef.current) {
+        clearTimeout(editorFocusModeVisualTimerRef.current)
+        editorFocusModeVisualTimerRef.current = null
+      }
+      if (editorFocusModeVisualFrameRef.current) {
+        cancelAnimationFrame(editorFocusModeVisualFrameRef.current)
+        editorFocusModeVisualFrameRef.current = null
+      }
+    }
+  }, [activeView, editorFocusMode, markActiveEditorBlock])
 
   const scheduleFormatSideControls = useCallback(() => {
     if (formatSideFrameRef.current) return
@@ -3292,12 +3526,14 @@ function App() {
       if (activeView !== 'editor' || !blockEditorShellRef.current || !mountedEditorDom(editor)) return
       syncFormatSideControls()
       measureBlockControls()
+      updateFloatingToolbarPosition()
     })
-  }, [activeView, editor, measureBlockControls, syncFormatSideControls])
+  }, [activeView, editor, measureBlockControls, syncFormatSideControls, updateFloatingToolbarPosition])
 
   useLayoutEffect(() => {
     measureBlockControls()
-  }, [measureBlockControls])
+    scheduleFloatingToolbarPosition()
+  }, [measureBlockControls, scheduleFloatingToolbarPosition])
 
   useEffect(() => {
     if (!editor) return
@@ -3312,6 +3548,7 @@ function App() {
     window.addEventListener('resize', scheduleEditorResizeMeasurements)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
+    documentScrollRef.current?.addEventListener('scroll', scheduleFloatingToolbarPosition)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
       editor.off('selectionUpdate', markActiveEditorBlock)
@@ -3321,17 +3558,23 @@ function App() {
       window.removeEventListener('resize', scheduleEditorResizeMeasurements)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
+      documentScrollRef.current?.removeEventListener('scroll', scheduleFloatingToolbarPosition)
       if (editorResizeFrameRef.current) {
         cancelAnimationFrame(editorResizeFrameRef.current)
         editorResizeFrameRef.current = null
       }
     }
-  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFloatingToolbarPosition, scheduleFormatSideControls, syncFormatSideControls])
 
   useEffect(() => {
     markActiveEditorBlock()
     scheduleEditorResizeMeasurements()
-  }, [editorFocusMode, markActiveEditorBlock, scheduleEditorResizeMeasurements])
+    queueFloatingToolbarRemeasure(180)
+  }, [editorFocusMode, markActiveEditorBlock, queueFloatingToolbarRemeasure, scheduleEditorResizeMeasurements])
+
+  useEffect(() => {
+    queueFloatingToolbarRemeasure(220)
+  }, [activeView, appFullscreen, appImmersiveFullscreen, queueFloatingToolbarRemeasure, selectedNoteId, sidebarRevealAnimating])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
@@ -3532,7 +3775,9 @@ function App() {
     if (!imageCropDragRef.current) syncHoveredBlockControl(event)
   }
 
-  const handleBlockEditorPointerLeave = () => {
+  const handleBlockEditorPointerLeave = (event: React.PointerEvent<HTMLElement>) => {
+    const nextTarget = event.relatedTarget
+    if (nextTarget instanceof Element && nextTarget.closest('.block-controls-layer, [data-block-id]')) return
     if (!imageCropDragRef.current) setHoveredBlockControlId('')
   }
 
@@ -3650,36 +3895,43 @@ function App() {
     )
   }
 
-  const getDropPlacement = (clientY: number, target: BlockDropTarget): DropPlacement => {
-    const y = clientY - target.rect.top
-    return y < target.rect.height / 2 ? 'above' : 'below'
-  }
-
-  const nearestBlockDropTarget = (clientX: number, clientY: number) => {
+  const nearestBlockDropTarget = (clientX: number, clientY: number): { target: BlockDropTarget; placement: DropPlacement } | null => {
     const targets = blockDropTargetsRef.current
-    const direct = targets.find((target) =>
-      clientX >= target.rect.left &&
-      clientX <= target.rect.right &&
+    const direct = targets.find((target) => {
+      const horizontalPadding = Math.max(96, target.rect.width * 0.18)
+      return clientX >= target.rect.left - horizontalPadding &&
+      clientX <= target.rect.right + horizontalPadding &&
       clientY >= target.rect.top &&
-      clientY <= target.rect.bottom,
-    )
-    if (direct) return direct
-    return targets.reduce<BlockDropTarget | null>((nearest, target) => {
-      const centerY = target.rect.top + target.rect.height / 2
-      const distance = Math.abs(clientY - centerY)
-      if (!nearest) return target
-      const nearestDistance = Math.abs(clientY - (nearest.rect.top + nearest.rect.height / 2))
-      return distance < nearestDistance ? target : nearest
+      clientY <= target.rect.bottom
+    })
+
+    if (direct) {
+      return {
+        target: direct,
+        placement: clientY < direct.rect.top + direct.rect.height / 2 ? 'above' : 'below',
+      }
+    }
+
+    return targets.reduce<{ target: BlockDropTarget; placement: DropPlacement; distance: number } | null>((nearest, target) => {
+      const aboveDistance = Math.abs(clientY - target.rect.top)
+      const belowDistance = Math.abs(clientY - target.rect.bottom)
+      const placement: DropPlacement = aboveDistance <= belowDistance ? 'above' : 'below'
+      const distance = Math.min(aboveDistance, belowDistance)
+      if (!nearest || distance < nearest.distance) return { target, placement, distance }
+      return nearest
     }, null)
   }
 
   const positionBlockDropIndicator = (target: BlockDropTarget, placement: DropPlacement) => {
     const indicator = blockDropIndicatorRef.current
     if (!indicator) return
+    const overlayRect = indicator.parentElement?.getBoundingClientRect()
+    const originTop = overlayRect?.top ?? target.shellTop
+    const originLeft = overlayRect?.left ?? target.shellLeft
     const top = placement === 'above'
-      ? target.rect.top - target.shellTop
-      : target.rect.bottom - target.shellTop
-    const left = Math.max(0, target.rect.left - target.shellLeft)
+      ? target.rect.top - originTop
+      : target.rect.bottom - originTop
+    const left = target.rect.left - originLeft
     const width = Math.max(36, target.rect.width)
     indicator.dataset.placement = placement
     indicator.style.opacity = '1'
@@ -3693,6 +3945,13 @@ function App() {
     const indicator = blockDropIndicatorRef.current
     if (indicator) indicator.style.opacity = '0'
   }
+
+  const resetBlockDragState = useCallback(() => {
+    draggedBlockIdRef.current = ''
+    setDraggedBlockId('')
+    blockDropTargetsRef.current = []
+    hideBlockDropIndicator()
+  }, [])
 
   const deleteBlock = (blockId: string) => {
     if (selectedBlocks.length <= 1) return
@@ -3717,6 +3976,62 @@ function App() {
     if (action === 'delete') deleteBlock(blockId)
   }
 
+  const handleAuthorshipPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!editor || editor.isDestroyed) return false
+    const target = event.target instanceof Element ? event.target : null
+    if (!target || !editor.view.dom.contains(target)) return false
+    if (target.closest('[data-block-action], .format-side-controls, .block-drop-overlay')) return false
+
+    const { from, to, empty } = editor.state.selection
+    if (empty) {
+      setAuthorshipMenu(null)
+      return false
+    }
+
+    const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })
+    if (!position || position.pos < from || position.pos > to) {
+      setAuthorshipMenu(null)
+      return false
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    setAuthorshipMenu({
+      from,
+      to,
+      top: event.clientY,
+      left: event.clientX,
+    })
+    return true
+  }
+
+  const handleEditorPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (handleAuthorshipPointerDown(event)) return
+    handleImageCropPointerDown(event)
+  }
+
+  const markSelectionAsCopied = () => {
+    if (!editor || !authorshipMenu) return
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: authorshipMenu.from, to: authorshipMenu.to })
+      .setAuthorship({ kind: 'copied', createdAt: nowIso(), source: 'manual-mark' })
+      .run()
+    setAuthorshipMenu(null)
+  }
+
+  const clearCopiedMark = () => {
+    if (!editor || !authorshipMenu) return
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: authorshipMenu.from, to: authorshipMenu.to })
+      .unsetAuthorship()
+      .run()
+    setAuthorshipMenu(null)
+  }
+
   const handleBlockDragStart = (event: React.DragEvent<HTMLElement>) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-block-action="drag"]') : null
     if (!target?.dataset.blockId) {
@@ -3729,30 +4044,36 @@ function App() {
     event.dataTransfer.setDragImage(target, 11, 11)
     draggedBlockIdRef.current = target.dataset.blockId
     setDraggedBlockId(target.dataset.blockId)
+    blockDropTargetsRef.current = measureBlockDropTargets()
     requestAnimationFrame(() => {
       blockDropTargetsRef.current = measureBlockDropTargets()
     })
   }
 
+  const trackBlockDropFromPoint = useCallback((clientX: number, clientY: number) => {
+    if (!blockDropTargetsRef.current.length) {
+      blockDropTargetsRef.current = measureBlockDropTargets()
+    }
+    if (blockDropFrameRef.current) return
+    blockDropFrameRef.current = requestAnimationFrame(() => {
+      blockDropFrameRef.current = null
+      const intentTarget = nearestBlockDropTarget(clientX, clientY)
+      const draggedId = draggedBlockIdRef.current
+      if (!intentTarget || !draggedId) {
+        hideBlockDropIndicator()
+        return
+      }
+      const { target, placement } = intentTarget
+      blockDropIntentRef.current = { draggedId, targetId: target.blockId, placement }
+      positionBlockDropIndicator(target, placement)
+    })
+  }, [measureBlockDropTargets])
+
   const handleBlockDropOverlayDragOver = (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
     event.dataTransfer.dropEffect = 'move'
-    const clientX = event.clientX
-    const clientY = event.clientY
-    if (blockDropFrameRef.current) return
-    blockDropFrameRef.current = requestAnimationFrame(() => {
-      blockDropFrameRef.current = null
-      const target = nearestBlockDropTarget(clientX, clientY)
-      const draggedId = draggedBlockIdRef.current
-      if (!target || !draggedId) {
-        hideBlockDropIndicator()
-        return
-      }
-      const placement = getDropPlacement(clientY, target)
-      blockDropIntentRef.current = { draggedId, targetId: target.blockId, placement }
-      positionBlockDropIndicator(target, placement)
-    })
+    trackBlockDropFromPoint(event.clientX, event.clientY)
   }
 
   const handleBlockDropOverlayDrop = (event: React.DragEvent<HTMLElement>) => {
@@ -3764,22 +4085,16 @@ function App() {
       const nextBlocks = applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
       if (nextBlocks !== selectedBlocksRef.current) persistBlocks(nextBlocks)
     }
-    draggedBlockIdRef.current = ''
-    setDraggedBlockId('')
-    blockDropTargetsRef.current = []
-    hideBlockDropIndicator()
+    resetBlockDragState()
   }
 
   const handleBlockDragEnd = () => {
-    draggedBlockIdRef.current = ''
-    setDraggedBlockId('')
-    blockDropTargetsRef.current = []
-    hideBlockDropIndicator()
+    resetBlockDragState()
   }
 
   const renderBlockDropOverlay = () =>
     draggedBlockId ? (
-      <div className="block-drop-overlay" aria-hidden onDragOver={handleBlockDropOverlayDragOver} onDrop={handleBlockDropOverlayDrop}>
+      <div className="block-drop-overlay" aria-hidden>
         <span ref={blockDropIndicatorRef} className="block-drop-indicator" />
       </div>
     ) : null
@@ -3789,13 +4104,35 @@ function App() {
     const refreshDropTargets = () => {
       blockDropTargetsRef.current = measureBlockDropTargets()
     }
+    const trackDocumentDrag = (event: DragEvent) => {
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+      trackBlockDropFromPoint(event.clientX, event.clientY)
+    }
+    const dropFromDocument = (event: DragEvent) => {
+      event.preventDefault()
+      const draggedId = event.dataTransfer?.getData('application/x-loci-block') || draggedBlockIdRef.current
+      const intent = blockDropIntentRef.current?.draggedId ? blockDropIntentRef.current : null
+      if (draggedId && intent) {
+        const nextBlocks = applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
+        if (nextBlocks !== selectedBlocksRef.current) persistBlocks(nextBlocks)
+      }
+      resetBlockDragState()
+    }
+    const cleanupDrag = () => resetBlockDragState()
     window.addEventListener('resize', refreshDropTargets)
+    window.addEventListener('dragover', trackDocumentDrag)
+    window.addEventListener('dragend', cleanupDrag)
+    window.addEventListener('drop', dropFromDocument)
     documentScrollRef.current?.addEventListener('scroll', refreshDropTargets)
     return () => {
       window.removeEventListener('resize', refreshDropTargets)
+      window.removeEventListener('dragover', trackDocumentDrag)
+      window.removeEventListener('dragend', cleanupDrag)
+      window.removeEventListener('drop', dropFromDocument)
       documentScrollRef.current?.removeEventListener('scroll', refreshDropTargets)
     }
-  }, [draggedBlockId, selectedBlocksKey])
+  }, [draggedBlockId, measureBlockDropTargets, persistBlocks, resetBlockDragState, trackBlockDropFromPoint])
 
   useEffect(() => {
     const restoreDeletedBlock = (event: KeyboardEvent) => {
@@ -3941,6 +4278,20 @@ function App() {
         if (selectedNoteIdRef.current === note.id) setActiveView(remaining.length ? 'editor' : 'home')
       },
     })
+  }
+
+  const duplicateNote = async (note: Note) => {
+    const now = nowIso()
+    const duplicatedNote: Note = {
+      ...note,
+      id: createId('note'),
+      title: `${note.title || 'Untitled Note'} Copy`,
+      createdAt: now,
+      updatedAt: now,
+    }
+    await notesStore.save(duplicatedNote)
+    setNotes((current) => [duplicatedNote, ...current].sort(sortByUpdated))
+    setOpenLooseNoteMenuId('')
   }
 
   const deleteSelectedAtoms = async () => {
@@ -4184,7 +4535,7 @@ function App() {
           id: createId('project'),
           name: projectName,
           description: description?.trim() ?? '',
-          color: '#111111',
+          color: '#1A1A1A',
           createdAt: nowIso(),
         }
         await projectsStore.save(project)
@@ -4207,6 +4558,19 @@ function App() {
   const updateProjectDescription = async (projectId: string, description: string) => {
     await projectsStore.updateDescription(projectId, description)
     setProjects((current) => current.map((project) => (project.id === projectId ? { ...project, description } : project)))
+  }
+
+  const updateProjectColor = async (projectId: string, color: string) => {
+    await projectsStore.updateColor(projectId, color)
+    setProjects((current) => current.map((project) => (project.id === projectId ? { ...project, color } : project)))
+    setOpenProjectMenuId('')
+  }
+
+  const toggleProjectPinned = async (project: Project) => {
+    const pinnedAt = project.pinnedAt ? undefined : nowIso()
+    await projectsStore.updatePinned(project.id, pinnedAt)
+    setProjects((current) => current.map((item) => (item.id === project.id ? { ...item, pinnedAt } : item)))
+    setOpenProjectMenuId('')
   }
 
   const updateProjectName = async (projectId: string, name: string) => {
@@ -4303,7 +4667,7 @@ function App() {
 
     await atomsStore.save(atom)
     setAtoms((current) => [atom, ...current.filter((item) => item.id !== atom.id)])
-    let markCount = 0
+    let markCount: number
     if (linkScope === 'selection' && atomDialog.from !== undefined && atomDialog.to !== undefined) {
       editor.chain().focus().setTextSelection({ from: atomDialog.from, to: atomDialog.to }).setAtom({ atomId: atom.id, phrase: atom.phrase, definition: atom.definition }).run()
       markCount = 1
@@ -4513,6 +4877,119 @@ function App() {
     void getCurrentWindow().close()
   }
 
+  const clearSidebarRevealTimers = () => {
+    if (sidebarRevealTimeoutRef.current) {
+      clearTimeout(sidebarRevealTimeoutRef.current)
+      sidebarRevealTimeoutRef.current = null
+    }
+    if (sidebarRevealCleanupTimeoutRef.current) {
+      clearTimeout(sidebarRevealCleanupTimeoutRef.current)
+      sidebarRevealCleanupTimeoutRef.current = null
+    }
+  }
+
+  const endSidebarRevealAnimation = () => {
+    clearSidebarRevealTimers()
+    setSidebarRevealAnimating(false)
+  }
+
+  const toggleAppFullscreen = () => {
+    endSidebarRevealAnimation()
+    setAppFullscreen((active) => {
+      const next = !active
+      if (!next) setAppImmersiveFullscreen(false)
+      return next
+    })
+    queueFloatingToolbarRemeasure(220)
+  }
+
+  const handleAppShellWheel = (event: WheelEvent<HTMLElement>) => {
+    const now = window.performance.now()
+    if (now - sidebarFlickAtRef.current < SIDEBAR_FLICK_COOLDOWN_MS) return
+
+    const verticalIntent = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.35
+    const resolveActiveScrollable = () => {
+      const shell = event.currentTarget
+      const startNode = event.target instanceof HTMLElement ? event.target : null
+      let scrollHost: HTMLElement | null = null
+      let node = startNode
+      while (node && node !== shell) {
+        if (node.scrollHeight > node.clientHeight + 1) {
+          const overflowY = window.getComputedStyle(node).overflowY
+          if (overflowY === 'auto' || overflowY === 'scroll') {
+            scrollHost = node
+            break
+          }
+        }
+        node = node.parentElement
+      }
+
+      const fallbackScrollable =
+        activeView === 'home'
+          ? homeScrollRef.current
+          : activeView === 'editor'
+            ? documentScrollRef.current
+            : appShellRef.current?.querySelector<HTMLElement>('.main-pane')
+      return scrollHost ?? fallbackScrollable ?? null
+    }
+
+    if (appFullscreen && appImmersiveFullscreen && verticalIntent && event.deltaY < -6) {
+      const activeScrollable = resolveActiveScrollable()
+      const atTop = !activeScrollable || activeScrollable.scrollTop <= 1
+      if (!atTop) return
+
+      sidebarFlickAtRef.current = now
+      event.preventDefault()
+      setAppImmersiveFullscreen(false)
+      queueFloatingToolbarRemeasure(220)
+      return
+    }
+
+    if (appFullscreen && !appImmersiveFullscreen && verticalIntent && Math.abs(event.deltaY) > 6) {
+      sidebarFlickAtRef.current = now
+      event.preventDefault()
+      setAppImmersiveFullscreen(true)
+      queueFloatingToolbarRemeasure(220)
+      return
+    }
+
+    const horizontalIntent = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.35
+    if (!horizontalIntent || Math.abs(event.deltaX) < SIDEBAR_FLICK_THRESHOLD) return
+
+    const nextFullscreen = event.deltaX > 0 ? true : false
+    if (nextFullscreen === appFullscreen) return
+
+    sidebarFlickAtRef.current = now
+
+    event.preventDefault()
+    if (!nextFullscreen && appFullscreen) {
+      if (!appImmersiveFullscreen) {
+        endSidebarRevealAnimation()
+        setAppFullscreen(false)
+        queueFloatingToolbarRemeasure(220)
+        return
+      }
+      clearSidebarRevealTimers()
+      setSidebarRevealAnimating(true)
+      sidebarRevealTimeoutRef.current = setTimeout(() => {
+        sidebarRevealTimeoutRef.current = null
+        setAppImmersiveFullscreen(false)
+        setAppFullscreen(false)
+        queueFloatingToolbarRemeasure(220)
+      }, 140)
+      sidebarRevealCleanupTimeoutRef.current = setTimeout(() => {
+        sidebarRevealCleanupTimeoutRef.current = null
+        setSidebarRevealAnimating(false)
+      }, 620)
+      return
+    }
+
+    endSidebarRevealAnimation()
+    if (nextFullscreen) setAppImmersiveFullscreen(false)
+    setAppFullscreen(nextFullscreen)
+    queueFloatingToolbarRemeasure(220)
+  }
+
   const formatDialogQueryNormalized = formatDialogQuery.trim().toLowerCase()
   const formatOptionMatchesFormatDialog = (option: FormatOption) => {
     if (!option.enabled) return false
@@ -4548,7 +5025,12 @@ function App() {
           <button type="button" className="is-close" aria-label="Close window" onClick={closeWindow}>×</button>
         </div>
       </header>
-      <section className="app-shell" aria-label="Loci Notes">
+      <section
+        className={`app-shell ${appFullscreen ? 'is-fullscreen' : ''} ${appImmersiveFullscreen ? 'is-immersive-fullscreen' : ''} ${sidebarRevealAnimating ? 'is-revealing-sidebar' : ''}`}
+        aria-label="Loci Notes"
+        onWheel={handleAppShellWheel}
+        ref={appShellRef}
+      >
         <Sidebar
           activeView={activeView}
           activeProject={activeProjectForQuickNav}
@@ -4579,7 +5061,24 @@ function App() {
           }}
           onRenameNote={(noteId, title) => void persistNote({ title }, noteId)}
           onSetActiveView={setActiveView}
+          fullscreenActive={appFullscreen}
+          onToggleFullscreen={toggleAppFullscreen}
         />
+        {appFullscreen && (
+          <button
+            className="fullscreen-exit-button"
+            type="button"
+            aria-label="Exit fullscreen layout"
+            onClick={() => {
+              endSidebarRevealAnimation()
+              setAppImmersiveFullscreen(false)
+              setAppFullscreen(false)
+              queueFloatingToolbarRemeasure(220)
+            }}
+          >
+            <span>Exit</span>
+          </button>
+        )}
 
         {activeView === 'home' && (
           <section className="home-editorial" ref={homeScrollRef}>
@@ -4683,7 +5182,7 @@ function App() {
         )}
 
         {activeView === 'editor' && selectedNote && (
-          <section className={`main-pane editor-pane ${editorFocusMode ? 'is-focus-mode' : ''}`} ref={documentScrollRef}>
+          <section className={`main-pane editor-pane ${editorFocusModeVisual ? 'is-focus-mode' : ''}`} ref={documentScrollRef}>
             {selectedEditorCityMarginalia && (
               <figure
                 className={`editor-page-marginalia ${selectedEditorImageReady ? 'is-image-ready' : ''} ${selectedEditorImageState === 'failed' ? 'is-image-failed' : ''}`}
@@ -4699,7 +5198,7 @@ function App() {
               </figure>
             )}
             <div className="document-scroll">
-              <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'} ${editorFocusMode ? 'is-focus-mode' : ''}`}>
+              <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'} ${editorFocusModeVisual ? 'is-focus-mode' : ''} ${editorAuthenticWriterMode ? 'is-authentic-writer' : ''}`}>
                 {undoNotice && (
                   <div className="notice notice-with-action">
                     <span>{undoNotice.message}</span>
@@ -4730,7 +5229,7 @@ function App() {
                     </div>
                     <LociEditor
                       editor={editor}
-                      isFocusMode={editorFocusMode}
+                      isFocusMode={editorFocusModeVisual}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Appendix / body</span>}
@@ -4741,12 +5240,14 @@ function App() {
                       formatSideControls={renderFormatSideControls()}
                       blockDropOverlay={renderBlockDropOverlay()}
                       onClick={handleBlockControlsClick}
-                      onPointerDown={handleImageCropPointerDown}
+                      onPointerDown={handleEditorPointerDown}
                       onPointerMove={handleBlockEditorPointerMove}
                       onPointerLeave={handleBlockEditorPointerLeave}
                       onPointerUp={handleImageCropPointerEnd}
                       onPointerCancel={handleImageCropPointerEnd}
                       onDragStart={handleBlockDragStart}
+                      onDragOver={handleBlockDropOverlayDragOver}
+                      onDrop={handleBlockDropOverlayDrop}
                       onDragEnd={handleBlockDragEnd}
                     />
                   </div>
@@ -4802,7 +5303,7 @@ function App() {
                     </section>
                     <LociEditor
                       editor={editor}
-                      isFocusMode={editorFocusMode}
+                      isFocusMode={editorFocusModeVisual}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Notes</span>}
@@ -4813,12 +5314,14 @@ function App() {
                       formatSideControls={renderFormatSideControls()}
                       blockDropOverlay={renderBlockDropOverlay()}
                       onClick={handleBlockControlsClick}
-                      onPointerDown={handleImageCropPointerDown}
+                      onPointerDown={handleEditorPointerDown}
                       onPointerMove={handleBlockEditorPointerMove}
                       onPointerLeave={handleBlockEditorPointerLeave}
                       onPointerUp={handleImageCropPointerEnd}
                       onPointerCancel={handleImageCropPointerEnd}
                       onDragStart={handleBlockDragStart}
+                      onDragOver={handleBlockDropOverlayDragOver}
+                      onDrop={handleBlockDropOverlayDrop}
                       onDragEnd={handleBlockDragEnd}
                     />
                   </div>
@@ -4847,7 +5350,7 @@ function App() {
                           <input value={slide.title} onChange={(event) => updateSlide(slide.id, { title: event.target.value })} placeholder="Slide title" />
                           <LociEditor
                             editor={editor}
-                            isFocusMode={editorFocusMode}
+                            isFocusMode={editorFocusModeVisual}
                             shellRef={(node) => { blockEditorShellRef.current = node }}
                             draggedBlockId={draggedBlockId}
                             imageCropEditing={imageCropEditing}
@@ -4856,12 +5359,14 @@ function App() {
                             formatSideControls={renderFormatSideControls()}
                             blockDropOverlay={renderBlockDropOverlay()}
                             onClick={handleBlockControlsClick}
-                            onPointerDown={handleImageCropPointerDown}
+                            onPointerDown={handleEditorPointerDown}
                             onPointerMove={handleBlockEditorPointerMove}
                             onPointerLeave={handleBlockEditorPointerLeave}
                             onPointerUp={handleImageCropPointerEnd}
                             onPointerCancel={handleImageCropPointerEnd}
                             onDragStart={handleBlockDragStart}
+                            onDragOver={handleBlockDropOverlayDragOver}
+                            onDrop={handleBlockDropOverlayDrop}
                             onDragEnd={handleBlockDragEnd}
                           />
                           <label>
@@ -4877,7 +5382,7 @@ function App() {
                 {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && (
                   <LociEditor
                     editor={editor}
-                    isFocusMode={editorFocusMode}
+                    isFocusMode={editorFocusModeVisual}
                     shellRef={(node) => { blockEditorShellRef.current = node }}
                     draggedBlockId={draggedBlockId}
                     imageCropEditing={imageCropEditing}
@@ -4886,12 +5391,14 @@ function App() {
                     formatSideControls={renderFormatSideControls()}
                     blockDropOverlay={renderBlockDropOverlay()}
                     onClick={handleBlockControlsClick}
-                    onPointerDown={handleImageCropPointerDown}
+                    onPointerDown={handleEditorPointerDown}
                     onPointerMove={handleBlockEditorPointerMove}
                     onPointerLeave={handleBlockEditorPointerLeave}
                     onPointerUp={handleImageCropPointerEnd}
                     onPointerCancel={handleImageCropPointerEnd}
                     onDragStart={handleBlockDragStart}
+                    onDragOver={handleBlockDropOverlayDragOver}
+                    onDrop={handleBlockDropOverlayDrop}
                     onDragEnd={handleBlockDragEnd}
                   />
                 )}
@@ -4936,6 +5443,7 @@ function App() {
               activePanel={activeEditorPanel}
               atomUnderlinesVisible={atomUnderlinesVisible}
               editorFocusMode={editorFocusMode}
+              editorAuthenticWriterMode={editorAuthenticWriterMode}
               aiPromptFocused={aiPromptFocused}
               aiRunning={aiRunning}
               activeAICommand={activeAICommand}
@@ -4950,6 +5458,7 @@ function App() {
               highlighterColors={HIGHLIGHTER_COLORS}
               onToggleAtomUnderlines={() => setAtomUnderlinesVisible((visible) => !visible)}
               onToggleFocusMode={() => setEditorFocusMode((enabled) => !enabled)}
+              onToggleAuthenticWriterMode={() => setEditorAuthenticWriterMode((enabled) => !enabled)}
               onOpenNoteHistory={() => void openNoteHistory()}
               onExportPdf={() => void exportNotePdf(selectedNote, selectedProject)}
               onExportDocx={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}
@@ -5004,6 +5513,22 @@ function App() {
                 setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
               }}
             />
+            {authorshipMenu && (
+              <div
+                className="authorship-popover"
+                style={{ top: authorshipMenu.top, left: authorshipMenu.left }}
+                role="menu"
+                aria-label="Mark selected text"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <button type="button" role="menuitem" onClick={markSelectionAsCopied}>
+                  Mark as Copied
+                </button>
+                <button type="button" role="menuitem" onClick={clearCopiedMark}>
+                  Clear Copied Mark
+                </button>
+              </div>
+            )}
           </section>
         )}
 
@@ -5107,8 +5632,11 @@ function App() {
               />
             ) : (
               <>
-                <PageHeader title="Projects" action={<button type="button" onClick={createProject}><Plus size={17} /> Add project</button>} />
-                <div className="project-grid">
+                <PageHeader
+                  title="Projects"
+                  action={<button type="button" onClick={createProject}><Plus size={17} /> Add project</button>}
+                />
+                <div className="project-hub">
                   {localDatabaseNeedsRepair && (
                     <section className="project-empty-state">
                       <h2>Local database needs attention.</h2>
@@ -5127,114 +5655,242 @@ function App() {
                       </button>
                     </section>
                   )}
-                  {projects.map((project) => {
-                    const projectNotes = notes.filter((note) => note.projectId === project.id)
-                    const recentNote = [...projectNotes].sort(sortByUpdated)[0]
-                    const isDropActive = dragOverProjectId === project.id
-                    const openProject = () => {
-                      if (Date.now() < suppressProjectNavUntilRef.current) return
-                      setSelectedProjectId(project.id)
-                    }
-                    return (
-                      <div
-                        key={project.id}
-                        className={`project-row ${draggedNoteIds.length ? 'is-drop-target' : ''} ${isDropActive ? 'is-drop-active' : ''}`}
-                        role="button"
-                        tabIndex={0}
-                        onDragOver={handleNoteDropTargetDragOver}
-                        onDragEnter={() => setDragOverProjectId(project.id)}
-                        onDragLeave={() => setDragOverProjectId((current) => (current === project.id ? '' : current))}
-                        onDrop={(event) => assignNoteToProjectDrop(event, project.id)}
-                        onClick={openProject}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'Enter' && event.key !== ' ') return
-                          event.preventDefault()
-                          openProject()
-                        }}
-                      >
-                        <span className="project-row-main">
-                          <strong>{project.name}</strong>
-                          <p>{project.description?.trim() || 'No description yet'}</p>
-                          {recentNote && <small>Recent: {recentNote.title}</small>}
-                        </span>
-                        <span className="project-row-actions">
-                          <span className="project-card-type-icon" aria-label="Project">
-                            <Layers3 size={22} />
-                          </span>
-                          <button
-                            type="button"
-                            className="project-duplicate-button"
-                            aria-label={`Duplicate ${project.name}`}
+                  {projectCards.length > 0 && (
+                    <div className="project-card-grid">
+                      {projectCards.map(({ project, notes: projectNotes, recentNotes }) => {
+                        const isDropActive = dragOverProjectId === project.id
+                        const projectAccent = projectDisplayColor(project)
+                        const projectCardStyle = {
+                          '--project-accent': projectAccent,
+                          '--project-accent-soft': hexToRgba(projectAccent, 0.14),
+                          '--project-accent-wash': hexToRgba(projectAccent, 0.11),
+                          '--project-accent-card': hexToRgba(projectAccent, 0.075),
+                          '--project-accent-hover': hexToRgba(projectAccent, 0.18),
+                        } as CSSProperties
+                        const projectDescription = project.description?.trim() || 'No description yet'
+                        const openProject = () => {
+                          if (Date.now() < suppressProjectNavUntilRef.current) return
+                          setSelectedProjectId(project.id)
+                        }
+                        return (
+                          <article
+                            key={project.id}
+                            className={`project-card ${draggedNoteIds.length ? 'is-drop-target' : ''} ${isDropActive ? 'is-drop-active' : ''}`}
+                            style={projectCardStyle}
+                            onDragOver={handleNoteDropTargetDragOver}
+                            onDragEnter={() => setDragOverProjectId(project.id)}
+                            onDragLeave={() => setDragOverProjectId((current) => (current === project.id ? '' : current))}
+                            onDrop={(event) => assignNoteToProjectDrop(event, project.id)}
+                          >
+                            <button
+                              type="button"
+                              className="project-card-open"
+                              onClick={openProject}
+                              aria-label={`Open ${project.name}`}
+                              title={project.name}
+                            >
+                              <span className="project-card-heading">
+                                <span>
+                                  <strong title={project.name}>{project.name}</strong>
+                                </span>
+                              </span>
+                              <p title={projectDescription}>{projectDescription}</p>
+                            </button>
+                            <div className="project-card-menu">
+                              {project.pinnedAt && (
+                                <span className="project-pin-indicator" aria-label="Pinned project" title="Pinned project">
+                                  <Pin size={15} aria-hidden />
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                className="project-card-menu-trigger"
+                                aria-label={`More options for ${project.name}`}
+                                aria-expanded={openProjectMenuId === project.id}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  setOpenProjectMenuId((current) => (current === project.id ? '' : project.id))
+                                }}
+                              >
+                                <MoreVertical size={18} aria-hidden />
+                              </button>
+                              {openProjectMenuId === project.id && (
+                                <div
+                                  className="project-card-menu-popover"
+                                  role="menu"
+                                  aria-label={`${project.name} options`}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action"
+                                    onClick={() => void toggleProjectPinned(project)}
+                                  >
+                                    {project.pinnedAt ? 'Unpin project' : 'Pin project'}
+                                  </button>
+                                  <span>Project colour</span>
+                                  <div className="project-color-swatches" role="group" aria-label="Project colour">
+                                    {PROJECT_COLORS.map((color) => (
+                                      <button
+                                        type="button"
+                                        key={color}
+                                        className={project.color?.toLowerCase() === color.toLowerCase() ? 'is-active' : ''}
+                                        style={{ background: color }}
+                                        aria-label={`Use project colour ${color}`}
+                                        onClick={() => void updateProjectColor(project.id, color)}
+                                      />
+                                    ))}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action"
+                                    onClick={() => {
+                                      setOpenProjectMenuId('')
+                                      void duplicateProject(project)
+                                    }}
+                                  >
+                                    Duplicate project
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            <div className="project-card-notes" aria-label={`${project.name} recent notes`}>
+                              {recentNotes.length ? (
+                                recentNotes.map((note) => {
+                                  const NoteTypeIcon = noteTemplateIcons[note.templateId ?? 'blank']
+                                  const noteTitle = note.title || 'Untitled Note'
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={note.id}
+                                      className="project-card-note"
+                                      aria-label={`Open ${noteTitle}`}
+                                      title={noteTitle}
+                                      onClick={() => {
+                                        setSelectedNoteIds([])
+                                        openNote(note.id)
+                                      }}
+                                    >
+                                      <NoteTypeIcon size={15} aria-hidden />
+                                      <span>
+                                        <strong title={noteTitle}>{noteTitle}</strong>
+                                        <small>{formatDay(note.updatedAt)}</small>
+                                      </span>
+                                    </button>
+                                  )
+                                })
+                              ) : (
+                                <p className="project-card-empty">No notes yet.</p>
+                              )}
+                            </div>
+                            <div className="project-card-footer">
+                              {projectNotes.length > RECENT_PROJECT_NOTE_LIMIT ? (
+                                <button type="button" className="project-card-view-all" onClick={openProject}>
+                                  View all {projectNotes.length}
+                                </button>
+                              ) : (
+                                <span>{projectNotes[0] ? `Updated ${formatDay(projectNotes[0].updatedAt)}` : 'Ready for notes'}</span>
+                              )}
+                            </div>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {unassignedNotes.length > 0 && (
+                    <section className="project-loose-notes-list" aria-label="Unsorted files">
+                      <span className="project-section-label">Unsorted files</span>
+                      {unassignedNotes.map((note) => {
+                        const isSelected = selectedNoteIds.includes(note.id)
+                        const isDragging = draggedNoteIds.includes(note.id)
+                        const noteTitle = note.title || 'Untitled Note'
+                        return (
+                          <div
+                            className={`project-loose-note-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
+                            key={note.id}
+                            role="button"
+                            tabIndex={0}
+                            draggable
+                            aria-selected={isSelected}
+                            onDragStart={(event) => handleNoteDragStart(event, note.id)}
+                            onDragEnd={handleNoteDragEnd}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                openNote(note.id)
+                              }
+                            }}
                             onClick={(event) => {
-                              event.stopPropagation()
-                              void duplicateProject(project)
+                              if (event.shiftKey) {
+                                setSelectedNoteIds((current) =>
+                                  current.includes(note.id)
+                                    ? current.filter((id) => id !== note.id)
+                                    : [...current, note.id],
+                                )
+                                return
+                              }
+                              setSelectedNoteIds([])
+                              openNote(note.id)
                             }}
                           >
-                            Duplicate
-                          </button>
-                        </span>
-                      </div>
-                    )
-                  })}
-                  {unassignedNotes.map((note) => {
-                    const isSelected = selectedNoteIds.includes(note.id)
-                    const isDragging = draggedNoteIds.includes(note.id)
-                    const NoteTypeIcon = noteTemplateIcons[note.templateId ?? 'blank']
-                    return (
-                      <div
-                        className={`project-loose-note-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
-                        key={note.id}
-                        role="button"
-                        tabIndex={0}
-                        draggable
-                        aria-selected={isSelected}
-                        onDragStart={(event) => handleNoteDragStart(event, note.id)}
-                        onDragEnd={handleNoteDragEnd}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault()
-                            openNote(note.id)
-                          }
-                        }}
-                        onClick={(event) => {
-                          if (event.shiftKey) {
-                            setSelectedNoteIds((current) =>
-                              current.includes(note.id)
-                                ? current.filter((id) => id !== note.id)
-                                : [...current, note.id],
-                            )
-                            return
-                          }
-                          setSelectedNoteIds([])
-                          openNote(note.id)
-                        }}
-                      >
-                        <span className="project-row-main">
-                          <strong>{note.title}</strong>
-                          <p>{collectText(note.content) || 'Empty note'}</p>
-                          <small>Unsorted</small>
-                        </span>
-                        <span className="project-loose-note-actions">
-                          <span className="project-card-type-icon" aria-label={getNoteTemplate(note.templateId ?? 'blank').name}>
-                            <NoteTypeIcon size={22} />
-                          </span>
-                          <button
-                            type="button"
-                            className="note-row-delete"
-                            aria-label={`Delete ${note.title || 'Untitled Note'}`}
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onMouseDown={(event) => event.stopPropagation()}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void deleteNote(note)
-                            }}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </span>
-                      </div>
-                    )
-                  })}
+                            <span className="project-row-main">
+                              <strong title={noteTitle}>{noteTitle}</strong>
+                            </span>
+                            <span className="project-loose-note-menu">
+                              <button
+                                type="button"
+                                className="project-loose-note-menu-trigger"
+                                aria-label={`More options for ${noteTitle}`}
+                                aria-expanded={openLooseNoteMenuId === note.id}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  setOpenLooseNoteMenuId((current) => (current === note.id ? '' : note.id))
+                                }}
+                              >
+                                <MoreVertical size={18} aria-hidden />
+                              </button>
+                              {openLooseNoteMenuId === note.id && (
+                                <span
+                                  className="project-loose-note-menu-popover"
+                                  role="menu"
+                                  aria-label={`${noteTitle} options`}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action"
+                                    onClick={() => void duplicateNote(note)}
+                                  >
+                                    Duplicate note
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action is-danger"
+                                    onClick={() => {
+                                      setOpenLooseNoteMenuId('')
+                                      void deleteNote(note)
+                                    }}
+                                  >
+                                    Delete note
+                                  </button>
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </section>
+                  )}
                 </div>
               </>
             )}
@@ -5761,7 +6417,7 @@ function App() {
             />
             <div className="settings-layout">
               <section className="settings-profile-strip">
-                <div className="avatar" style={{ background: profileAvatarColor }}>{profileInitials}</div>
+                <div className="avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>
                 <div>
                   <strong>{profileDisplayName}</strong>
                   <span>Local workspace profile · used for new notes</span>
@@ -6064,77 +6720,76 @@ function App() {
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
-            <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
-              {searchNormalized && searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
-              <VirtualList
-                className="global-search-results-virtual"
-                items={searchRows}
-                rowHeight={58}
-                overscan={6}
-                renderItem={(row) => {
-                  if (row.kind === 'section') {
-                    return (
-                      <div className="global-search-section-label" role="presentation">
-                        {row.label}
-                      </div>
-                    )
-                  }
-                  const hit = row.hit
-                  const index = row.hitIndex
-                return (
-                    <button
-                      id={`search-hit-${index}`}
-                      type="button"
-                      role="option"
-                      aria-selected={index === searchActiveIndex}
-                      className={`global-search-hit ${index === searchActiveIndex ? 'is-active' : ''}`}
-                      onMouseEnter={() => setSearchActiveIndex(index)}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => activateHit(hit)}
-                    >
-                      {hit.kind === 'note' && (
-                        <>
-                          <span className="global-search-hit-icon" aria-hidden>
-                            <FileText size={16} />
-                          </span>
-                          <span className="global-search-hit-main">
-                            <strong>{hit.note.title}</strong>
-                          </span>
-                          <span className="global-search-hit-meta">
-                            {projects.find((p) => p.id === hit.note.projectId)?.name ?? 'Unassigned'} · {formatDay(hit.note.updatedAt)}
-                          </span>
-                        </>
-                      )}
-                      {hit.kind === 'project' && (
-                        <>
-                          <span className="global-search-hit-icon" aria-hidden>
-                            <Layers3 size={16} />
-                          </span>
-                          <span className="global-search-hit-main">
-                            <strong>{hit.project.name}</strong>
-                          </span>
-                          <span className="global-search-hit-meta">{noteIndexes.notesByProjectId.get(hit.project.id)?.length ?? 0} notes</span>
-                        </>
-                      )}
-                      {hit.kind === 'atom' && (
-                        <>
-                          <span className="global-search-hit-icon" aria-hidden>
-                            <Brain size={16} />
-                          </span>
-                          <span className="global-search-hit-main global-search-hit-main--stacked">
-                            <strong>{hit.atom.phrase}</strong>
-                            <small>{truncateOneLine(hit.atom.definition, 120)}</small>
-                          </span>
-                        </>
-                      )}
-                    </button>
-                )
-                }}
-              />
-            </div>
-            <p className="global-search-footer-hint">
-              Ctrl+K or ⌘K to toggle
-            </p>
+            {searchNormalized && (
+              <div id="global-search-list" className="global-search-results" role="listbox" aria-label="Search results">
+                {searchHits.length === 0 && <p className="global-search-empty">No results found</p>}
+                <VirtualList
+                  className="global-search-results-virtual"
+                  items={searchRows}
+                  rowHeight={52}
+                  overscan={6}
+                  renderItem={(row) => {
+                    if (row.kind === 'section') {
+                      return (
+                        <div className="global-search-section-label" role="presentation">
+                          {row.label}
+                        </div>
+                      )
+                    }
+                    const hit = row.hit
+                    const index = row.hitIndex
+                  return (
+                      <button
+                        id={`search-hit-${index}`}
+                        type="button"
+                        role="option"
+                        aria-selected={index === searchActiveIndex}
+                        className={`global-search-hit ${index === searchActiveIndex ? 'is-active' : ''}`}
+                        onMouseEnter={() => setSearchActiveIndex(index)}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => activateHit(hit)}
+                      >
+                        {hit.kind === 'note' && (
+                          <>
+                            <span className="global-search-hit-icon" aria-hidden>
+                              <FileText size={16} />
+                            </span>
+                            <span className="global-search-hit-main">
+                              <strong>{hit.note.title}</strong>
+                            </span>
+                            <span className="global-search-hit-meta">
+                              {projects.find((p) => p.id === hit.note.projectId)?.name ?? 'Unassigned'} · {formatDay(hit.note.updatedAt)}
+                            </span>
+                          </>
+                        )}
+                        {hit.kind === 'project' && (
+                          <>
+                            <span className="global-search-hit-icon" aria-hidden>
+                              <Layers3 size={16} />
+                            </span>
+                            <span className="global-search-hit-main">
+                              <strong>{hit.project.name}</strong>
+                            </span>
+                            <span className="global-search-hit-meta">{noteIndexes.notesByProjectId.get(hit.project.id)?.length ?? 0} notes</span>
+                          </>
+                        )}
+                        {hit.kind === 'atom' && (
+                          <>
+                            <span className="global-search-hit-icon" aria-hidden>
+                              <AtomIcon size={16} />
+                            </span>
+                            <span className="global-search-hit-main global-search-hit-main--stacked">
+                              <strong>{hit.atom.phrase}</strong>
+                              <small>{truncateOneLine(hit.atom.definition, 120)}</small>
+                            </span>
+                          </>
+                        )}
+                      </button>
+                  )
+                  }}
+                />
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -6438,7 +7093,7 @@ function App() {
             <p>{localProfile ? 'Tune how your local workspace identifies you.' : 'Choose the name shown in your notes and sidebar.'}</p>
             <div className="profile-dialog-main">
               <div className="profile-preview">
-                <div className="avatar profile-preview-avatar" style={{ background: profileDraft.avatarColor || DEFAULT_PROFILE_COLOR }}>{normalizeInitials(profileDraft.initials || initialsFromName(profileDraft.displayName) || 'LN')}</div>
+                <div className="avatar profile-preview-avatar" style={{ background: profileDraft.avatarColor || DEFAULT_PROFILE_COLOR, color: avatarTextColor(profileDraft.avatarColor || DEFAULT_PROFILE_COLOR) }}>{normalizeInitials(profileDraft.initials || initialsFromName(profileDraft.displayName) || 'LN')}</div>
                 <strong>{profileDraft.displayName.trim() || 'Your name'}</strong>
                   <span>{profileDraft.handle ? `@${profileDraft.handle}` : 'Local profile'}</span>
               </div>

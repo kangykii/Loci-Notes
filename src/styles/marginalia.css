@@ -3,8 +3,8 @@
   inset: 0;
   z-index: 0;
   background:
-    radial-gradient(circle at 25% 30%, rgba(255, 255, 255, 0.55), transparent 60%),
-    linear-gradient(135deg, #f2c8b3 0%, #d8b9a4 65%, #b69380 100%);
+    radial-gradient(circle at 25% 30%, rgba(244, 244, 242, 0.58), transparent 60%),
+    linear-gradient(135deg, rgba(244, 244, 242, 0.96) 0%, rgba(62, 50, 32, 0.2) 62%, rgba(46, 52, 64, 0.3) 100%);
   filter: saturate(1.05);
 }
 
@@ -12,7 +12,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 35%, rgba(17, 13, 8, 0.18) 100%);
+  background: linear-gradient(180deg, transparent 35%, rgba(62, 50, 32, 0.2) 100%);
   pointer-events: none;
 }
 
@@ -33,12 +33,12 @@
 }
 
 .home-hero-card--empty .home-hero-card-bleed {
-  background: linear-gradient(135deg, #f6efe6 0%, #ece4d8 100%);
+  background: linear-gradient(135deg, rgba(244, 244, 242, 0.98) 0%, rgba(46, 52, 64, 0.14) 100%);
 }
 
 .editor-page-marginalia {
-  position: fixed;
-  left: var(--sidebar-width);
+  position: absolute;
+  left: 0;
   right: 0;
   bottom: 0;
   height: min(72vh, 700px);
@@ -46,7 +46,10 @@
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
-  transition: opacity 180ms linear;
+  visibility: visible;
+  transition:
+    opacity var(--editor-motion-medium, 220ms) ease,
+    visibility 0s linear 0s;
 }
 
 .editor-page-marginalia::after {
@@ -56,12 +59,12 @@
   pointer-events: none;
   background: linear-gradient(
     to bottom,
-    rgba(255, 255, 255, 0.98) 0%,
-    rgba(255, 255, 255, 0.95) 14%,
-    rgba(255, 255, 255, 0.82) 30%,
-    rgba(255, 255, 255, 0.55) 46%,
-    rgba(255, 255, 255, 0.28) 62%,
-    rgba(255, 255, 255, 0.1) 78%,
+    rgba(244, 244, 242, 0.98) 0%,
+    rgba(244, 244, 242, 0.95) 14%,
+    rgba(244, 244, 242, 0.82) 30%,
+    rgba(244, 244, 242, 0.55) 46%,
+    rgba(244, 244, 242, 0.28) 62%,
+    rgba(244, 244, 242, 0.1) 78%,
     transparent 92%
   );
   opacity: 0;
@@ -78,7 +81,7 @@
   pointer-events: none;
   -webkit-backdrop-filter: blur(14px) saturate(1.03);
   backdrop-filter: blur(14px) saturate(1.03);
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0.46) 55%, rgba(255, 255, 255, 0) 100%);
+  background: linear-gradient(to bottom, rgba(244, 244, 242, 0.86) 0%, rgba(244, 244, 242, 0.46) 55%, rgba(244, 244, 242, 0) 100%);
   -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.84) 70%, transparent 100%);
   mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1) 0%, rgba(0, 0, 0, 0.84) 70%, transparent 100%);
   opacity: 0;
@@ -98,7 +101,9 @@
   object-position: center 72%;
   opacity: 0;
   transform: translateY(8px);
-  transition: opacity 520ms ease, transform 520ms ease;
+  transition:
+    opacity 520ms var(--editor-motion-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform 520ms var(--editor-motion-ease, cubic-bezier(0.22, 1, 0.36, 1));
   filter: none;
   -webkit-mask-image: linear-gradient(
     to bottom,
@@ -136,6 +141,9 @@
   opacity: 0 !important;
   visibility: hidden;
   pointer-events: none;
+  transition:
+    opacity var(--editor-motion-medium, 220ms) ease,
+    visibility 0s linear var(--editor-motion-medium, 220ms);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -153,7 +161,6 @@
 
 @media (max-width: 860px) {
   .editor-page-marginalia {
-    left: 0;
     height: min(50vh, 400px);
   }
 }

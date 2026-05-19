@@ -1,13 +1,20 @@
 /* Focus Mode rules live at the end of App.css so they win over global editor block typography. */
+:root {
+  --editor-motion-fast: 140ms;
+  --editor-motion-medium: 220ms;
+  --editor-motion-slow: 320ms;
+  --editor-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --editor-motion-precise: cubic-bezier(0.2, 0, 0.2, 1);
+}
 
 .floating-editor-wrap {
   position: fixed;
-  left: calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2);
+  left: var(--floating-toolbar-center-x, calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2));
   bottom: 28px;
   z-index: 40;
   display: grid;
   justify-items: center;
-  width: min(940px, calc(100vw - var(--sidebar-width) - 48px));
+  width: min(940px, var(--floating-toolbar-max-width, calc(100vw - var(--sidebar-width) - 48px)));
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -22,18 +29,19 @@
   justify-content: space-between;
   gap: 0;
   overflow: hidden;
-  border: 1px solid rgba(28, 28, 30, 0.14);
+  border: 1px solid rgba(46, 52, 64, 0.1);
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.34);
+  background: var(--surface-editor-bar, #F2F0EA);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.44),
-    inset 0 -18px 42px rgba(28, 28, 30, 0.03),
-    0 24px 72px rgba(17, 17, 17, 0.14),
-    0 3px 14px rgba(17, 17, 17, 0.06);
+    inset 0 -14px 32px rgba(46, 52, 64, 0.025),
+    0 18px 46px rgba(26, 26, 26, 0.1),
+    0 2px 10px rgba(26, 26, 26, 0.045);
   padding: 0;
-  color: #1c1c1e;
-  -webkit-backdrop-filter: blur(22px) saturate(1.25) brightness(1.03);
-  backdrop-filter: blur(22px) saturate(1.25) brightness(1.03);
+  color: #1A1A1A;
+  transition:
+    border-color var(--editor-motion-medium) var(--editor-motion-ease),
+    box-shadow var(--editor-motion-medium) var(--editor-motion-ease),
+    background var(--editor-motion-medium) var(--editor-motion-ease);
 }
 
 .floating-editor-bar.is-prompt-open,
@@ -43,10 +51,10 @@
 
 .floating-editor-bar.is-thinking {
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.58),
-    inset 0 -18px 42px rgba(28, 28, 30, 0.035),
-    0 24px 72px rgba(17, 17, 17, 0.18),
-    0 3px 14px rgba(17, 17, 17, 0.08);
+    inset 0 0 0 1px rgba(244, 244, 242, 0.46),
+    inset 0 -14px 32px rgba(46, 52, 64, 0.035),
+    0 18px 46px rgba(26, 26, 26, 0.13),
+    0 2px 10px rgba(26, 26, 26, 0.06);
 }
 
 .toolbar-zone {
@@ -54,16 +62,28 @@
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
+  max-width: 180px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    flex-basis var(--editor-motion-medium) var(--editor-motion-ease),
+    max-width var(--editor-motion-medium) var(--editor-motion-ease),
+    min-width var(--editor-motion-medium) var(--editor-motion-ease),
+    padding var(--editor-motion-medium) var(--editor-motion-ease),
+    opacity var(--editor-motion-fast) ease,
+    transform var(--editor-motion-medium) var(--editor-motion-ease);
 }
 
 .toolbar-zone-left {
   min-width: 132px;
+  flex-basis: 132px;
   gap: 10px;
   padding: 0 14px;
 }
 
 .toolbar-zone-right {
   min-width: 78px;
+  flex-basis: 78px;
   justify-content: flex-end;
   gap: 10px;
   padding: 0 14px;
@@ -74,9 +94,13 @@
 .floating-editor-bar.is-prompt-open .toolbar-structural-divider,
 .floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-structural-divider {
   width: 0;
+  flex-basis: 0;
+  max-width: 0;
   min-width: 0;
   opacity: 0;
+  transform: translateY(2px) scale(0.98);
   overflow: hidden;
+  padding-inline: 0;
   pointer-events: none;
 }
 
@@ -84,7 +108,7 @@
   width: 0.5px;
   height: 16px;
   flex: 0 0 auto;
-  background: rgba(28, 28, 30, 0.1);
+  background: rgba(46, 52, 64, 0.12);
 }
 
 .toolbar-structural-divider {
@@ -99,7 +123,7 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #1c1c1e;
+  color: #1A1A1A;
   font: inherit;
 }
 
@@ -115,7 +139,7 @@
 
 .floating-editor-bar button:hover,
 .floating-editor-panel button:hover {
-  background: rgba(255, 255, 255, 0.56);
+  background: rgba(46, 52, 64, 0.055);
 }
 
 .toolbar-text-button {
@@ -123,18 +147,18 @@
 }
 
 .toolbar-text-button--primary {
-  color: #1c1c1e;
+  color: #1A1A1A;
   font-weight: 500;
 }
 
 .toolbar-text-button--muted {
-  color: #6f6f73;
+  color: #706A72;
   font-weight: 400;
 }
 
 .toolbar-more-button {
   width: 28px;
-  color: #6f6f73;
+  color: #706A72;
 }
 
 .toolbar-more-button svg {
@@ -153,8 +177,13 @@
 .highlight-button {
   position: relative;
   width: 32px;
-  border: 1px solid rgba(28, 28, 30, 0.08);
-  color: #6f6f73;
+  border: 1px solid rgba(46, 52, 64, 0.1);
+  color: #706A72;
+  transition:
+    border-color var(--editor-motion-fast) ease,
+    background var(--editor-motion-fast) ease,
+    color var(--editor-motion-fast) ease,
+    transform var(--editor-motion-fast) var(--editor-motion-ease);
 }
 
 .highlight-button svg {
@@ -164,9 +193,9 @@
 }
 
 .highlight-button.is-armed {
-  border-color: rgba(28, 28, 30, 0.82);
-  background: #1c1c1e;
-  color: #fff;
+  border-color: rgba(46, 52, 64, 0.82);
+  background: #2E3440;
+  color: #F4F4F2;
 }
 
 .highlight-swatch {
@@ -175,14 +204,14 @@
   bottom: 7px;
   width: 7px;
   height: 7px;
-  border: 0.5px solid rgba(28, 28, 30, 0.16);
+  border: 0.5px solid rgba(46, 52, 64, 0.16);
   border-radius: 999px;
 }
 
 .highlight-button.is-armed .highlight-swatch {
   width: 8px;
   height: 8px;
-  border-color: rgba(255, 255, 255, 0.82);
+  border-color: rgba(244, 244, 242, 0.82);
 }
 
 .highlight-palette {
@@ -192,24 +221,26 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 0.5px solid #e5e5e5;
+  border: 0.5px solid rgba(46, 52, 64, 0.14);
   border-radius: 10px;
-  background: #fff;
+  background: #F4F4F2;
   box-shadow: none;
   padding: 7px;
+  transform-origin: bottom right;
+  animation: editorOverlayIn var(--editor-motion-medium) var(--editor-motion-ease) both;
 }
 
 .highlight-palette button {
   width: 22px;
   height: 22px;
   min-width: 22px;
-  border: 0.5px solid rgba(28, 28, 30, 0.12);
+  border: 0.5px solid rgba(46, 52, 64, 0.12);
   border-radius: 7px;
   padding: 0;
 }
 
 .highlight-palette button.is-active {
-  outline: 2px solid #1c1c1e;
+  outline: 2px solid #1A1A1A;
   outline-offset: 2px;
 }
 
@@ -226,12 +257,21 @@
   border: 0;
   border-radius: 14px;
   background: transparent;
-  color: #6f6f73;
+  color: #706A72;
   padding: 0;
   overflow: hidden;
   isolation: isolate;
   box-shadow: none;
-  transition: max-width 180ms ease, flex-basis 180ms ease;
+  transform: translateZ(0);
+  transition:
+    flex-basis var(--editor-motion-medium) var(--editor-motion-ease),
+    max-width var(--editor-motion-medium) var(--editor-motion-ease),
+    min-width var(--editor-motion-medium) var(--editor-motion-ease),
+    border-radius var(--editor-motion-medium) var(--editor-motion-ease),
+    background var(--editor-motion-medium) var(--editor-motion-ease),
+    box-shadow var(--editor-motion-medium) var(--editor-motion-ease),
+    color var(--editor-motion-fast) ease,
+    transform var(--editor-motion-medium) var(--editor-motion-ease);
 }
 
 .floating-ai-prompt.is-open,
@@ -242,6 +282,7 @@
   border-radius: 18px;
   background: transparent;
   box-shadow: none;
+  transform: translateZ(0) scale(1.006);
 }
 
 .floating-editor-bar.is-thinking .floating-ai-prompt {
@@ -273,41 +314,47 @@
   gap: 5px;
   flex: 0 0 auto;
   border-radius: 999px;
-  border: 0.5px solid rgba(28, 28, 30, 0.1);
-  background: rgba(255, 255, 255, 0.72);
-  color: #1c1c1e;
+  border: 0.5px solid rgba(46, 52, 64, 0.12);
+  background: rgba(244, 244, 242, 0.76);
+  color: #1A1A1A;
   padding: 0 8px;
   font-size: 11px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
+  transition:
+    border-color var(--editor-motion-fast) ease,
+    background var(--editor-motion-fast) ease,
+    color var(--editor-motion-fast) ease,
+    opacity var(--editor-motion-fast) ease,
+    transform var(--editor-motion-fast) var(--editor-motion-ease);
 }
 
 .ai-mode-pill span {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: #ffe08a;
+  background: #3E3220;
 }
 
 .ai-mode-pill--atomise span {
-  background: #9af4c7;
+  background: #2E3440;
 }
 
 .ai-mode-pill--mark span {
-  background: #ffb36d;
+  background: #3E3220;
 }
 
 .ai-mode-pill--summarise span {
-  background: #9ac7ff;
+  background: #2E3440;
 }
 
 .ai-mode-pill--rewrite span {
-  background: #d9a8ff;
+  background: #1A1A1A;
 }
 
 .ai-mode-pill--continue span {
-  background: #ffe08a;
+  background: #3E3220;
 }
 
 .floating-ai-prompt input {
@@ -318,10 +365,13 @@
   border: 0;
   outline: 0;
   background: transparent;
-  color: #1c1c1e;
+  color: #1A1A1A;
   padding: 1rem 1.25rem;
   font-size: 13px;
   font-weight: 400;
+  transition:
+    color var(--editor-motion-fast) ease,
+    padding var(--editor-motion-medium) var(--editor-motion-ease);
 }
 
 .floating-ai-prompt .ai-mode-pill + input {
@@ -329,7 +379,8 @@
 }
 
 .floating-ai-prompt input::placeholder {
-  color: #6f6f73;
+  color: #706A72;
+  transition: color var(--editor-motion-fast) ease;
 }
 
 .ai-prompt-hint {
@@ -339,15 +390,17 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 0.5px solid #e5e5e5;
+  border: 0.5px solid rgba(46, 52, 64, 0.14);
   border-radius: 999px;
-  background: #fff;
+  background: #F4F4F2;
   box-shadow: none;
-  color: #1c1c1e;
+  color: #1A1A1A;
   padding: 7px 8px 7px 12px;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 500;
+  transform-origin: bottom right;
+  animation: editorHintIn var(--editor-motion-medium) var(--editor-motion-ease) both;
 }
 
 .ai-prompt-hint button {
@@ -364,11 +417,13 @@
   width: 220px;
   display: grid;
   pointer-events: auto;
-  border: 0.5px solid #e5e5e5;
+  border: 0.5px solid rgba(46, 52, 64, 0.14);
   border-radius: 12px;
-  background: #fff;
+  background: #F4F4F2;
   box-shadow: none;
   padding: 6px;
+  transform-origin: bottom right;
+  animation: editorPanelIn var(--editor-motion-medium) var(--editor-motion-ease) both;
 }
 
 .more-option-grid {
@@ -388,25 +443,25 @@
   padding: 0 10px;
   text-align: left;
   font-size: 13px;
-  color: #1c1c1e;
+  color: #1A1A1A;
   font: inherit;
   font-weight: 400;
 }
 
 .more-option-grid button:hover {
-  background: rgba(242, 242, 247, 0.84);
+  background: rgba(46, 52, 64, 0.08);
 }
 
 .more-option-grid button svg {
   width: 16px;
   height: 16px;
   margin-left: auto;
-  color: #1c1c1e;
+  color: #1A1A1A;
   stroke-width: 1.8;
 }
 
 .more-option-grid .danger {
-  color: #ff3b30;
+  color: #3E3220;
 }
 
 .more-option-grid .more-toggle-row {
@@ -423,38 +478,87 @@
   height: 20px;
   justify-content: flex-start;
   border-radius: 999px;
-  background: #d1d1d6;
+  background: rgba(46, 52, 64, 0.22);
   padding: 2px;
-  transition: background 160ms ease;
+  transition: background var(--editor-motion-fast) ease;
 }
 
 .ios-switch span {
   width: 16px;
   height: 16px;
   border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
-  transition: transform 160ms ease;
+  background: #F4F4F2;
+  box-shadow: 0 1px 2px rgba(26, 26, 26, 0.18);
+  transition: transform var(--editor-motion-medium) var(--editor-motion-ease);
 }
 
 .more-toggle-row[aria-pressed="true"] .ios-switch {
-  background: #34c759;
+  background: #2E3440;
 }
 
 .more-toggle-row[aria-pressed="true"] .ios-switch span {
   transform: translateX(14px);
 }
 
+@keyframes editorPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes editorOverlayIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes editorHintIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .floating-ai-prompt {
+  .floating-editor-bar,
+  .toolbar-zone,
+  .toolbar-structural-divider,
+  .highlight-button,
+  .highlight-palette,
+  .floating-ai-prompt,
+  .ai-mode-pill,
+  .floating-ai-prompt input,
+  .floating-ai-prompt input::placeholder,
+  .ai-prompt-hint,
+  .floating-editor-panel,
+  .ios-switch,
+  .ios-switch span {
+    animation: none;
     transition: none;
   }
 }
 
 @media (max-width: 760px) {
   .floating-editor-wrap {
-    left: 50%;
-    width: calc(100vw - 28px);
+    left: var(--floating-toolbar-center-x, 50%);
+    width: min(var(--floating-toolbar-max-width, calc(100vw - 28px)), calc(100vw - 28px));
     bottom: 14px;
   }
 
@@ -464,11 +568,13 @@
 
   .toolbar-zone-left {
     min-width: 112px;
+    flex-basis: 112px;
     gap: 8px;
   }
 
   .toolbar-zone-right {
     min-width: 72px;
+    flex-basis: 72px;
     gap: 8px;
   }
 
@@ -485,4 +591,113 @@
     max-width: calc(100vw - 44px);
     white-space: normal;
   }
+}
+
+/* Popup colour system for editor overlays */
+.floating-editor-bar,
+.highlight-palette,
+.floating-editor-panel,
+.ai-prompt-hint {
+  border-color: rgba(46, 52, 64, 0.16);
+  background:
+    linear-gradient(180deg, rgba(244, 244, 242, 0.96), rgba(244, 244, 242, 0.84)),
+    #F4F4F2;
+  color: #1A1A1A;
+  box-shadow:
+    0 0 0 1px rgba(244, 244, 242, 0.52),
+    0 18px 48px rgba(26, 26, 26, 0.14);
+}
+
+.floating-editor-bar {
+  border-color: rgba(46, 52, 64, 0.1);
+  background: var(--surface-editor-bar, #F2F0EA);
+  box-shadow:
+    inset 0 -14px 32px rgba(46, 52, 64, 0.025),
+    0 18px 46px rgba(26, 26, 26, 0.1),
+    0 2px 10px rgba(26, 26, 26, 0.045);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.floating-editor-bar.is-thinking {
+  border-color: rgba(62, 50, 32, 0.24);
+  box-shadow:
+    inset 0 0 0 1px rgba(244, 244, 242, 0.46),
+    inset 0 -14px 32px rgba(46, 52, 64, 0.035),
+    0 18px 46px rgba(26, 26, 26, 0.13),
+    0 2px 10px rgba(26, 26, 26, 0.06);
+}
+
+.floating-editor-bar button,
+.floating-editor-panel button,
+.floating-ai-prompt input {
+  color: #1A1A1A;
+}
+
+.floating-editor-bar button:hover,
+.floating-editor-panel button:hover,
+.more-option-grid button:hover,
+.ai-prompt-hint button:hover {
+  background: rgba(46, 52, 64, 0.055);
+  color: #1A1A1A;
+}
+
+.toolbar-text-button--muted,
+.toolbar-more-button,
+.floating-ai-prompt,
+.floating-ai-prompt input::placeholder {
+  color: #5A5260;
+}
+
+.highlight-button.is-armed,
+.more-toggle-row[aria-pressed="true"] .ios-switch {
+  border-color: #2E3440;
+  background: #2E3440;
+  color: #F4F4F2;
+}
+
+.highlight-palette button {
+  border-color: rgba(46, 52, 64, 0.16);
+}
+
+.highlight-palette button.is-active {
+  outline-color: #3E3220;
+}
+
+.ai-mode-pill {
+  border-color: rgba(46, 52, 64, 0.16);
+  background: rgba(244, 244, 242, 0.86);
+  color: #1A1A1A;
+}
+
+.ai-mode-pill span,
+.ai-mode-pill--mark span,
+.ai-mode-pill--continue span {
+  background: #3E3220;
+}
+
+.ai-mode-pill--atomise span,
+.ai-mode-pill--summarise span {
+  background: #2E3440;
+}
+
+.ai-mode-pill--rewrite span {
+  background: #1A1A1A;
+}
+
+.more-option-grid .danger {
+  color: #3E3220;
+}
+
+.more-option-grid .danger:hover {
+  background: rgba(62, 50, 32, 0.12);
+  color: #3E3220;
+}
+
+.ios-switch {
+  background: rgba(46, 52, 64, 0.22);
+}
+
+.ios-switch span {
+  background: #F4F4F2;
 }

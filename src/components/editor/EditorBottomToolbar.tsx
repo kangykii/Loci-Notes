@@ -11,6 +11,7 @@ type EditorBottomToolbarProps = {
   activePanel: 'more' | 'format' | null
   atomUnderlinesVisible: boolean
   editorFocusMode: boolean
+  editorAuthenticWriterMode: boolean
   aiPromptFocused: boolean
   aiRunning: boolean
   activeAICommand: AICommandId
@@ -25,6 +26,7 @@ type EditorBottomToolbarProps = {
   highlighterColors: readonly string[]
   onToggleAtomUnderlines: () => void
   onToggleFocusMode: () => void
+  onToggleAuthenticWriterMode: () => void
   onOpenNoteHistory: () => void
   onExportPdf: () => void
   onExportDocx: () => void
@@ -48,6 +50,7 @@ export function EditorBottomToolbar({
   activePanel,
   atomUnderlinesVisible,
   editorFocusMode,
+  editorAuthenticWriterMode,
   aiPromptFocused,
   aiRunning,
   activeAICommand,
@@ -62,6 +65,7 @@ export function EditorBottomToolbar({
   highlighterColors,
   onToggleAtomUnderlines,
   onToggleFocusMode,
+  onToggleAuthenticWriterMode,
   onOpenNoteHistory,
   onExportPdf,
   onExportDocx,
@@ -100,6 +104,15 @@ export function EditorBottomToolbar({
               onClick={onToggleFocusMode}
             >
               <span>Focus mode</span>
+              <span className="ios-switch" aria-hidden><span /></span>
+            </button>
+            <button
+              type="button"
+              className="more-toggle-row"
+              aria-pressed={editorAuthenticWriterMode}
+              onClick={onToggleAuthenticWriterMode}
+            >
+              <span>Authentic Writer</span>
               <span className="ios-switch" aria-hidden><span /></span>
             </button>
             <button type="button" onClick={onOpenNoteHistory}>Note history <History size={16} /></button>

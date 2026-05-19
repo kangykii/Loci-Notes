@@ -64,7 +64,7 @@ export function useFocusModePlugin({
       if (blockRect.height === 0 || containerRect.height === 0) return
 
       const blockCenter = blockRect.top + blockRect.height / 2
-      const visualCenter = containerRect.top + containerRect.height * 0.44
+      const visualCenter = containerRect.top + containerRect.height * 0.5
       const delta = blockCenter - visualCenter
 
       if (lastActiveBlockElementRef.current === activeBlock && Math.abs(delta) < 24) return

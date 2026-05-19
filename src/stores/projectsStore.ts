@@ -12,6 +12,12 @@ export const projectsStore = {
   updateDescription: (projectId: string, description: string) =>
     db.projects.update(projectId, { description }),
 
+  updateColor: (projectId: string, color: string) =>
+    db.projects.update(projectId, { color }),
+
+  updatePinned: (projectId: string, pinnedAt: string | undefined) =>
+    db.projects.update(projectId, { pinnedAt }),
+
   rename: (projectId: string, name: string) =>
     db.projects.update(projectId, { name }),
 

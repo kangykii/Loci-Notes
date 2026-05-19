@@ -14,6 +14,7 @@ export type Project = {
   name: string
   description?: string
   color: string
+  pinnedAt?: string
   createdAt: string
   source?: 'starter' | 'user' | 'imported' | 'remote'
   isStarter?: boolean
@@ -969,7 +970,7 @@ export const initialProjects: Project[] = [
     id: 'project_getting_started',
     name: 'Getting Started with Loci',
     description: 'A guided tour of the main Loci Notes workflows.',
-    color: '#111111',
+    color: '#2E3440',
     createdAt: nowIso(),
     source: 'starter',
     isStarter: true,
@@ -978,7 +979,7 @@ export const initialProjects: Project[] = [
     id: 'project_study_and_review',
     name: 'Study and Review',
     description: 'Atoms, flashcards, and review habits for remembering more.',
-    color: '#6c5a7c',
+    color: '#3E3220',
     createdAt: nowIso(),
     source: 'starter',
     isStarter: true,

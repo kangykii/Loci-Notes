@@ -18,7 +18,7 @@ const defaultDownloadOptions: DownloadOptionContent[] = [
   {
     title: 'Windows Setup EXE',
     detail: 'Recommended installer and signed updater package for Windows users.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.0.1-x64.exe',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.1.0-x64.exe',
     label: 'Download EXE',
   },
 ]

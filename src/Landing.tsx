@@ -52,7 +52,7 @@ const downloadOptions = [
   {
     title: 'Windows Setup EXE',
     detail: 'Recommended installer and signed updater package for Windows users.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.0.1-x64.exe',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.1.0-x64.exe',
     label: 'Download EXE',
   },
 ]
@@ -216,7 +216,7 @@ function Landing() {
                 <Check size={14} aria-hidden /> Release assets hosted on GitHub
               </span>
               <span>
-                <Sparkles size={14} aria-hidden /> Version 1.0.1 Windows build
+                <Sparkles size={14} aria-hidden /> Version 1.1.0 Windows build
               </span>
             </div>
             <div className="download-grid" aria-label="Download options">

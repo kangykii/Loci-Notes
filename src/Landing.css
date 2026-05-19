@@ -1,17 +1,24 @@
 :root {
-  --bg: #ffffff;
-  --pane: #fbfbfb;
-  --soft: #f7f7f6;
-  --soft-2: #eeeeed;
-  --line: #efefed;
-  --text: #111111;
-  --muted: #706d67;
-  --muted-2: #8b8881;
-  --green: #dff4cc;
-  --cream: #fff2d9;
-  --peach: #ffe3d2;
-  --blue: #e9f1f5;
-  --accent: #111111;
+  --color-primary: #2E3440;
+  --color-secondary: #F4F4F2;
+  --color-tertiary: #3E3220;
+  --color-neutral: #1A1A1A;
+  --bg: #F4F4F2;
+  --pane: #F4F4F2;
+  --soft: #F4F4F2;
+  --soft-2: rgba(46, 52, 64, 0.08);
+  --line: rgba(46, 52, 64, 0.14);
+  --text: #1A1A1A;
+  --muted: #706A72;
+  --muted-2: #7F7981;
+  --green: rgba(46, 52, 64, 0.14);
+  --cream: rgba(62, 50, 32, 0.16);
+  --peach: rgba(62, 50, 32, 0.1);
+  --blue: rgba(46, 52, 64, 0.1);
+  --accent: #2E3440;
+  --surface-glass: rgba(244, 244, 242, 0.78);
+  --surface-border: rgba(46, 52, 64, 0.14);
+  --shadow-soft: 0 24px 70px rgba(26, 26, 26, 0.08);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--text);
@@ -99,7 +106,7 @@ a {
   display: flex;
   align-items: center;
   gap: 36px;
-  color: #3e3d3b;
+  color: #2E3440;
   font-size: 15px;
 }
 
@@ -110,7 +117,7 @@ a {
 
 .desktop-nav a:hover,
 .site-footer a:hover {
-  color: #111111;
+  color: #1A1A1A;
 }
 
 .header-actions {
@@ -139,16 +146,16 @@ a {
 .ghost-link,
 .hero-secondary {
   border: 0;
-  color: #3e3d3b;
-  background: #f1f1f0;
+  color: #2E3440;
+  background: #ECECE8;
 }
 
 .primary-link,
 .hero-primary,
 .small-pill {
   border: 0;
-  color: #ffffff;
-  background: #111111;
+  color: #F4F4F2;
+  background: #1A1A1A;
 }
 
 .menu-button {
@@ -159,7 +166,7 @@ a {
   border: 0;
   border-radius: 10px;
   color: var(--text);
-  background: #eeeeed;
+  background: #E7E7E3;
 }
 
 .hero-section {
@@ -199,7 +206,7 @@ a {
 .hero-copy p {
   width: min(680px, 100%);
   margin: 28px 0 0;
-  color: #5f5d58;
+  color: #5A5260;
   font-size: clamp(1.35rem, 2vw, 2.05rem);
   font-weight: 500;
   line-height: 1.35;
@@ -221,23 +228,23 @@ a {
 .screenshot-frame {
   position: relative;
   overflow: hidden;
-  border: 1px solid #deddd9;
+  border: 1px solid #D6D6D0;
   border-radius: 24px;
   background:
-    radial-gradient(circle at 88% 16%, rgba(126, 188, 87, 0.25), transparent 30%),
-    #f7f7f6;
+    radial-gradient(circle at 88% 16%, rgba(46, 52, 64, 0.25), transparent 30%),
+    #F4F4F2;
 }
 
 .hero-preview {
   display: grid;
   grid-template-columns: minmax(96px, 22%) 1fr;
   min-height: 570px;
-  box-shadow: 0 24px 70px rgba(17, 17, 17, 0.08);
+  box-shadow: 0 24px 70px rgba(26, 26, 26, 0.08);
 }
 
 .preview-sidebar {
-  border-right: 1px solid #e8e7e3;
-  background: rgba(251, 251, 250, 0.8);
+  border-right: 1px solid #E0E0DC;
+  background: rgba(244, 244, 242, 0.8);
 }
 
 .preview-canvas {
@@ -251,7 +258,7 @@ a {
   width: min(360px, 74%);
   height: 48px;
   border-radius: 13px;
-  background: rgba(255, 255, 255, 0.84);
+  background: rgba(244, 244, 242, 0.84);
 }
 
 .preview-grid {
@@ -264,19 +271,19 @@ a {
 .preview-wide,
 .frame-empty {
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 0 0 1px rgba(17, 17, 17, 0.035);
+  background: rgba(244, 244, 242, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(26, 26, 26, 0.035);
 }
 
 .preview-grid span:nth-child(1) {
   background:
-    radial-gradient(circle at 86% 84%, rgba(17, 17, 17, 0.07), transparent 28%),
+    radial-gradient(circle at 86% 84%, rgba(26, 26, 26, 0.07), transparent 28%),
     var(--green);
 }
 
 .preview-grid span:nth-child(2) {
   background:
-    radial-gradient(circle at 88% 12%, rgba(209, 111, 72, 0.14), transparent 30%),
+    radial-gradient(circle at 88% 12%, rgba(62, 50, 32, 0.14), transparent 30%),
     var(--cream);
 }
 
@@ -298,15 +305,15 @@ a {
 
 .stat-pill {
   min-height: 150px;
-  border: 1px solid #e3e2df;
+  border: 1px solid #D6D6D0;
   border-radius: 24px;
-  background: #f7f7f6;
+  background: #F4F4F2;
   padding: 24px 28px;
 }
 
 .stat-pill strong {
   display: block;
-  color: #111111;
+  color: #1A1A1A;
   font-size: clamp(3.4rem, 5vw, 5.8rem);
   font-weight: 850;
   line-height: 0.95;
@@ -352,7 +359,7 @@ h2 span {
 .proof-card p,
 .closing-copy p {
   margin: 0;
-  color: #66635e;
+  color: #625B64;
   font-size: clamp(1.15rem, 1.6vw, 1.65rem);
   line-height: 1.45;
 }
@@ -372,7 +379,7 @@ h2 span {
   position: relative;
   min-height: 360px;
   overflow: hidden;
-  border: 1px solid rgba(17, 17, 17, 0.08);
+  border: 1px solid rgba(26, 26, 26, 0.08);
   border-radius: 24px;
   padding: clamp(24px, 2.4vw, 34px);
 }
@@ -384,31 +391,31 @@ h2 span {
   width: 210px;
   height: 210px;
   content: "";
-  border: 18px solid rgba(17, 17, 17, 0.07);
+  border: 18px solid rgba(26, 26, 26, 0.07);
   border-radius: 50%;
 }
 
 .tile-1 {
   background:
-    radial-gradient(circle at 84% 16%, rgba(126, 188, 87, 0.32), transparent 26%),
+    radial-gradient(circle at 84% 16%, rgba(46, 52, 64, 0.32), transparent 26%),
     var(--green);
 }
 
 .tile-2 {
   background:
-    radial-gradient(circle at 84% 18%, rgba(209, 111, 72, 0.22), transparent 34%),
+    radial-gradient(circle at 84% 18%, rgba(62, 50, 32, 0.22), transparent 34%),
     var(--cream);
 }
 
 .tile-3 {
   background:
-    radial-gradient(circle at 86% 10%, rgba(132, 169, 191, 0.26), transparent 32%),
+    radial-gradient(circle at 86% 10%, rgba(46, 52, 64, 0.26), transparent 32%),
     var(--blue);
 }
 
 .tile-4 {
   background:
-    radial-gradient(circle at 90% 14%, rgba(209, 111, 72, 0.24), transparent 30%),
+    radial-gradient(circle at 90% 14%, rgba(62, 50, 32, 0.24), transparent 30%),
     var(--peach);
 }
 
@@ -418,8 +425,8 @@ h2 span {
   height: 42px;
   place-items: center;
   border-radius: 12px;
-  color: #111111;
-  background: rgba(255, 255, 255, 0.78);
+  color: #1A1A1A;
+  background: rgba(244, 244, 242, 0.78);
 }
 
 .feature-tile h3 {
@@ -434,7 +441,7 @@ h2 span {
   position: relative;
   z-index: 1;
   margin: 0;
-  color: #4f4d49;
+  color: #4A4650;
   font-size: 17px;
   line-height: 1.45;
 }
@@ -463,9 +470,9 @@ h2 span {
 
 .use-case-grid article {
   min-height: 210px;
-  border: 1px solid #e3e2df;
+  border: 1px solid #D6D6D0;
   border-radius: 24px;
-  background: #fbfbfa;
+  background: #F4F4F2;
   padding: 24px;
 }
 
@@ -477,7 +484,7 @@ h2 span {
 .use-case-grid strong {
   display: block;
   margin-top: 44px;
-  color: #111111;
+  color: #1A1A1A;
   font-size: clamp(1.45rem, 2vw, 2rem);
   line-height: 1.12;
 }
@@ -489,8 +496,8 @@ h2 span {
   align-items: center;
   border-radius: 24px;
   background:
-    radial-gradient(circle at 92% 12%, rgba(126, 188, 87, 0.24), transparent 32%),
-    #eef9e6;
+    radial-gradient(circle at 92% 12%, rgba(46, 52, 64, 0.24), transparent 32%),
+    #E4DED2;
   padding: clamp(24px, 4vw, 54px);
 }
 
@@ -500,7 +507,7 @@ h2 span {
 
 .screenshot-frame {
   min-height: 430px;
-  background: #fbfbfa;
+  background: #F4F4F2;
   box-shadow: none;
 }
 
@@ -510,14 +517,14 @@ h2 span {
   height: 54px;
   align-items: center;
   padding: 0 20px;
-  border-bottom: 1px solid #e8e7e3;
+  border-bottom: 1px solid #E0E0DC;
 }
 
 .frame-toolbar i {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #deddd9;
+  background: #D6D6D0;
 }
 
 .frame-empty {
@@ -525,8 +532,8 @@ h2 span {
   min-height: 376px;
   place-items: center;
   margin: 20px;
-  color: #9b9891;
-  background: #f7f7f6;
+  color: #8D8790;
+  background: #F4F4F2;
 }
 
 .closing-section {
@@ -543,7 +550,7 @@ h2 span {
   display: grid;
   gap: 12px;
   margin-top: 24px;
-  color: #4f4d49;
+  color: #4A4650;
   font-size: 16px;
 }
 
@@ -565,16 +572,16 @@ h2 span {
   display: grid;
   gap: 16px;
   min-height: 184px;
-  border: 1px solid #e3e2df;
+  border: 1px solid #D6D6D0;
   border-radius: 24px;
-  background: #fbfbfa;
+  background: #F4F4F2;
   padding: 20px;
 }
 
 .download-card:nth-child(1) {
   background:
-    radial-gradient(circle at 90% 14%, rgba(126, 188, 87, 0.2), transparent 30%),
-    #f0f8dc;
+    radial-gradient(circle at 90% 14%, rgba(46, 52, 64, 0.2), transparent 30%),
+    #E4DED2;
 }
 
 .download-icon {
@@ -583,20 +590,20 @@ h2 span {
   height: 38px;
   place-items: center;
   border-radius: 12px;
-  color: #111111;
-  background: rgba(255, 255, 255, 0.78);
+  color: #1A1A1A;
+  background: rgba(244, 244, 242, 0.78);
 }
 
 .download-card strong {
   display: block;
-  color: #111111;
+  color: #1A1A1A;
   font-size: 20px;
   line-height: 1.15;
 }
 
 .download-card p {
   margin: 9px 0 0;
-  color: #5f5d58;
+  color: #5A5260;
   font-size: 15px;
   line-height: 1.4;
 }
@@ -606,9 +613,9 @@ h2 span {
   width: max-content;
   max-width: 100%;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(244, 244, 242, 0.78);
   padding: 7px 10px;
-  color: #5f5d58;
+  color: #5A5260;
   font-size: 13px;
   font-weight: 750;
 }
@@ -628,12 +635,12 @@ h2 span {
 }
 
 .site-footer nav {
-  color: #5f5d58;
+  color: #5A5260;
 }
 
 .site-footer > span {
   grid-column: 1 / -1;
-  color: #8b8881;
+  color: #7F7981;
   font-size: 14px;
 }
 

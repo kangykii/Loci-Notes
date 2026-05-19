@@ -22,6 +22,8 @@ type LociEditorProps = {
   onPointerUp?: PointerEventHandler<HTMLElement>
   onPointerCancel?: PointerEventHandler<HTMLElement>
   onDragStart?: DragEventHandler<HTMLElement>
+  onDragOver?: DragEventHandler<HTMLElement>
+  onDrop?: DragEventHandler<HTMLElement>
   onDragEnd?: DragEventHandler<HTMLElement>
 }
 
@@ -44,6 +46,8 @@ export function LociEditor({
   onPointerUp,
   onPointerCancel,
   onDragStart,
+  onDragOver,
+  onDrop,
   onDragEnd,
 }: LociEditorProps) {
   const classes = [
@@ -67,6 +71,8 @@ export function LociEditor({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       onDragEnd={onDragEnd}
     >
       {label}
