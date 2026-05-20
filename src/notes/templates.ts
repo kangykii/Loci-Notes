@@ -90,7 +90,8 @@ export const noteTemplates: NoteTemplate[] = [
       ],
       notes: blankDoc('Plan the next move.'),
     },
-    available: true,
+    available: false,
+    comingSoonLabel: 'Coming soon',
   },
   {
     id: 'slideshow',

@@ -40,6 +40,7 @@ export type AIProviderSettings = {
 
 export type UserSettings = {
   id: 'local'
+  theme: 'loci' | 'light' | 'dark' | 'system'
   defaultAIProvider: AIProviderId
   aiProviders: Record<AIProviderId, AIProviderSettings>
   aiTemperature: number
@@ -60,7 +61,16 @@ export type UserSettings = {
   highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
+  editorAnimatedTyping: boolean
+  editorAtomUnderlinesDefault: boolean
+  editorFocusModeDefault: boolean
+  editorFocusModeTotalMs: number
+  editorAuthenticWriterDefault: boolean
+  editorShowMarginalia: boolean
   preferredAtomSubView?: 'atoms' | 'sets'
+  studyDefaultDirection: 'term' | 'definition'
+  studyShuffleDefault: boolean
+  communityEnabled: boolean
   pinnedCommunityRecipientIds: string[]
   createdAt: string
   updatedAt: string

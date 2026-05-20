@@ -189,7 +189,7 @@ export function ProjectDetail({
         }
         action={
           <div className="project-header-actions">
-            <button type="button" onClick={newNote}><Plus size={17} /> New note in this project</button>
+            <button type="button" className="project-inline-action" onClick={newNote}><Plus size={17} /> New note in this project</button>
             <details className="project-header-menu">
               <summary aria-label="More project actions" title="More project actions">
                 <MoreHorizontal size={18} aria-hidden />

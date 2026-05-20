@@ -14,8 +14,8 @@ export const HOME_TIPS: HomeTip[] = [
   },
   {
     id: 'templates',
-    body: 'Start a fresh note from a template — reports, meeting logs, study sheets — instead of staring at a blank page.',
-    cta: { label: 'New from template', action: 'newNote' },
+    body: 'Open a fresh note the moment an idea lands. Loci keeps the path from thought to page short.',
+    cta: { label: 'New note', action: 'newNote' },
   },
   {
     id: 'projects',
@@ -46,7 +46,7 @@ export const HOME_TIPS: HomeTip[] = [
   },
   {
     id: 'community',
-    body: 'Sharing a note to a friend group sends only the snapshot you choose. Your other notes stay private by default.',
+    body: 'Share-ready community spaces are planned for a later release. For now, keep shaping the notes you will want to send.',
   },
   {
     id: 'breath',

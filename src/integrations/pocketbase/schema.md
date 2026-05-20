@@ -69,7 +69,7 @@ The local Dexie table `remoteEntityMappings` stores sync identity:
 ### user_preferences
 - Maps to local `UserSettings`.
 - Type: base.
-- Required fields: id, defaultAIProvider, aiProviders, aiTemperature, aiMaxTokens, aiIncludeNoteTitle, aiIncludeSelectedText, aiIncludeNoteExcerpt, highlighterColor, reduceMotion, compactMode, pinnedCommunityRecipientIds, createdAt, updatedAt.
+- Required fields: id, theme, defaultAIProvider, aiProviders, aiTemperature, aiMaxTokens, aiIncludeNoteTitle, aiIncludeSelectedText, aiIncludeNoteExcerpt, highlighterColor, reduceMotion, compactMode, editorAnimatedTyping, editorAtomUnderlinesDefault, editorFocusModeDefault, editorFocusModeTotalMs, editorAuthenticWriterDefault, editorShowMarginalia, studyDefaultDirection, studyShuffleDefault, communityEnabled, pinnedCommunityRecipientIds, createdAt, updatedAt.
 - Indexed fields: id, updatedAt.
 - Access rules: authenticated user can read/write their own preferences only.
 

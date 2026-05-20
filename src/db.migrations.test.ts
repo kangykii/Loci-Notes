@@ -116,6 +116,7 @@ async function seedVersion10Workspace() {
   })
   await oldDb.table('userSettings').put({
     id: 'local',
+    theme: 'loci',
     defaultAIProvider: 'openai',
     aiProviders: {},
     aiTemperature: 0.2,
@@ -126,6 +127,15 @@ async function seedVersion10Workspace() {
     highlighterColor: 'rgba(62, 50, 32, 0.18)',
     reduceMotion: false,
     compactMode: false,
+    editorAnimatedTyping: false,
+    editorAtomUnderlinesDefault: true,
+    editorFocusModeDefault: false,
+    editorFocusModeTotalMs: 0,
+    editorAuthenticWriterDefault: false,
+    editorShowMarginalia: true,
+    studyDefaultDirection: 'term',
+    studyShuffleDefault: false,
+    communityEnabled: false,
     pinnedCommunityRecipientIds: [],
     createdAt: '2026-02-01T00:00:00.000Z',
     updatedAt: '2026-02-02T00:00:00.000Z',
