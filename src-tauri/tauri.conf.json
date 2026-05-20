@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Loci Notes",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "identifier": "com.loci.notes",
   "build": {
     "frontendDist": "../dist",
@@ -47,7 +47,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0NzQxRTJDQkMxNjZGNjgKUldSb2J4YThMQjUwbER3VVpYQUVMVHA2SEtxTjd1b094VkFyMTNrNjVRb3AwSkh3ZXh2TmhtTEoK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZFQUVDNjZBQjExREVDNjkKUldScDdCMnhhc2F1YnV2dEFGUWtLV0Z1MHBBcWx2MzhtOHl4c3JadWtoeUUwcUR6WnhLSXdyaWcK",
       "endpoints": [
         "https://github.com/kangykii/Loci-Notes/releases/latest/download/latest.json"
       ],

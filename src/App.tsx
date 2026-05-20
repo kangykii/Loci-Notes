@@ -2,7 +2,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent } from 'react'
 import { useEditor } from '@tiptap/react'
-import { NodeSelection } from '@tiptap/pm/state'
+import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Highlight from '@tiptap/extension-highlight'
@@ -19,6 +19,8 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  CheckSquare,
+  Code2,
   Download,
   FileText,
   Heading1,
@@ -29,14 +31,17 @@ import {
   ImageIcon,
   Info,
   Keyboard,
-  ListTodo,
+  List,
+  ListOrdered,
   Layers3,
   LinkIcon,
   Maximize2,
   Minimize2,
+  Minus,
   MoreVertical,
   Pin,
   Plus,
+  Radical,
   RemoveFormatting,
   Search,
   Settings,
@@ -89,6 +94,8 @@ import type {
 } from './db'
 import { exportNoteDocx, exportNotePdf } from './exports'
 import { requestAIText } from './ai/aiClient'
+import { buildAIContextFromPolicy } from './ai/aiOrchestrator'
+import type { AIContextDraftItem } from './ai/aiOrchestrator'
 import type { AIProviderId } from './ai/aiTypes'
 import { aiProviders, DEFAULT_AI_TIMEOUT_MS } from './ai/providers'
 import {
@@ -99,6 +106,9 @@ import {
   canResultUpdateProjectInstructions,
   cleanAIDraftFormatting,
   defaultPromptForCommand,
+  parseAICodePayload,
+  parseAILatexPayload,
+  parseAIListPayload,
   parseAIQuotePayload,
   parseAITablePayload,
   parseAtomCandidates,
@@ -118,6 +128,7 @@ import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { LociEditor } from './components/editor/LociEditor'
+import { FormatSideControls } from './components/editor/FormatSideControls'
 import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
 import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
 import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
@@ -126,8 +137,8 @@ import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
 import {
   ActiveBlockHighlight,
   AISelectionHighlight,
-  LociFlashcard,
   LociImage,
+  LociLatex,
   LociQuote,
   TabIndent,
   aiSelectionHighlightKey,
@@ -145,11 +156,15 @@ import {
   createLociBlock,
   cloneTemplateValue,
   ensureDocumentHeading,
-  flashcardBlockDoc,
-  flashcardsFromContent,
   flattenLegacyLociBlocks,
   formatBlockTypeForBlock,
   imageBlockDoc,
+  codeBlockDocFromData,
+  codeDataFromNode,
+  latexBlockDoc,
+  latexDataFromNode,
+  listBlockDocFromData,
+  listDataFromNode,
   normalizeBlocksForContent,
   quoteAuthorNode,
   quoteBlockDocFromData,
@@ -204,6 +219,7 @@ import { cityMarginaliaIndexForNote, editorMarginaliaOpacityFromText } from './m
 import { useImageLoadCoordinator } from './marginalia/useImageLoadCoordinator'
 import { getGreeting, getSubtagline, getTipByIndex } from './home/tips'
 import './App.css'
+import './components/editor/formatBlocks.css'
 import './styles/marginalia.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
@@ -900,7 +916,7 @@ const Sidebar = memo(function Sidebar({
         <div className="sidebar-section sidebar-project-section">
           <span className="sidebar-section-label">{activeProject.name}</span>
           <VirtualList
-            className="project-quick-nav scroll-hover"
+            className="project-quick-nav"
             style={projectQuickNavStyle}
             items={projectQuickNotes}
             rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
@@ -1078,7 +1094,6 @@ function App() {
   const [templateProjectId, setTemplateProjectId] = useState<string | null>(null)
   const [activeEditorPanel, setActiveEditorPanel] = useState<EditorPanel | null>(null)
   const [formatDialogQuery, setFormatDialogQuery] = useState('')
-  const formatDialogSearchRef = useRef<HTMLInputElement | null>(null)
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiPromptFocused, setAiPromptFocused] = useState(false)
   const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
@@ -1090,6 +1105,7 @@ function App() {
   const [blockPicker, setBlockPicker] = useState<BlockPickerState>({ open: false, blockId: '', placement: 'after', query: '' })
   const [draggedBlockId, setDraggedBlockId] = useState('')
   const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
+  const [activeFormatBlockId, setActiveFormatBlockId] = useState('')
   const [authorshipMenu, setAuthorshipMenu] = useState<AuthorshipMenuState | null>(null)
   const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
   const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
@@ -1157,7 +1173,7 @@ function App() {
   const formatBlockFrameRef = useRef<number | null>(null)
   const editorResizeFrameRef = useRef<number | null>(null)
   const suppressEditorPersistRef = useRef(false)
-  const lastLocalEditorContentRef = useRef<{ noteId: string; content: JSONContent } | null>(null)
+  const lastLocalEditorContentRef = useRef<{ noteId: string; contentKey: string } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
   const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
   const selectedBlocksRef = useRef<LociBlock[]>([])
@@ -1515,8 +1531,15 @@ function App() {
   }, [notes, runWorkerJob])
 
   const checkForUpdates = useCallback(async (manual = false) => {
-    await updateService.checkAndInstall({
+    await updateService.check({
       manual,
+      isDesktop: Boolean(window.__TAURI_INTERNALS__),
+      onStateChange: setUpdateState,
+    })
+  }, [])
+
+  const installAvailableUpdate = useCallback(async () => {
+    await updateService.installAvailable({
       isDesktop: Boolean(window.__TAURI_INTERNALS__),
       onStateChange: setUpdateState,
     })
@@ -1554,20 +1577,6 @@ function App() {
     const contentNotes = savedNotes.filter((note) => note.content)
     if (!contentNotes.length) return
 
-    const changedAtoms = contentNotes.flatMap((note) =>
-      flashcardsFromContent(note.content)
-        .map((card) => {
-          const existing = atomsRef.current.find((atom) => atom.id === card.atomId)
-          if (!existing || (existing.phrase === card.phrase && existing.definition === card.definition)) return null
-          return { ...existing, phrase: card.phrase, definition: card.definition, updatedAt: nowIso() }
-        })
-        .filter((atom): atom is Atom => Boolean(atom)),
-    )
-    if (changedAtoms.length) {
-      await atomsStore.saveMany(changedAtoms)
-      setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
-    }
-
     const latestContentNote = contentNotes[contentNotes.length - 1]
     if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
     snapshotDebounceRef.current = setTimeout(() => {
@@ -1586,6 +1595,12 @@ function App() {
       if (!latest) return
       const linkedAtoms = projectAtomsForNote(latest)
       if (!linkedAtoms.length) return
+      debugEditorLog('scheduled atom sync', {
+        noteId: latest.id,
+        atomCount: linkedAtoms.length,
+        isOpenNote: latest.id === selectedNoteIdRef.current,
+        selection: debugEditorState(),
+      })
       void syncAtomMarksForNotes([latest], linkedAtoms)
     }, 1200)
   }
@@ -1698,13 +1713,64 @@ function App() {
     }
   }, [restoreEditorScroll])
 
-  function setEditorContentFromSync(content: JSONContent) {
+  const editorContentKey = (content: JSONContent) => JSON.stringify(content)
+
+  const prosemirrorBlockIndex = (currentEditor = editorRef.current) => {
+    if (!currentEditor || currentEditor.isDestroyed) return -1
+    return currentEditor.state.selection.$from.index(0)
+  }
+
+  const debugEditorState = (currentEditor = editorRef.current) => {
+    if (!currentEditor || currentEditor.isDestroyed) return null
+    const { from, to } = currentEditor.state.selection
+    return {
+      from,
+      to,
+      activeIndex: prosemirrorBlockIndex(currentEditor),
+      childCount: currentEditor.state.doc.childCount,
+      docSize: currentEditor.state.doc.content.size,
+      focused: currentEditor.isFocused,
+    }
+  }
+
+  const debugEditorLog = (message: string, details: Record<string, unknown>) => {
+    if (!(window as typeof window & { __LOCI_EDITOR_DEBUG?: boolean }).__LOCI_EDITOR_DEBUG) return
+    console.debug(`[loci-editor] ${message}`, details)
+  }
+
+  function setEditorContentFromSync(content: JSONContent, reason = 'sync') {
     const currentEditor = editorRef.current
     if (!currentEditor) return
+    const before = debugEditorState(currentEditor)
+    const selection = currentEditor.state.selection
+    const restoreSelection = selection instanceof TextSelection
+      ? { from: selection.from, to: selection.to }
+      : null
     preserveEditorScroll(() => {
       suppressEditorPersistRef.current = true
       currentEditor.commands.setContent(content, { emitUpdate: false })
+      if (restoreSelection) {
+        const nextSize = currentEditor.state.doc.content.size
+        const from = Math.min(restoreSelection.from, nextSize)
+        const to = Math.min(restoreSelection.to, nextSize)
+        try {
+          currentEditor.view.dispatch(
+            currentEditor.state.tr.setSelection(TextSelection.create(currentEditor.state.doc, from, to)),
+          )
+        } catch {
+          currentEditor.view.dispatch(
+            currentEditor.state.tr.setSelection(TextSelection.near(currentEditor.state.doc.resolve(from), -1)),
+          )
+        }
+      }
       suppressEditorPersistRef.current = false
+    })
+    debugEditorLog('setContent', {
+      reason,
+      before,
+      after: debugEditorState(currentEditor),
+      contentBlocks: content.content?.length ?? 0,
+      noteId: selectedNoteIdRef.current,
     })
   }
 
@@ -1732,7 +1798,14 @@ function App() {
     setNotes(nextNotes)
     await notesStore.saveMany(updatedNotes)
     const openNote = updatedById.get(selectedNoteIdRef.current)
-    if (openNote) setEditorContentFromSync(primaryTemplateContent(openNote))
+    if (openNote) {
+      debugEditorLog('atom sync touched open note', {
+        noteId: openNote.id,
+        selection: debugEditorState(),
+        changedBlockCount: primaryTemplateContent(openNote).content?.length ?? 0,
+      })
+      if (!editorRef.current?.isFocused) setEditorContentFromSync(primaryTemplateContent(openNote), 'atom-sync-open-note')
+    }
     return markCount
   }
 
@@ -1755,8 +1828,24 @@ function App() {
       nextPatch.blocks = normalizeBlocksForContent(content, target.blocks)
     }
     const updated = { ...target, ...nextPatch, updatedAt: nowIso() }
-    notesRef.current = notesRef.current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated)
-    setNotes((current) => current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated))
+    const isLocalTypingPatch =
+      noteId === selectedNoteIdRef.current &&
+      Boolean(editorRef.current?.isFocused) &&
+      'content' in patch &&
+      'templateData' in patch &&
+      'blocks' in patch
+    const applyNotePatch = (items: Note[]) => {
+      const mapped = items.map((note) => (note.id === noteId ? updated : note))
+      return isLocalTypingPatch ? mapped : mapped.sort(sortByUpdated)
+    }
+    notesRef.current = applyNotePatch(notesRef.current)
+    setNotes((current) => applyNotePatch(current))
+    debugEditorLog('persistNote', {
+      noteId,
+      isLocalTypingPatch,
+      patchKeys: Object.keys(patch),
+      selection: debugEditorState(),
+    })
     scheduleNoteSave(updated, 'title' in patch || 'content' in patch || 'templateData' in patch)
   }, [])
 
@@ -1840,6 +1929,87 @@ function App() {
     [persistNotesProject],
   )
 
+  const isListBlockActive = () =>
+    Boolean(editorRef.current?.isActive('taskList') || editorRef.current?.isActive('bulletList') || editorRef.current?.isActive('orderedList'))
+
+  const insertParagraphAfterActiveList = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || !isListBlockActive()) return false
+    const { $from } = currentEditor.state.selection
+    if ($from.depth < 1) return false
+    const topLevelNode = $from.node(1)
+    if (!['taskList', 'bulletList', 'orderedList'].includes(topLevelNode.type.name)) return false
+    const insertAt = $from.before(1) + topLevelNode.nodeSize
+    const nextBlockIndex = activeBlockIndex() + 1
+    currentEditor
+      .chain()
+      .focus()
+      .insertContentAt(insertAt, { type: 'paragraph', content: [] })
+      .setTextSelection(insertAt + 1)
+      .run()
+    pendingEnterBlockIndexRef.current = nextBlockIndex
+    return true
+  }
+
+  const addListLineFromShortcut = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || !isListBlockActive()) return false
+    const insertListItemAfterSelection = (itemType: 'taskItem' | 'listItem') => {
+      const { state, view } = currentEditor
+      const { $from } = state.selection
+      const itemDepth = Array.from({ length: $from.depth + 1 }, (_, index) => $from.depth - index)
+        .find((depth) => $from.node(depth).type.name === itemType)
+      if (itemDepth === undefined) return false
+      const insertAt = $from.after(itemDepth)
+      const item = itemType === 'taskItem'
+        ? {
+            type: 'taskItem',
+            attrs: { checked: false },
+            content: [{ type: 'paragraph', content: [] }],
+          }
+        : {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [] }],
+          }
+      const node = currentEditor.schema.nodeFromJSON(item)
+      const tr = state.tr.insert(insertAt, node)
+      tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(insertAt + 2, tr.doc.content.size)), 1))
+      view.dispatch(tr.scrollIntoView())
+      return true
+    }
+
+    if (currentEditor.isActive('taskList')) {
+      if (currentEditor.chain().focus().splitListItem('taskItem').run()) return true
+      return insertListItemAfterSelection('taskItem')
+    }
+    if (currentEditor.chain().focus().splitListItem('listItem').run()) return true
+    return insertListItemAfterSelection('listItem')
+  }
+
+  const handleBackspaceAtBlockBoundary = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || currentEditor.isActive('table') || currentEditor.isActive('taskList') || currentEditor.isActive('bulletList') || currentEditor.isActive('orderedList')) return false
+    const { state, view } = currentEditor
+    const { selection } = state
+    if (!selection.empty || !(selection instanceof TextSelection)) return false
+    const { $from } = selection
+    if ($from.depth < 1 || $from.parentOffset !== 0) return false
+    const blockIndex = activeBlockIndex()
+    if (blockIndex <= 0) return false
+
+    pendingEnterBlockIndexRef.current = blockIndex - 1
+    const blockStart = $from.before(1)
+    const blockNode = $from.node(1)
+    const isEmptyTextBlock = blockNode.isTextblock && blockNode.textContent.length === 0
+    if (!isEmptyTextBlock) return false
+
+    const tr = state.tr.delete(blockStart, blockStart + blockNode.nodeSize)
+    const selectionPos = Math.max(1, blockStart - 1)
+    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(selectionPos, tr.doc.content.size)), -1))
+    view.dispatch(tr.scrollIntoView())
+    return true
+  }
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ link: false, dropcursor: false }),
@@ -1856,8 +2026,8 @@ function App() {
       TableRow,
       TableHeader,
       TableCell,
-      LociFlashcard,
       LociQuote,
+      LociLatex,
       AtomMark,
       AuthorshipMark,
       ActiveBlockHighlight,
@@ -1868,27 +2038,49 @@ function App() {
     editorProps: {
       attributes: { class: 'note-editor' },
       handleKeyDown: (_view, event) => {
-        if (event.key !== 'Enter') return false
-        if (event.shiftKey) {
+        if (event.key === 'Backspace' && handleBackspaceAtBlockBoundary()) {
           event.preventDefault()
           return true
         }
-        pendingEnterBlockIndexRef.current = activeBlockIndex()
+        if (event.key !== 'Enter') return false
+        if (event.shiftKey) {
+          if (!addListLineFromShortcut()) {
+            event.preventDefault()
+            return true
+          }
+          event.preventDefault()
+          return true
+        }
+        if (insertParagraphAfterActiveList()) {
+          event.preventDefault()
+          return true
+        }
         return false
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
       setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(updatedEditor.getText()))
       if (suppressEditorPersistRef.current) return
+      const activeIndex = activeBlockIndex(updatedEditor)
       const id = selectedNoteIdRef.current
       const note = notesRef.current.find((item) => item.id === id)
       if (!note) return
       const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
       const content = templateDataToContent(templateData)
-      const activeIndex = pendingEnterBlockIndexRef.current ?? activeBlockIndex()
+      const normalizedActiveIndex = pendingEnterBlockIndexRef.current ?? activeIndex
       pendingEnterBlockIndexRef.current = null
-      const blocks = normalizeBlocksForContent(content, note.blocks, activeIndex)
-      lastLocalEditorContentRef.current = { noteId: id, content }
+      const blocks = normalizeBlocksForContent(content, note.blocks, normalizedActiveIndex)
+      const contentKey = editorContentKey(content)
+      lastLocalEditorContentRef.current = { noteId: id, contentKey }
+      debugEditorLog('onUpdate', {
+        noteId: id,
+        activeIndex,
+        normalizedActiveIndex,
+        selection: debugEditorState(updatedEditor),
+        sourceBlockCount: content.content?.length ?? 0,
+        savedBlockCount: note.blocks?.length ?? 0,
+        normalizedBlockIds: blocks.map((block) => block.id),
+      })
       void persistNote({ templateData, content, blocks }, id)
     },
   }, [selectedNoteId])
@@ -1937,7 +2129,7 @@ function App() {
       }, 720))
     }
 
-    const els = Array.from(document.querySelectorAll('.scroll-hover'))
+    const els = Array.from(document.querySelectorAll('.scroll-hover, .scroll-region-stable'))
     els.forEach((el) => el.addEventListener('scroll', onScroll, { passive: true }))
 
     return () => {
@@ -1966,46 +2158,92 @@ function App() {
   useEffect(() => {
     if (!editor || !selectedNote) return
     const latestLocalContent = lastLocalEditorContentRef.current
-    if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.content === selectedNote.content) return
     const nextContent = primaryTemplateContent(selectedNote)
-    if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) setEditorContentFromSync(nextContent)
+    const nextContentKey = editorContentKey(nextContent)
+    if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.contentKey === nextContentKey) {
+      debugEditorLog('skip setContent', { reason: 'local-content-key-match', noteId: selectedNote.id })
+      return
+    }
+
+    const currentContentKey = editorContentKey(editor.getJSON())
+    if (currentContentKey === nextContentKey) {
+      debugEditorLog('skip setContent', { reason: 'editor-json-match', noteId: selectedNote.id })
+      return
+    }
+
+    if (editor.isFocused && latestLocalContent?.noteId === selectedNote.id) {
+      debugEditorLog('skip setContent', {
+        reason: 'focused-local-note',
+        noteId: selectedNote.id,
+        selection: debugEditorState(editor),
+      })
+      return
+    }
+
+    setEditorContentFromSync(nextContent, 'selected-note-sync')
   }, [editor, selectedNote])
+
+  function activeFormatBlock(): { block: LociBlock; index: number; from: number; to: number } | null {
+    if (!editor) return null
+    const selectionFrom = editor.state.selection.from
+    let runningPos = 1
+    const blocks = selectedBlocksRef.current
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
+      const blockSize = blockContentNodes(block.content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
+      const from = runningPos
+      const to = runningPos + blockSize
+      runningPos = to
+      if (!formatBlockTypeForBlock(block)) continue
+      if (selectionFrom >= from && selectionFrom <= to) return { block, index, from, to }
+    }
+    return null
+  }
 
   const syncFormatSideControls = useCallback(() => {
     const shell = blockEditorShellRef.current
     const editorDom = mountedEditorDom(editor)
-    const activeType: FormatBlockType | null = editor?.isActive('table') ? 'table' : editor?.isActive('lociQuote') ? 'quote' : editor?.isActive('image') ? 'image' : null
-    if (!shell || !editorDom || !activeType) {
+    if (!editor || !shell || !editorDom) {
       setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
       return
     }
+
     const activeElement = document.activeElement instanceof Element ? document.activeElement : null
-    const selectedNode = editor.view.nodeDOM(editor.state.selection.from)
-    const selectedElement = selectedNode instanceof Element ? selectedNode : selectedNode?.parentElement ?? null
-    const selectionNode = activeType === 'table'
-      ? editorDom.querySelector('.selectedCell')?.closest('table')
-      : activeType === 'image'
-        ? selectedElement?.closest('.note-editor .loci-image-frame')
-        : activeElement?.closest('.note-editor .loci-quote')
-    const target = selectionNode ?? (
-      activeType === 'table'
-        ? activeElement?.closest('.note-editor table')
-        : activeType === 'image'
-          ? selectedElement?.closest('.note-editor .loci-image-frame') ?? editorDom.querySelector('.loci-image-frame.ProseMirror-selectednode')
-          : editorDom.querySelector('.loci-quote')
-    )
+    const isInsideEditor = editor.isFocused || Boolean(activeElement && editorDom.contains(activeElement))
+    if (!isInsideEditor) {
+      setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
+      return
+    }
+
+    const active = activeFormatBlock()
+    const activeType = active ? formatBlockTypeForBlock(active.block) : null
+    if (!active || !activeType) {
+      setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
+      return
+    }
+
+    const nodeDom = editor.view.nodeDOM(active.from)
+    const nodeElement = nodeDom instanceof HTMLElement ? nodeDom : nodeDom instanceof Element ? nodeDom.parentElement : null
+    const target = activeType === 'table'
+      ? nodeElement?.closest<HTMLElement>('.tableWrapper') ?? nodeElement?.closest<HTMLElement>('table')
+      : nodeElement
     if (!(target instanceof HTMLElement)) {
       setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
       return
     }
     const shellRect = shell.getBoundingClientRect()
     const targetRect = target.getBoundingClientRect()
     const next = {
-      blockId: '',
+      blockId: active.block.id,
       type: activeType,
       top: targetRect.top - shellRect.top,
       left: Math.max(0, shellRect.width + 8),
     }
+    setActiveFormatBlockId(active.block.id)
     setFormatSideControls((current) =>
       current &&
       current.blockId === next.blockId &&
@@ -2124,9 +2362,6 @@ function App() {
   useEffect(() => {
     if (activeEditorPanel !== 'format') return
     setFormatDialogQuery('')
-    queueMicrotask(() => {
-      formatDialogSearchRef.current?.focus()
-    })
   }, [activeEditorPanel])
 
   useEffect(() => {
@@ -2714,7 +2949,7 @@ function App() {
       showNotice('Choose a friend or group before sending a note.')
       return
     }
-    const options = { ownerAccountId: authSession.accountId, permission }
+    const options = { ownerAccountId: authSession.accountId, permission, note: noteToShare }
     const share = selectedCommunityFriend
       ? await sharingService.sendNoteToFriend(noteToShare.id, selectedCommunityFriend, options)
       : await sharingService.sendNoteToGroup(noteToShare.id, selectedCommunityGroup as FriendGroup, options)
@@ -2749,7 +2984,7 @@ function App() {
       showNotice('Choose a friend or group before starting edit-together.')
       return
     }
-    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const }
+    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const, note }
     const share = selectedCommunityFriend
       ? await sharingService.sendNoteToFriend(note.id, selectedCommunityFriend, options)
       : await sharingService.sendNoteToGroup(note.id, selectedCommunityGroup as FriendGroup, options)
@@ -2759,6 +2994,7 @@ function App() {
       ownerAccountId: authSession.accountId,
       title: note.title || 'Untitled collaboration',
     })
+    const shareWithSession = await sharingService.attachCollaborationSession(share.id, session.id) ?? share
     await communityActivityService.create({
       recipientKind: selectedCommunityFriend ? 'friend' : 'group',
       recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
@@ -2772,7 +3008,7 @@ function App() {
         title: session.title,
       },
     })
-    setSharedNoteExports((current) => [{ ...share, collaborationSessionId: session.id }, ...current])
+    setSharedNoteExports((current) => [shareWithSession, ...current])
     showNotice('Edit-together foundation created for this note.')
   }
 
@@ -2818,29 +3054,37 @@ function App() {
       taskInstruction,
       userContent,
       promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+      temperature: userSettings.aiTemperature,
+      maxTokens: userSettings.aiMaxTokens,
       signal,
     })
   }
 
   const buildAIContext = (taskType: AITaskType, selection?: EditorRange) => {
     const appParts = [`Current view: ${activeView}`]
-    if (selectedNote) appParts.push(`Note title: ${selectedNote.title}`)
+    if (selectedNote && userSettings.aiIncludeNoteTitle) appParts.push(`Note title: ${selectedNote.title}`)
     if (selectedProject) appParts.push(`Project: ${selectedProject.name}`)
     if (selectedNote) appParts.push(`Template: ${selectedNote.templateId}`)
-    const parts: string[] = [`App context:\n${appParts.join('\n')}`]
+    const items: AIContextDraftItem[] = [{
+      id: 'app',
+      label: 'App context',
+      sensitivity: 'low',
+      enabledByPolicy: true,
+      content: `App context:\n${appParts.join('\n')}`,
+    }]
     const projectMemory = parseProjectMemory(selectedProject?.description ?? '')
     if (projectMemory.summary.trim()) {
-      parts.push(`Project summary:\n${projectMemory.summary.trim()}`)
+      items.push({ id: 'project-summary', label: 'Project summary', sensitivity: 'medium', enabledByPolicy: true, content: `Project summary:\n${projectMemory.summary.trim()}` })
     }
     if (projectMemory.instructions.trim()) {
-      parts.push(`Project instructions:\n${projectMemory.instructions.trim()}`)
+      items.push({ id: 'project-instructions', label: 'Project instructions', sensitivity: 'medium', enabledByPolicy: true, content: `Project instructions:\n${projectMemory.instructions.trim()}` })
     }
     if (taskUsesWritingStyle(taskType) && projectMemory.writingStyle.trim()) {
-      parts.push(`Project writing style:\n${projectMemory.writingStyle.trim()}`)
+      items.push({ id: 'project-writing-style', label: 'Project writing style', sensitivity: 'medium', enabledByPolicy: true, content: `Project writing style:\n${projectMemory.writingStyle.trim()}` })
     }
     if (taskType === 'mark_writing') {
       const criteria = projectMemory.markingCriteria.trim() || aiMarkingCriteria.trim() || DEFAULT_MARKING_CRITERIA
-      parts.push(`${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}`)
+      items.push({ id: 'marking-criteria', label: 'Marking criteria', sensitivity: 'medium', enabledByPolicy: true, content: `${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}` })
     }
     if (selectedProject) {
       const styleSamples = notes
@@ -2850,40 +3094,54 @@ function App() {
         .map((note) => `${note.title}: ${collectNotePreviewLines(note.content, 3).join(' ') || collectText(note.content).slice(0, 260)}`)
         .filter((sample) => sample.trim().length > 0)
       if (styleSamples.length) {
-        parts.push(`Writing style signals from this project:\n${styleSamples.join('\n')}`)
+        items.push({ id: 'style-samples', label: 'Writing style samples', sensitivity: 'high', enabledByPolicy: taskUsesWritingStyle(taskType), content: `Writing style signals from this project:\n${styleSamples.join('\n')}` })
       }
     }
     if (editor) {
       const { from, to } = selection ?? editor.state.selection
       const selectedText = selection ? editor.state.doc.textBetween(from, to, ' ').trim() : ''
-      if (selectedText) parts.push(`Selected text:\n${selectedText}`)
+      if (selectedText) items.push({ id: 'selected-text', label: 'Selected text', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeSelectedText, content: `Selected text:\n${selectedText}` })
       const nearbyStart = Math.max(0, from - 900)
       const nearbyEnd = Math.min(editor.state.doc.content.size, to + 900)
       const nearby = editor.state.doc.textBetween(nearbyStart, nearbyEnd, '\n').trim()
-      if (nearby && nearby !== selectedText) parts.push(`Nearby editor context:\n${nearby}`)
+      if (nearby && nearby !== selectedText) items.push({ id: 'nearby-context', label: 'Nearby editor context', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `Nearby editor context:\n${nearby}` })
     }
     if (selectedNote) {
       const outline = collectNotePreviewLines(selectedNote.content, 8).join('\n')
-      if (outline) parts.push(`Compact note outline:\n${outline}`)
+      if (outline) items.push({ id: 'note-outline', label: 'Compact note outline', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `Compact note outline:\n${outline}` })
       const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' || taskType === 'ai_atomise' || taskType === 'mark_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
       const excerpt = collectText(selectedNote.content).slice(0, excerptLimit)
-      if (excerpt) parts.push(`${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}`)
+      if (excerpt) items.push({ id: 'note-excerpt', label: 'Note excerpt', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}` })
     }
-    const highlighted = selection ? highlightedFormatBlock(selection) : null
-    if (highlighted?.block.type === 'table') {
+    const activeRange = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
+    const highlighted = activeRange ? highlightedFormatBlock(activeRange) : null
+    const highlightedType = highlighted ? formatBlockTypeForBlock(highlighted.block) : null
+    if (highlighted && highlightedType === 'table') {
       const tableNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'table')
       if (tableNode) {
         const table = tableDataFromNode(tableNode)
-        parts.push(`Highlighted table block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, columns: table.columns, rows: table.rows })}`)
+        items.push({ id: 'highlighted-table', label: 'Highlighted table block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted table block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, columns: table.columns, rows: table.rows })}` })
       }
     }
-    if (highlighted?.block.type === 'quote') {
+    if (highlighted && highlightedType === 'quote') {
       const quoteNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociQuote' || node.type === 'blockquote')
       if (quoteNode) {
-        parts.push(`Highlighted quote block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...quoteDataFromNode(quoteNode) })}`)
+        items.push({ id: 'highlighted-quote', label: 'Highlighted quote block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted quote block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...quoteDataFromNode(quoteNode) })}` })
       }
     }
-    return parts.join('\n\n')
+    if (highlighted && (highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList')) {
+      const listNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'taskList' || node.type === 'bulletList' || node.type === 'orderedList')
+      if (listNode) items.push({ id: 'highlighted-list', label: 'Highlighted list block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted list block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...listDataFromNode(listNode) })}` })
+    }
+    if (highlighted && highlightedType === 'code') {
+      const codeNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'codeBlock')
+      if (codeNode) items.push({ id: 'highlighted-code', label: 'Highlighted code block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted code block:\n${codeDataFromNode(codeNode)}` })
+    }
+    if (highlighted && highlightedType === 'latex') {
+      const latexNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociLatex')
+      if (latexNode) items.push({ id: 'highlighted-latex', label: 'Highlighted LaTeX block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted LaTeX block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, latex: latexDataFromNode(latexNode) })}` })
+    }
+    return buildAIContextFromPolicy(items, 'directByok')
   }
 
   const requestAICompletion = async (prompt: string, command: AICommandId = activeAICommand) => {
@@ -2912,7 +3170,8 @@ function App() {
         : undefined
     const actionConfig = aiActionConfig(taskType, !!selection)
     const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Marking criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
-    const context = buildAIContext(taskType, selection)
+    const aiContext = buildAIContext(taskType, selection)
+    const context = aiContext.text
     const userContent = `${context ? `Context:\n${context}\n\n` : ''}User request:\n${prompt.trim()}`
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
     const controller = new AbortController()
@@ -2927,25 +3186,48 @@ function App() {
         taskInstruction,
         userContent,
         promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+        temperature: userSettings.aiTemperature,
+        maxTokens: userSettings.aiMaxTokens,
+        contextManifest: aiContext.manifest,
         signal: controller.signal,
       })
       const { responseText, usage } = result
       const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
-      const highlighted = selection ? highlightedFormatBlock(selection) : null
+      const activeRange = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
+      const highlighted = activeRange ? highlightedFormatBlock(activeRange) : null
+      const highlightedType = highlighted ? formatBlockTypeForBlock(highlighted.block) : null
       const blockPayload: AIBlockPayload | undefined =
         taskType === 'table_block'
           ? {
               kind: 'table',
               data: parseAITablePayload(responseText),
-              targetBlockId: highlighted?.block.type === 'table' ? highlighted.block.id : undefined,
+              targetBlockId: highlightedType === 'table' ? highlighted?.block.id : undefined,
             }
           : taskType === 'quote_block'
             ? {
                 kind: 'quote',
                 data: parseAIQuotePayload(responseText),
-                targetBlockId: highlighted?.block.type === 'quote' ? highlighted.block.id : undefined,
+                targetBlockId: highlightedType === 'quote' ? highlighted?.block.id : undefined,
               }
-            : undefined
+            : taskType === 'list_block'
+              ? {
+                  kind: 'list',
+                  data: parseAIListPayload(responseText),
+                  targetBlockId: highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList' ? highlighted?.block.id : undefined,
+                }
+              : taskType === 'code_block'
+                ? {
+                    kind: 'code',
+                    data: parseAICodePayload(responseText),
+                    targetBlockId: highlightedType === 'code' ? highlighted?.block.id : undefined,
+                  }
+                : taskType === 'latex_block'
+                  ? {
+                      kind: 'latex',
+                      data: parseAILatexPayload(responseText),
+                      targetBlockId: highlightedType === 'latex' ? highlighted?.block.id : undefined,
+                    }
+                  : undefined
       setAiResult({
         prompt,
         taskType,
@@ -3315,14 +3597,22 @@ function App() {
   const persistBlocks = (blocks: LociBlock[]) => {
     if (!selectedNote) return
     const content = contentFromBlocks(blocks)
-    lastLocalEditorContentRef.current = { noteId: selectedNote.id, content }
+    lastLocalEditorContentRef.current = { noteId: selectedNote.id, contentKey: editorContentKey(content) }
     const templateData = updatePrimaryTemplateContent(selectedNote, content)
     void persistNote({ blocks, templateData, content: templateDataToContent(templateData) })
     if (editor) {
+      const before = debugEditorState(editor)
       preserveEditorScroll(() => {
         suppressEditorPersistRef.current = true
         editor.commands.setContent(content, { emitUpdate: false })
         suppressEditorPersistRef.current = false
+      })
+      debugEditorLog('setContent', {
+        reason: 'persist-blocks',
+        before,
+        after: debugEditorState(editor),
+        contentBlocks: content.content?.length ?? 0,
+        noteId: selectedNote.id,
       })
     }
   }
@@ -3354,7 +3644,9 @@ function App() {
       runningPos = blockTo
       const formatType = formatBlockTypeForBlock(block)
       if (!formatType) continue
-      const touchesBlock = range.from < blockTo && range.to > blockFrom
+      const touchesBlock = range.from === range.to
+        ? range.from >= blockFrom && range.from <= blockTo
+        : range.from < blockTo && range.to > blockFrom
       if (touchesBlock) return { block, index }
     }
     return null
@@ -3584,31 +3876,6 @@ function App() {
     setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
   }
 
-  const insertFlashcardAfterActive = () => {
-    if (!selectedNote || !selectedBlocksRef.current.length) return
-    const now = nowIso()
-    const atom: Atom = {
-      id: createId('atom'),
-      projectId: selectedNote.projectId,
-      phrase: 'Question',
-      definition: 'Answer',
-      tags: ['Flashcard'],
-      createdAt: now,
-      updatedAt: now,
-      reviewCount: 0,
-      knownCount: 0,
-    }
-    const insertIndex = activeBlockIndex() + 1
-    const block = createLociBlock(flashcardBlockDoc(atom.id), 'flashcard')
-    block.attrs = { atomId: atom.id }
-    const targetBlockId = selectedBlocksRef.current[Math.max(0, insertIndex - 1)]?.id ?? ''
-    const nextBlocks = targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
-    void atomsStore.save(atom)
-    setAtoms((current) => [atom, ...current])
-    persistBlocks(nextBlocks)
-    showNotice('Flashcard block added and linked as an atom.')
-  }
-
   const insertImageAfterActive = (src: string) => {
     const safeSrc = sanitizeImageUrl(src)
     if (!safeSrc) {
@@ -3629,16 +3896,39 @@ function App() {
 
   const applyAIBlockPayload = (payload: AIBlockPayload) => {
     if (!selectedBlocksRef.current.length) return
-    const content = payload.kind === 'table'
-      ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
-      : quoteBlockDocFromData(payload.data.quote, payload.data.author)
-    const type: LociBlockType = payload.kind === 'table' ? 'table' : 'quote'
+    const content =
+      payload.kind === 'table'
+        ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
+        : payload.kind === 'quote'
+          ? quoteBlockDocFromData(payload.data.quote, payload.data.author)
+          : payload.kind === 'list'
+            ? listBlockDocFromData(payload.data.listType, payload.data.items)
+            : payload.kind === 'code'
+              ? codeBlockDocFromData(payload.data.code)
+              : latexBlockDoc(payload.data.latex)
+    const type: LociBlockType =
+      payload.kind === 'table'
+        ? 'table'
+        : payload.kind === 'quote'
+          ? 'quote'
+          : payload.kind === 'list'
+            ? payload.data.listType
+            : payload.kind === 'code'
+              ? 'code'
+              : 'latex'
     const flatBlocks = selectedBlocksRef.current
     const targetIndex = payload.targetBlockId ? flatBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
     const targetBlock = targetIndex >= 0 ? flatBlocks[targetIndex] : null
-    const nextBlocks = targetBlock?.type === type
+    const targetFormatType = targetBlock ? formatBlockTypeForBlock(targetBlock) : null
+    const canUpdateTarget = targetBlock && (
+      targetBlock.type === type ||
+      targetFormatType === type ||
+      (payload.kind === 'list' && (targetFormatType === 'checklist' || targetFormatType === 'bulletList' || targetFormatType === 'numberedList'))
+    )
+    const nextBlocks = canUpdateTarget && targetBlock
       ? updateBlockById(selectedBlocks, targetBlock.id, (block) => ({
         ...block,
+        type,
         content,
         updatedAt: nowIso(),
       }))
@@ -3651,27 +3941,74 @@ function App() {
     persistBlocks(nextBlocks)
   }
 
-  const activeBlockIndex = () => {
-    const blocks = selectedBlocksRef.current
-    if (!editor) return Math.max(0, blocks.length - 1)
-    const selectionFrom = editor.state.selection.from
-    let runningPos = 1
-    for (let index = 0; index < blocks.length; index += 1) {
-      const blockSize = blockContentNodes(blocks[index].content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
-      if (selectionFrom <= runningPos + blockSize) return index
-      runningPos += blockSize
-    }
-    return Math.max(0, blocks.length - 1)
+  const activeBlockIndex = (currentEditor = editor) => {
+    const fallbackIndex = Math.max(0, selectedBlocksRef.current.length - 1)
+    if (!currentEditor || currentEditor.isDestroyed) return fallbackIndex
+    const index = currentEditor.state.selection.$from.index(0)
+    return Math.max(0, Math.min(Math.max(0, currentEditor.state.doc.childCount - 1), index))
   }
 
-  const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn') => {
+  const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn' | 'toggleHeader' | 'alignLeft' | 'alignCenter' | 'alignRight' | 'resetSize' | 'mergeCells' | 'splitCell') => {
     if (!editor) return
     const chain = editor.chain().focus()
     if (command === 'addRow') chain.addRowAfter().run()
     if (command === 'removeRow') chain.deleteRow().run()
     if (command === 'addColumn') chain.addColumnAfter().run()
     if (command === 'removeColumn') chain.deleteColumn().run()
+    if (command === 'toggleHeader') chain.toggleHeaderRow().run()
+    if (command === 'alignLeft') chain.setCellAttribute('align', 'left').run()
+    if (command === 'alignCenter') chain.setCellAttribute('align', 'center').run()
+    if (command === 'alignRight') chain.setCellAttribute('align', 'right').run()
+    if (command === 'resetSize') chain.setCellAttribute('colwidth', null).run()
+    if (command === 'mergeCells') chain.mergeCells().run()
+    if (command === 'splitCell') chain.splitCell().run()
     requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const addLineToActiveList = () => {
+    if (!addListLineFromShortcut()) showNotice('Click inside a list first.')
+    requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const copyActiveCodeBlock = () => {
+    if (!editor) return
+    const { $from } = editor.state.selection
+    for (let depth = $from.depth; depth >= 0; depth -= 1) {
+      const node = $from.node(depth)
+      if (node.type.name === 'codeBlock') {
+        void copyToClipboard(node.textContent)
+        showNotice('Code copied.')
+        return
+      }
+    }
+  }
+
+  const activeLatexSource = () => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex')
+    if (activeLatex?.dataset.latex !== undefined) return activeLatex.dataset.latex
+    if (!editor) return ''
+    const { $from } = editor.state.selection
+    for (let depth = $from.depth; depth >= 0; depth -= 1) {
+      const node = $from.node(depth)
+      if (node.type.name === 'lociLatex') return String(node.attrs.latex ?? '')
+    }
+    return ''
+  }
+
+  const copyActiveLatex = () => {
+    const source = activeLatexSource()
+    if (!source) return
+    void copyToClipboard(source)
+    showNotice('Equation copied.')
+  }
+
+  const toggleActiveLatexEditor = () => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex') ?? document.querySelector<HTMLElement>('.loci-latex.ProseMirror-selectednode')
+    if (!activeLatex) return
+    activeLatex.classList.toggle('is-editing')
+    if (activeLatex.classList.contains('is-editing')) activeLatex.querySelector<HTMLTextAreaElement>('.loci-latex-source')?.focus()
   }
 
   const updateImageAttributes = (attrs: Partial<{
@@ -3812,49 +4149,33 @@ function App() {
   const renderFormatSideControls = () => {
     if (!editor || !formatSideControls) return null
     return (
-      <div className="format-side-controls" style={{ top: formatSideControls.top, left: formatSideControls.left }} onMouseDown={(event) => event.preventDefault()}>
-        {formatSideControls.type === 'table' && (
-          <>
-            <button type="button" aria-label="Add table row" onClick={() => runTableCommand('addRow')}><span aria-hidden>R+</span></button>
-            <button type="button" aria-label="Remove table row" onClick={() => runTableCommand('removeRow')}><span aria-hidden>R-</span></button>
-            <button type="button" aria-label="Add table column" onClick={() => runTableCommand('addColumn')}><span aria-hidden>C+</span></button>
-            <button type="button" aria-label="Remove table column" onClick={() => runTableCommand('removeColumn')}><span aria-hidden>C-</span></button>
-          </>
-        )}
-        {formatSideControls.type === 'quote' && (
-          <button type="button" aria-label="Toggle quote author" onClick={toggleQuoteAuthor}><span aria-hidden>Au</span></button>
-        )}
-        {formatSideControls.type === 'image' && (
-          <>
-            <button type="button" aria-label="Fit image to page width" onClick={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}><span aria-hidden>Fit</span></button>
-            <button
-              type="button"
-              aria-label={imageCropEditing ? 'Finish cropping image' : 'Crop image'}
-              onClick={() => {
-                if (imageCropEditing) {
-                  setImageCropEditing(false)
-                  return
-                }
-                const attrs = currentImageAttrs()
-                updateImageAttributes({ cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect, zoom: Math.max(120, attrs.zoom) })
-                setImageCropEditing(true)
-              }}
-            >
-              <span aria-hidden>{imageCropEditing ? 'Done' : 'Crop'}</span>
-            </button>
-            <button className="format-side-control-wide" type="button" aria-label="Cycle crop aspect ratio" onClick={cycleImageAspect}><span aria-hidden>Aspect Ratio</span></button>
-            {imageCropEditing && (
-              <>
-                <button type="button" aria-label="Zoom crop out" onClick={() => zoomImage(-10)}><span aria-hidden>Z-</span></button>
-                <button type="button" aria-label="Zoom crop in" onClick={() => zoomImage(10)}><span aria-hidden>Z+</span></button>
-              </>
-            )}
-            <button type="button" aria-label="Align image left" onClick={() => updateImageAttributes({ align: 'left' })}><span aria-hidden>L</span></button>
-            <button type="button" aria-label="Align image center" onClick={() => updateImageAttributes({ align: 'center' })}><span aria-hidden>C</span></button>
-            <button type="button" aria-label="Align image right" onClick={() => updateImageAttributes({ align: 'right' })}><span aria-hidden>R</span></button>
-          </>
-        )}
-      </div>
+      <FormatSideControls
+        key={activeFormatBlockId || formatSideControls.blockId}
+        type={formatSideControls.type}
+        top={formatSideControls.top}
+        left={formatSideControls.left}
+        imageCropEditing={imageCropEditing}
+        onTableCommand={runTableCommand}
+        onAddListLine={addLineToActiveList}
+        onCopyCode={copyActiveCodeBlock}
+        onEditLatex={toggleActiveLatexEditor}
+        onCopyLatex={copyActiveLatex}
+        onToggleQuoteAuthor={toggleQuoteAuthor}
+        onFitImage={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}
+        onToggleCrop={() => {
+          if (imageCropEditing) {
+            setImageCropEditing(false)
+            return
+          }
+          const attrs = currentImageAttrs()
+          updateImageAttributes({ cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect, zoom: Math.max(120, attrs.zoom) })
+          setImageCropEditing(true)
+        }}
+        onCycleAspect={cycleImageAspect}
+        onZoomOut={() => zoomImage(-10)}
+        onZoomIn={() => zoomImage(10)}
+        onAlignImage={(align) => updateImageAttributes({ align })}
+      />
     )
   }
 
@@ -4794,11 +5115,29 @@ function App() {
     {
       id: 'checklist',
       label: 'Checklist',
-      icon: ListTodo,
+      icon: CheckSquare,
       description: 'Turn lines into tappable tasks.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleTaskList().run(),
+    },
+    {
+      id: 'bullet-list',
+      label: 'Bullet list',
+      icon: List,
+      description: 'Turn lines into dot points.',
+      group: 'Structure',
+      enabled: true,
+      action: () => editor?.chain().focus().toggleBulletList().run(),
+    },
+    {
+      id: 'numbered-list',
+      label: 'Numbered list',
+      icon: ListOrdered,
+      description: 'Turn lines into ordered steps.',
+      group: 'Structure',
+      enabled: true,
+      action: () => editor?.chain().focus().toggleOrderedList().run(),
     },
     {
       id: 'table',
@@ -4813,13 +5152,41 @@ function App() {
       },
     },
     {
-      id: 'flashcard',
-      label: 'Flashcard',
-      icon: Brain,
-      description: 'Question-and-answer study card.',
+      id: 'code',
+      label: 'Code',
+      icon: Code2,
+      description: 'Insert a formatted code block.',
       group: 'Structure',
       enabled: true,
-      action: () => insertFlashcardAfterActive(),
+      action: () => editor?.chain().focus().toggleCodeBlock().run(),
+    },
+    {
+      id: 'latex',
+      label: 'LaTeX',
+      icon: Radical,
+      description: 'Insert an equation block.',
+      group: 'Structure',
+      enabled: true,
+      action: () => {
+        const blocks = selectedBlocksRef.current
+        const targetBlockId = blocks[activeBlockIndex()]?.id
+        if (targetBlockId) insertBlock(targetBlockId, 'latex', 'after')
+        else editor?.chain().focus().insertContent(latexBlockDoc().content?.[0] ?? { type: 'lociLatex', attrs: { latex: '' } }).run()
+      },
+    },
+    {
+      id: 'divider',
+      label: 'Divider',
+      icon: Minus,
+      description: 'Separate sections with a rule.',
+      group: 'Structure',
+      enabled: true,
+      action: () => {
+        const blocks = selectedBlocksRef.current
+        const targetBlockId = blocks[activeBlockIndex()]?.id
+        if (targetBlockId) insertBlock(targetBlockId, 'divider', 'after')
+        else editor?.chain().focus().setHorizontalRule().run()
+      },
     },
     {
       id: 'highlight',
@@ -5230,6 +5597,8 @@ function App() {
                     <LociEditor
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
+                      smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                      smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Appendix / body</span>}
@@ -5304,6 +5673,8 @@ function App() {
                     <LociEditor
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
+                      smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                      smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Notes</span>}
@@ -5351,6 +5722,8 @@ function App() {
                           <LociEditor
                             editor={editor}
                             isFocusMode={editorFocusModeVisual}
+                            smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                            smoothCaretScrollContainerRef={documentScrollRef}
                             shellRef={(node) => { blockEditorShellRef.current = node }}
                             draggedBlockId={draggedBlockId}
                             imageCropEditing={imageCropEditing}
@@ -5383,6 +5756,8 @@ function App() {
                   <LociEditor
                     editor={editor}
                     isFocusMode={editorFocusModeVisual}
+                    smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                    smoothCaretScrollContainerRef={documentScrollRef}
                     shellRef={(node) => { blockEditorShellRef.current = node }}
                     draggedBlockId={draggedBlockId}
                     imageCropEditing={imageCropEditing}
@@ -5554,7 +5929,6 @@ function App() {
               <div className="format-dialog-search" onMouseDown={(event) => event.stopPropagation()}>
                 <Search size={18} aria-hidden />
                 <input
-                  ref={formatDialogSearchRef}
                   type="text"
                   role="searchbox"
                   value={formatDialogQuery}
@@ -5609,7 +5983,7 @@ function App() {
         )}
 
         {activeView === 'projects' && (
-          <section className="main-pane compact-pane scroll-hover">
+          <section className="main-pane compact-pane scroll-region-stable">
             {openedProject ? (
               <ProjectDetail
                 project={openedProject}
@@ -6410,7 +6784,7 @@ function App() {
         )}
 
         {activeView === 'settings' && (
-          <section className="main-pane compact-pane settings-pane scroll-hover">
+          <section className="main-pane compact-pane settings-pane scroll-region-stable">
             <PageHeader
               title="Settings"
               action={<button type="button" onClick={openProfileModal}><Settings size={17} /> Edit profile</button>}
@@ -6604,26 +6978,54 @@ function App() {
                       ? `Update ${updateState.version}`
                       : updateState.status === 'checking'
                         ? 'Checking'
-                        : updateState.status === 'installing'
-                          ? 'Installing'
-                          : updateState.status === 'error'
-                            ? 'Update check failed'
-                            : 'Desktop updater'}
+                        : updateState.status === 'downloading'
+                          ? 'Downloading'
+                          : updateState.status === 'installing'
+                            ? 'Installing'
+                            : updateState.status === 'ready'
+                              ? 'Relaunch required'
+                              : updateState.status === 'error'
+                                ? updateState.errorCategory === 'signature'
+                                  ? 'Invalid update signature'
+                                  : updateState.errorCategory === 'manifest'
+                                    ? 'Update manifest failed'
+                                    : updateState.errorCategory === 'network'
+                                      ? 'Update network failed'
+                                      : 'Update failed'
+                                : 'Desktop updater'}
                   </strong>
                   <span>{updateState.message}</span>
+                  {typeof updateState.downloadedBytes === 'number' && (
+                    <span>
+                      {Math.round(updateState.downloadedBytes / 1024 / 1024)} MB downloaded
+                      {updateState.contentLength ? ` of ${Math.round(updateState.contentLength / 1024 / 1024)} MB` : ''}
+                    </span>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  className="settings-update-button"
-                  disabled={updateState.status === 'checking' || updateState.status === 'installing'}
-                  onClick={() => void checkForUpdates(true)}
-                >
-                  {updateState.status === 'checking'
-                    ? 'Checking...'
-                    : updateState.status === 'installing'
-                      ? 'Installing...'
-                      : 'Check for updates'}
-                </button>
+                <div className="settings-update-actions">
+                  <button
+                    type="button"
+                    className="settings-update-button"
+                    disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing'}
+                    onClick={() => void checkForUpdates(true)}
+                  >
+                    {updateState.status === 'checking' ? 'Checking...' : 'Check for updates'}
+                  </button>
+                  {(updateState.canInstall || updateState.status === 'available') && (
+                    <button
+                      type="button"
+                      className="settings-update-button"
+                      disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing'}
+                      onClick={() => void installAvailableUpdate()}
+                    >
+                      {updateState.status === 'downloading'
+                        ? 'Downloading...'
+                        : updateState.status === 'installing'
+                          ? 'Installing...'
+                          : 'Install update'}
+                    </button>
+                  )}
+                </div>
               </section>
             </div>
           </section>

@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.tsx'
 import Landing from './Landing.tsx'
 
+/* eslint-disable react-refresh/only-export-components */
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown

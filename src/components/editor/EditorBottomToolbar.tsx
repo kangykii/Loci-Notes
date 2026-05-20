@@ -123,7 +123,7 @@ export function EditorBottomToolbar({
         </div>
       )}
       <div
-        className={`floating-editor-bar scroll-hover ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`}
+        className={`floating-editor-bar ${aiPromptFocused ? 'is-prompt-open' : ''} ${aiRunning ? 'is-thinking' : ''}`}
         role="toolbar"
         aria-label="Editor tools"
       >

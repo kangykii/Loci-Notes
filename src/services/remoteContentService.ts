@@ -1,5 +1,6 @@
 import { db, nowIso } from '../db'
 import type { RemoteContentItem, RemoteContentPlacement } from '../db'
+import { sanitizeTrustedDownloadUrl } from '../utils/urlValidation'
 
 export type DownloadOptionContent = {
   title: string
@@ -18,7 +19,7 @@ const defaultDownloadOptions: DownloadOptionContent[] = [
   {
     title: 'Windows Setup EXE',
     detail: 'Recommended installer and signed updater package for Windows users.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.1.0-x64.exe',
+    href: 'https://github.com/kangykii/Loci-Notes/releases/download/v1.1.1/Loci%20Notes_1.1.1_x64-setup.exe',
     label: 'Download EXE',
   },
 ]
@@ -44,13 +45,17 @@ export const remoteContentService: RemoteContentService = {
   async getDownloadOptions() {
     const remoteDownloads = await this.listByPlacement('landing')
     const downloadItems = remoteDownloads
-      .filter((item) => item.href)
-      .map((item) => ({
-        title: item.title,
-        detail: item.body ?? 'Download Loci Notes.',
-        href: item.href as string,
-        label: item.campaignId ?? 'Download',
-      }))
+      .flatMap((item) => {
+        if (!item.href) return []
+        const href = sanitizeTrustedDownloadUrl(item.href)
+        if (!href) return []
+        return [{
+          title: item.title,
+          detail: item.body ?? 'Download Loci Notes.',
+          href,
+          label: item.campaignId ?? 'Download',
+        }]
+      })
     return downloadItems.length ? downloadItems : defaultDownloadOptions
   },
 }

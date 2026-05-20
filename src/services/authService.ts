@@ -1,5 +1,5 @@
-import { db, nowIso } from '../db'
 import type { AccountProfile, AuthSession } from '../db'
+import { authManager, signedOutSession } from './authManager'
 
 export type OnlineAccountState = {
   session: AuthSession
@@ -11,26 +11,10 @@ export type AuthService = {
   signOut: () => Promise<AuthSession>
 }
 
-export const signedOutSession = (): AuthSession => {
-  const now = nowIso()
-  return {
-    id: 'current',
-    status: 'signed-out',
-    lastCheckedAt: now,
-    updatedAt: now,
-  }
-}
+export { signedOutSession }
 
 export const authService: AuthService = {
-  async getAccountState() {
-    const session = await db.authSessions.get('current') ?? signedOutSession()
-    const profile = session.accountId ? await db.accountProfiles.get(session.accountId) : undefined
-    return { session, profile }
-  },
+  getAccountState: () => authManager.getAccountState(),
 
-  async signOut() {
-    const session = signedOutSession()
-    await db.authSessions.put(session)
-    return session
-  },
+  signOut: () => authManager.signOut(),
 }

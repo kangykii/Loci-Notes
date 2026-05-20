@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { Brain, Calendar, ChartNoAxesColumn, Code2, Columns3, FileText, Info, Minus, Quote, Table2 } from 'lucide-react'
+import { Calendar, ChartNoAxesColumn, CheckSquare, Code2, Columns3, FileText, List, ListOrdered, Minus, Quote, Radical, Table2 } from 'lucide-react'
 import { createId, nowIso } from '../db'
 import type { JSONContent, LociBlock, LociBlockType, Note, NoteTemplateData, NoteTemplateId } from '../db'
 import {
@@ -8,6 +8,7 @@ import {
   createTemplateBlocks,
   emptyDoc,
   headingDoc,
+  normalizeLegacyEditorContent,
   normalizeBlocksForContent,
   paragraphNode,
 } from '../editor/blocks'
@@ -134,12 +135,14 @@ export const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
 }
 
 export const blockPickerOptions: BlockPickerOption[] = [
+  { type: 'checklist', label: 'Checklist', description: 'Track tasks with checkable lines.', icon: CheckSquare },
+  { type: 'numberedList', label: 'Numbered list', description: 'Ordered steps or ranked points.', icon: ListOrdered },
+  { type: 'bulletList', label: 'Bullet list', description: 'Dot-point notes and grouped ideas.', icon: List },
   { type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
-  { type: 'flashcard', label: 'Flashcard', description: 'Question and answer atom card.', icon: Brain },
   { type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
   { type: 'code', label: 'Code', description: 'Add a formatted code snippet.', icon: Code2 },
+  { type: 'latex', label: 'LaTeX', description: 'Write an equation with a preview.', icon: Radical },
   { type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
-  { type: 'callout', label: 'Callout', description: 'Highlight an important note.', icon: Info },
 ]
 
 export function templateStructureLabel(id: NoteTemplateId) {
@@ -197,11 +200,11 @@ export function normalizeTemplateData(templateId: NoteTemplateId, content: JSONC
 export function primaryTemplateContent(note: Note | undefined): JSONContent {
   if (!note) return emptyDoc
   const data = normalizeTemplateData(note.templateId ?? 'blank', note.content ?? emptyDoc, note.templateData)
-  if (data.kind === 'blank') return data.body
-  if (data.kind === 'report') return data.appendix
-  if (data.kind === 'planner') return data.notes
+  if (data.kind === 'blank') return normalizeLegacyEditorContent(data.body)
+  if (data.kind === 'report') return normalizeLegacyEditorContent(data.appendix)
+  if (data.kind === 'planner') return normalizeLegacyEditorContent(data.notes)
   const slide = data.slides.find((item) => item.id === data.activeSlideId) ?? data.slides[0]
-  return slide?.body ?? emptyDoc
+  return normalizeLegacyEditorContent(slide?.body ?? emptyDoc)
 }
 
 export function updatePrimaryTemplateContent(note: Note, content: JSONContent): NoteTemplateData {
@@ -216,9 +219,9 @@ export function updatePrimaryTemplateContent(note: Note, content: JSONContent): 
 }
 
 export function templateDataToContent(data: NoteTemplateData): JSONContent {
-  if (data.kind === 'blank') return data.body ?? emptyDoc
+  if (data.kind === 'blank') return normalizeLegacyEditorContent(data.body ?? emptyDoc)
   if (data.kind === 'report') {
-    const appendix = data.appendix ?? emptyDoc
+    const appendix = normalizeLegacyEditorContent(data.appendix ?? emptyDoc)
     return {
       type: 'doc',
       content: [
@@ -235,7 +238,7 @@ export function templateDataToContent(data: NoteTemplateData): JSONContent {
   if (data.kind === 'planner') {
     const priorities = Array.isArray(data.priorities) ? data.priorities : []
     const tasks = Array.isArray(data.tasks) ? data.tasks : []
-    const notes = data.notes ?? emptyDoc
+    const notes = normalizeLegacyEditorContent(data.notes ?? emptyDoc)
     return {
       type: 'doc',
       content: [
@@ -249,7 +252,7 @@ export function templateDataToContent(data: NoteTemplateData): JSONContent {
   const slides = Array.isArray(data.slides) ? data.slides : []
   const content = slides.flatMap((slide, index) => [
     { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: slide.title || `Slide ${index + 1}` }] },
-    ...(slide.body?.content ?? []),
+    ...(normalizeLegacyEditorContent(slide.body ?? emptyDoc).content ?? []),
   ])
   return {
     type: 'doc',

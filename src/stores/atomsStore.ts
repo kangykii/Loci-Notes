@@ -1,28 +1,10 @@
-import { db, noteBodyStore, noteToMediaAssets, noteToMeta } from '../db'
-import type { Atom, FlashcardSet, Note } from '../db'
-import type { Table } from 'dexie'
+import { workspaceDomain } from '../domain/workspaceDomain'
+import { atomsRepository } from '../repositories/atomsRepository'
+import type { FlashcardSet, Note } from '../db'
 
 export const atomsStore = {
-  listByUpdated: () => db.atoms.orderBy('updatedAt').reverse().toArray(),
+  ...atomsRepository,
 
-  save: (atom: Atom) => db.atoms.put(atom),
-
-  saveMany: (atoms: Atom[]) => db.atoms.bulkPut(atoms),
-
-  deleteManyAndUnlink: (atomIds: string[], touchedNotes: Note[], updatedSets: FlashcardSet[]) => {
-    const tables = [db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.flashcardSets] as unknown as Table<unknown, string>[]
-    const notesTable = db.notes as unknown as { bulkPut(items: Note[]): Promise<unknown> }
-    return db.transaction('rw', tables, async () => {
-      await db.atoms.bulkDelete(atomIds)
-      if (touchedNotes.length) {
-        await notesTable.bulkPut(touchedNotes)
-        await db.noteMetas.bulkPut(touchedNotes.map(noteToMeta))
-        await noteBodyStore.bulkPutNoteBodies(touchedNotes)
-        await Promise.all(touchedNotes.map((note) => db.mediaAssets.where('noteId').equals(note.id).delete()))
-        const assets = touchedNotes.flatMap(noteToMediaAssets)
-        if (assets.length) await db.mediaAssets.bulkPut(assets)
-      }
-      if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
-    })
-  },
+  deleteManyAndUnlink: (atomIds: string[], touchedNotes: Note[], updatedSets: FlashcardSet[]) =>
+    workspaceDomain.deleteAtomsAndUnlink({ atomIds, touchedNotes, updatedSets }),
 }

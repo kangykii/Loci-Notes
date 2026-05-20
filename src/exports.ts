@@ -1,56 +1,7 @@
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import { saveAs } from 'file-saver'
 import { jsPDF } from 'jspdf'
-
-type JSONContent = {
-  type?: string
-  attrs?: Record<string, unknown>
-  content?: JSONContent[]
-  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>
-  text?: string
-  [key: string]: unknown
-}
-
-type Atom = {
-  id: string
-  phrase: string
-  definition: string
-}
-
-type NoteTemplateData =
-  | { kind: 'blank'; body: JSONContent }
-  | {
-      kind: 'report'
-      subtitle: string
-      summary: string
-      findings: string
-      recommendations: string
-      appendix: JSONContent
-    }
-  | {
-      kind: 'planner'
-      date: string
-      priorities: string[]
-      tasks: Array<{ id: string; text: string; done: boolean }>
-      schedule: Array<{ id: string; time: string; text: string }>
-      notes: JSONContent
-    }
-  | {
-      kind: 'slideshow'
-      activeSlideId: string
-      slides: Array<{ id: string; title: string; body: JSONContent; speakerNotes: string }>
-    }
-
-type Note = {
-  title: string
-  content: JSONContent
-  templateId?: string
-  templateData?: NoteTemplateData
-}
-
-type Project = {
-  name: string
-}
+import type { Atom, JSONContent, Note, Project } from './db'
 
 type PdfSegment = {
   text: string
@@ -266,13 +217,6 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
     if (node.type === 'taskItem') {
       const checked = node.attrs?.checked === true
       renderSegments(inlineSegments(node), { fontSize: 11.5, lineHeight: 6.2, gapAfter: 2, indent: 8, bullet: checked ? '[x]' : '[ ]' })
-      return
-    }
-
-    if (node.type === 'lociFlashcard') {
-      renderSegments([{ text: 'Flashcard', bold: true }], { fontSize: 13, lineHeight: 6, gapAfter: 2 })
-      ;(node.content ?? []).forEach((child) => renderNode(child))
-      y += 2
       return
     }
 
@@ -517,15 +461,6 @@ function nodeToParagraph(node: JSONContent): Paragraph[] {
     return [
       new Paragraph({ text: 'Table', heading: HeadingLevel.HEADING_2 }),
       ...tableRows(node).map((row) => new Paragraph({ text: row.join(' | ') })),
-    ]
-  }
-
-  if (node.type === 'lociFlashcard') {
-    const [question, ...answerParts] = node.content ?? []
-    return [
-      new Paragraph({ text: 'Flashcard', heading: HeadingLevel.HEADING_2 }),
-      new Paragraph({ children: [new TextRun({ text: collectText(question ?? { type: 'paragraph' }), bold: true })] }),
-      new Paragraph({ text: answerParts.map(collectText).join(' ').trim() }),
     ]
   }
 

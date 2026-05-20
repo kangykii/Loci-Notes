@@ -70,7 +70,7 @@ function ProjectMemoryTextarea({
   return (
     <textarea
       ref={ref}
-      className="project-memory-field scroll-hover"
+      className="project-memory-field"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -123,14 +123,10 @@ export function ProjectDetail({
   const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
   const [projectTitleEditing, setProjectTitleEditing] = useState(false)
   const [projectTitleDraft, setProjectTitleDraft] = useState(project.name)
+  const effectiveProjectTitleDraft = projectTitleEditing ? projectTitleDraft : project.name
   const [editingNoteId, setEditingNoteId] = useState('')
   const [editingNoteTitle, setEditingNoteTitle] = useState('')
   const projectTitleInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (projectTitleEditing) return
-    setProjectTitleDraft(project.name)
-  }, [project.name, projectTitleEditing])
 
   useEffect(() => {
     if (!projectTitleEditing) return
@@ -139,7 +135,7 @@ export function ProjectDetail({
   }, [projectTitleEditing])
 
   const commitProjectTitle = () => {
-    const nextName = projectTitleDraft.trim()
+    const nextName = effectiveProjectTitleDraft.trim()
     if (nextName && nextName !== project.name) updateName(nextName)
     else setProjectTitleDraft(project.name)
     setProjectTitleEditing(false)
@@ -165,7 +161,7 @@ export function ProjectDetail({
             <input
               ref={projectTitleInputRef}
               className="project-title-input"
-              value={projectTitleDraft}
+              value={effectiveProjectTitleDraft}
               onChange={(event) => setProjectTitleDraft(event.target.value)}
               onBlur={commitProjectTitle}
               onKeyDown={(event) => {

@@ -6,6 +6,9 @@ export type AITaskType =
   | 'generate_insert'
   | 'table_block'
   | 'quote_block'
+  | 'list_block'
+  | 'code_block'
+  | 'latex_block'
   | 'answer_with_context'
   | 'summarize_note'
   | 'mark_writing'
@@ -28,9 +31,28 @@ export type AIQuotePayload = {
   author?: string
 }
 
+export type AIListPayload = {
+  mode: 'create' | 'update'
+  listType: 'checklist' | 'bulletList' | 'numberedList'
+  items: string[]
+}
+
+export type AICodePayload = {
+  mode: 'create' | 'update'
+  code: string
+}
+
+export type AILatexPayload = {
+  mode: 'create' | 'update'
+  latex: string
+}
+
 export type AIBlockPayload =
   | { kind: 'table'; data: AITablePayload; targetBlockId?: string }
   | { kind: 'quote'; data: AIQuotePayload; targetBlockId?: string }
+  | { kind: 'list'; data: AIListPayload; targetBlockId?: string }
+  | { kind: 'code'; data: AICodePayload; targetBlockId?: string }
+  | { kind: 'latex'; data: AILatexPayload; targetBlockId?: string }
 
 export type AIResult = {
   prompt: string
@@ -68,6 +90,9 @@ export const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
   generate_insert: 'Task: generate_insert. Return only clean document text that can be inserted at the cursor.',
   table_block: 'Task: table_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","columns":["Column"],"rows":[["Cell"]]}. Use update only when highlighted table context is provided; otherwise use create. Reorganize, clean, add, or edit data according to the user request.',
   quote_block: 'Task: quote_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","quote":"Quote text","author":"Optional author"}. Use update only when highlighted quote context is provided. Do not invent an author; omit author if unknown.',
+  list_block: 'Task: list_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","listType":"checklist"|"bulletList"|"numberedList","items":["Item"]}. Use update when highlighted or active list context is provided. Keep each item as plain text without bullets, numbers, or checkbox markers.',
+  code_block: 'Task: code_block. Return raw code only. Do not use markdown fences, explanations, headings, or JSON. Use the highlighted code context when provided and return the complete desired code block.',
+  latex_block: 'Task: latex_block. Return strict JSON only, no markdown. Shape: {"mode":"create"|"update","latex":"LaTeX equation source"}. Use update when highlighted or active LaTeX context is provided. If selected text is plain-language math, convert it into valid LaTeX equation source inside the latex field.',
   answer_with_context: 'Task: answer_with_context. Answer briefly using note/project context. Mention the context used in plain language when useful. Do not format as insertable prose by default.',
   summarize_note: 'Task: summarize_note. Return plain text with short section headings and dash bullets. Do not use Markdown syntax.',
   mark_writing: 'Task: mark_writing. Mark the writing against the supplied marking criteria. Return concise plain-text sections: Overall, Strengths, Improvements, Suggested edit. If no clear criteria are supplied, use the default criteria from context and say that default criteria were used. Do not use Markdown syntax.',
@@ -152,6 +177,9 @@ export function routeAITask(prompt: string, hasSelection: boolean, command?: AIC
   const q = prompt.toLowerCase().trim()
   if (/\b(table|tabulate|spreadsheet|columns?|rows?|grid|organise .*data|organize .*data)\b/.test(q)) return 'table_block'
   if (/\b(quote|qoute|blockquote|pull quote|pull qoute|cite this|citation|add author|shorten quote|shorten qoute|polish quote|polish qoute)\b/.test(q)) return 'quote_block'
+  if (/\b(checklist|check list|numbered list|ordered list|bullet list|dot points?|list items?|todo list|to-do list)\b/.test(q)) return 'list_block'
+  if (/\b(code|function|snippet|program|script|typescript|javascript|python|rust|sql|debug this code|fix this code)\b/.test(q)) return 'code_block'
+  if (/\b(latex|equation|formula|maths?|mathematical|solve for|derive)\b/.test(q)) return 'latex_block'
   if (/\b(atomi[sz]e|make atoms?|create atoms?|extract atoms?|key terms?|define terms?|glossary|concept cards?)\b/.test(q)) return 'ai_atomise'
   if (/\b(mark|grade|rubric|criteria|assess|evaluate|feedback|review my writing|score|critique)\b/.test(q)) return 'mark_writing'
   if (/\b(how do i|how to|where is|settings?|export|pdf|docx|create|delete|shortcut|sidebar|project|note history)\b/.test(q)) return 'app_help'
@@ -171,6 +199,8 @@ export function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
           ? 'Create atoms'
           : taskType === 'table_block' || taskType === 'quote_block'
             ? 'Apply block'
+            : taskType === 'list_block' || taskType === 'code_block' || taskType === 'latex_block'
+              ? 'Apply block'
             : taskType === 'mark_writing'
               ? 'Copy feedback'
               : taskType === 'answer_with_context' || taskType === 'app_help'
@@ -179,7 +209,7 @@ export function aiActionConfig(taskType: AITaskType, hasSelection: boolean) {
     canReplaceSelection: taskType === 'edit_selection' && hasSelection,
     canInsert: taskType === 'generate_insert' || taskType === 'summarize_note' || taskType === 'general',
     canCreateAtoms: taskType === 'atom_task' || taskType === 'ai_atomise',
-    canApplyBlock: taskType === 'table_block' || taskType === 'quote_block',
+    canApplyBlock: taskType === 'table_block' || taskType === 'quote_block' || taskType === 'list_block' || taskType === 'code_block' || taskType === 'latex_block',
   }
 }
 
@@ -202,7 +232,8 @@ export function aiPrimaryActionLabel(result: AIResult) {
 export function aiDraftLabel(taskType: AITaskType) {
   if (taskType === 'mark_writing') return 'Editable feedback'
   if (taskType === 'ai_atomise' || taskType === 'atom_task') return 'Editable atom candidates'
-  if (taskType === 'table_block' || taskType === 'quote_block') return 'Editable block JSON'
+  if (taskType === 'table_block' || taskType === 'quote_block' || taskType === 'list_block' || taskType === 'latex_block') return 'Editable block JSON'
+  if (taskType === 'code_block') return 'Editable code block'
   if (taskType === 'update_project_instructions') return 'Editable project instructions'
   return 'Editable draft'
 }
@@ -259,6 +290,58 @@ export function parseAIQuotePayload(text: string): AIQuotePayload {
   const authorSource = value.author ?? value.citation
   const author = typeof authorSource === 'string' && authorSource.trim() ? authorSource.trim() : undefined
   return { mode: value.mode === 'update' ? 'update' : 'create', quote, author }
+}
+
+export function parseAIListPayload(text: string): AIListPayload {
+  let value: Partial<AIListPayload> & { type?: string; list_type?: string }
+  try {
+    value = parseAIJson(text) as Partial<AIListPayload> & { type?: string; list_type?: string }
+  } catch {
+    const items = text
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((item) => item.replace(/^\s*(?:[-*+]|\d+[.)]|\[[ xX]\])\s+/, '').trim())
+      .filter(Boolean)
+    if (!items.length) throw new Error('List response was empty.')
+    return { mode: 'update', listType: /^\s*\d+[.)]/m.test(text) ? 'numberedList' : /\[[ xX]\]/.test(text) ? 'checklist' : 'bulletList', items }
+  }
+  const requestedType = String(value.listType ?? value.list_type ?? value.type ?? '').trim()
+  const listType: AIListPayload['listType'] =
+    requestedType === 'checklist' || /check|task|todo/i.test(requestedType)
+      ? 'checklist'
+      : requestedType === 'numberedList' || /number|ordered/i.test(requestedType)
+        ? 'numberedList'
+        : 'bulletList'
+  const items = Array.isArray(value.items)
+    ? value.items.map((item) => String(item ?? '').replace(/^\s*(?:[-*+]|\d+[.)]|\[[ xX]\])\s+/, '').trim()).filter(Boolean)
+    : []
+  if (!items.length) throw new Error('List JSON needs items.')
+  return { mode: value.mode === 'update' ? 'update' : 'create', listType, items }
+}
+
+export function parseAICodePayload(text: string): AICodePayload {
+  const code = text
+    .trim()
+    .replace(/^```[a-zA-Z0-9_-]*\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim()
+  if (!code) throw new Error('Code response was empty.')
+  return { mode: 'update', code }
+}
+
+export function parseAILatexPayload(text: string): AILatexPayload {
+  let value: Partial<AILatexPayload> & { equation?: string; source?: string }
+  try {
+    value = parseAIJson(text) as Partial<AILatexPayload> & { equation?: string; source?: string }
+  } catch {
+    const latex = text.trim().replace(/^```(?:latex|tex)?\s*/i, '').replace(/```\s*$/i, '').trim()
+    if (!latex) throw new Error('LaTeX response was empty.')
+    return { mode: 'update', latex }
+  }
+  const latexSource = value.latex ?? value.equation ?? value.source
+  const latex = typeof latexSource === 'string' ? latexSource.trim() : ''
+  if (!latex) throw new Error('LaTeX JSON needs latex source.')
+  return { mode: value.mode === 'update' ? 'update' : 'create', latex }
 }
 
 export const MARK_WRITING_FEEDBACK_SECTIONS = [

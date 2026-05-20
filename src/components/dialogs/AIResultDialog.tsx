@@ -28,7 +28,7 @@ function MarkWritingFeedbackFields({
         <div key={key} className="ai-mark-feedback-card">
           <span className="ai-mark-feedback-card-title">{label}</span>
           <textarea
-            className="ai-mark-feedback-card-input scroll-hover"
+            className="ai-mark-feedback-card-input"
             value={sections[key]}
             onChange={(event) => patch(key, event.target.value)}
             aria-label={label}
@@ -93,7 +93,7 @@ function AiDraftFormattedPreview({ text }: { text: string }) {
   if (!nodes.length) {
     return <p className="ai-draft-preview-empty">Nothing to preview yet.</p>
   }
-  return <div className="ai-draft-preview-doc scroll-hover">{nodes}</div>
+  return <div className="ai-draft-preview-doc">{nodes}</div>
 }
 
 function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
@@ -112,6 +112,42 @@ function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
             ))}
           </tbody>
         </table>
+      </div>
+    )
+  }
+
+  if (payload.kind === 'list') {
+    const ordered = payload.data.listType === 'numberedList'
+    const checklist = payload.data.listType === 'checklist'
+    const ListTag = ordered ? 'ol' : 'ul'
+    return (
+      <div className="ai-block-preview">
+        <ListTag className="ai-block-preview-list">
+          {payload.data.items.map((item, index) => (
+            <li key={`${item}-${index}`}>
+              {checklist && <span aria-hidden className="ai-block-preview-check" />}
+              {item}
+            </li>
+          ))}
+        </ListTag>
+      </div>
+    )
+  }
+
+  if (payload.kind === 'code') {
+    return (
+      <div className="ai-block-preview">
+        <pre className="ai-block-preview-code"><code>{payload.data.code}</code></pre>
+      </div>
+    )
+  }
+
+  if (payload.kind === 'latex') {
+    return (
+      <div className="ai-block-preview">
+        <figure className="ai-block-preview-latex">
+          <code>{payload.data.latex}</code>
+        </figure>
       </div>
     )
   }
@@ -176,12 +212,11 @@ export function AIResultDialog({
             <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
               <div className="ai-rewrite-compare-pane">
                 <span className="ai-rewrite-compare-heading">Original selection</span>
-                <div className="ai-rewrite-compare-readonly scroll-hover">{result.selectionOriginalText.trim() || '—'}</div>
+                <div className="ai-rewrite-compare-readonly">{result.selectionOriginalText.trim() || '—'}</div>
               </div>
               <div className="ai-rewrite-compare-pane">
                 <label className="ai-draft-editor ai-rewrite-compare-draft">
                   <textarea
-                    className="scroll-hover"
                     value={result.draftText}
                     onChange={(event) => onDraftChange({ draftText: event.target.value })}
                     aria-label={aiDraftLabel(result.taskType)}
@@ -193,7 +228,6 @@ export function AIResultDialog({
           ) : (
             <label className="ai-draft-editor">
               <textarea
-                className="scroll-hover"
                 value={result.draftText}
                 onChange={(event) => onDraftChange({ draftText: event.target.value })}
                 aria-label={aiDraftLabel(result.taskType)}
@@ -218,7 +252,6 @@ export function AIResultDialog({
           {result.projectInstructionDraft !== undefined && (
             <label className="ai-draft-editor ai-project-instruction-draft">
               <textarea
-                className="scroll-hover"
                 value={result.projectInstructionDraft}
                 onChange={(event) => onDraftChange({ projectInstructionDraft: event.target.value })}
                 aria-label="Project instructions update"

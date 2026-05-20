@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Main-window desktop permissions grouped by current local app features. Split this capability before adding sync, filesystem, shell, or broader network powers.",
   "windows": [
     "main"
   ],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, FileText, MoreHorizontal, Plus, Search, Send, Users, X } from 'lucide-react'
 import type { FriendGroup, Friendship, Note, SharedNoteExport } from '../../db'
 import { collectNotePreviewLines } from '../../editor/blocks'
@@ -87,11 +87,6 @@ export function CommunityView({
     () => (stagedNoteId ? notes.find((note) => note.id === stagedNoteId) ?? null : null),
     [notes, stagedNoteId],
   )
-  useEffect(() => {
-    if (stagedNoteId && !notes.some((note) => note.id === stagedNoteId)) {
-      setStagedNoteId(null)
-    }
-  }, [notes, stagedNoteId])
   const hasRecipient = Boolean(selectedFriend || selectedGroup)
   const canSendStagedNote = hasRecipient && Boolean(stagedNote)
   const sendNoteTitle = canSendStagedNote ? 'Send drafted note' : 'Pick a note from search (Enter or click), then send'

@@ -5,6 +5,30 @@
   --editor-motion-slow: 320ms;
   --editor-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --editor-motion-precise: cubic-bezier(0.2, 0, 0.2, 1);
+  --smooth-caret-color: #2E3440;
+}
+
+.smooth-caret {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 12;
+  width: var(--smooth-caret-width, 2px);
+  height: var(--smooth-caret-height, 20px);
+  border-radius: 999px;
+  background: var(--smooth-caret-color);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(var(--smooth-caret-x, 0), var(--smooth-caret-y, 0), 0);
+  will-change: transform, opacity;
+}
+
+.smooth-caret.is-visible {
+  opacity: 1;
+}
+
+.block-editor-shell.has-smooth-caret .note-editor {
+  caret-color: transparent;
 }
 
 .floating-editor-wrap {
@@ -537,6 +561,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .smooth-caret {
+    display: none;
+  }
+
+  .block-editor-shell.has-smooth-caret .note-editor {
+    caret-color: auto;
+  }
+
   .floating-editor-bar,
   .toolbar-zone,
   .toolbar-structural-divider,

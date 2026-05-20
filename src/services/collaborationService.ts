@@ -14,6 +14,8 @@ export type CollaborationService = {
   appendEvent: (input: {
     sessionId: string
     clientId: string
+    opId?: string
+    serverSequence?: number
     actorAccountId?: string
     kind: CollaborationEvent['kind']
     payload: JSONContent
@@ -61,10 +63,19 @@ export const collaborationService: CollaborationService = {
   },
 
   async appendEvent(input) {
+    const opId = input.opId ?? createId('op')
+    const existing = await db.collaborationEvents
+      .where('[clientId+opId]')
+      .equals([input.clientId, opId])
+      .first()
+    if (existing) return existing
+
     const event: CollaborationEvent = {
       id: createId('collab_event'),
       sessionId: input.sessionId,
       clientId: input.clientId,
+      opId,
+      serverSequence: input.serverSequence,
       actorAccountId: input.actorAccountId,
       kind: input.kind,
       payload: input.payload,
@@ -77,6 +88,11 @@ export const collaborationService: CollaborationService = {
 
   async listEvents(sessionId) {
     const events = await db.collaborationEvents.where('sessionId').equals(sessionId).toArray()
-    return events.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    return events.sort((a, b) => {
+      if (a.serverSequence !== undefined && b.serverSequence !== undefined) return a.serverSequence - b.serverSequence
+      if (a.serverSequence !== undefined) return -1
+      if (b.serverSequence !== undefined) return 1
+      return a.createdAt.localeCompare(b.createdAt)
+    })
   },
 }

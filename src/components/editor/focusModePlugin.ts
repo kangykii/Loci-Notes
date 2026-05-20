@@ -67,10 +67,10 @@ export function useFocusModePlugin({
       const visualCenter = containerRect.top + containerRect.height * 0.5
       const delta = blockCenter - visualCenter
 
-      if (lastActiveBlockElementRef.current === activeBlock && Math.abs(delta) < 24) return
+      if (lastActiveBlockElementRef.current === activeBlock && Math.abs(delta) < 8) return
       lastActiveBlockElementRef.current = activeBlock
 
-      if (Math.abs(delta) < 24) return
+      if (Math.abs(delta) < 8) return
       scrollContainer.scrollTo({
         top: scrollContainer.scrollTop + delta,
         behavior: 'smooth',
