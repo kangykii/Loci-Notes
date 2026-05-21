@@ -126,7 +126,7 @@ import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
 import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
 import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
 import type { BlockControlRect, BlockDropTarget } from './components/editor/useBlockGutter'
-import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
+import { VirtualList } from './components/virtual/VirtualList'
 import {
   ActiveBlockHighlight,
   AISelectionHighlight,
@@ -326,6 +326,11 @@ type MatchTile = {
 }
 
 type MatchSelection = Pick<MatchTile, 'id' | 'atomId' | 'kind'> | null
+
+type MatchPage = {
+  atomIds: string[]
+  tiles: MatchTile[]
+}
 
 type QuizAnswerState = {
   selectedChoice?: string
@@ -595,6 +600,10 @@ function projectIdForAtom(atom: Atom) {
   return atom.projectId || UNASSIGNED_PROJECT_ID
 }
 
+function firstRealProjectId(projects: Project[]) {
+  return projects.find((project) => project.id !== UNASSIGNED_PROJECT_ID)?.id ?? ''
+}
+
 function findProjectAtomByPhrase(atoms: Atom[], projectId: string, phrase: string, excludeId = '') {
   const normalized = normalizeAtomPhrase(phrase)
   return atoms.find((atom) =>
@@ -766,6 +775,7 @@ function selectionContainsAtom(editor: NonNullable<ReturnType<typeof useEditor>>
 
 /** Notes that are not tied to a real project bucket (not a DB project row). */
 const UNASSIGNED_PROJECT_ID = '__unassigned__'
+const FALLBACK_PROJECT_NAME = 'General'
 
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
 const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
@@ -857,6 +867,8 @@ type SidebarProps = {
   onNewNote: () => void
   onOpenNote: (noteId: string) => void
   onOpenProfile: () => void
+  onOpenAtoms: () => void
+  onOpenSets: () => void
   onOpenSearch: () => void
   onOpenProjectsRoot: () => void
   onRenameNote: (noteId: string, title: string) => void
@@ -884,6 +896,8 @@ const Sidebar = memo(function Sidebar({
   onNewNote,
   onOpenNote,
   onOpenProfile,
+  onOpenAtoms,
+  onOpenSets,
   onOpenSearch,
   onOpenProjectsRoot,
   onRenameNote,
@@ -936,11 +950,17 @@ const Sidebar = memo(function Sidebar({
           <Home size={18} />
           <span className="nav-label">Home</span>
         </button>
-        <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={() => {
-          onSetActiveView('atoms')
+        <button className={activeView === 'atoms' && !isSetWorkspace(atomSubView) ? 'active' : ''} type="button" onClick={() => {
+          onOpenAtoms()
         }}>
           <AtomIcon size={18} />
-          <span className="nav-label">{isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}</span>
+          <span className="nav-label">Atoms</span>
+        </button>
+        <button className={activeView === 'atoms' && isSetWorkspace(atomSubView) ? 'active' : ''} type="button" onClick={() => {
+          onOpenSets()
+        }}>
+          <Brain size={18} />
+          <span className="nav-label">Sets</span>
         </button>
         <button
           className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
@@ -1093,12 +1113,8 @@ function App() {
   const [appImmersiveFullscreen, setAppImmersiveFullscreen] = useState(false)
   const [sidebarRevealAnimating, setSidebarRevealAnimating] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState('')
-  const [flippedAtomIds, setFlippedAtomIds] = useState<string[]>([])
-  const [atomSelectionMode, setAtomSelectionMode] = useState(false)
-  const [selectedAtomIds, setSelectedAtomIds] = useState<string[]>([])
   const [atomSubView, setAtomSubView] = useState<AtomSubView>('atoms')
-  const [atomHeadingMenuOpen, setAtomHeadingMenuOpen] = useState(false)
-  const [atomHeadingHoverTarget, setAtomHeadingHoverTarget] = useState<'atoms' | 'sets' | null>(null)
+  const [openedAtomProjectId, setOpenedAtomProjectId] = useState('')
   const [editingFlashcardSetId, setEditingFlashcardSetId] = useState<string | null>(null)
   const [flashcardSetTitleEditing, setFlashcardSetTitleEditing] = useState(false)
   const [flashcardSetDraftName, setFlashcardSetDraftName] = useState('')
@@ -1117,6 +1133,8 @@ function App() {
   const [reviewStates, setReviewStates] = useState<FlashcardReviewState[]>([])
   const [aiHintRunningAtomId, setAiHintRunningAtomId] = useState<string | null>(null)
   const [matchTiles, setMatchTiles] = useState<MatchTile[]>([])
+  const [matchPages, setMatchPages] = useState<MatchPage[]>([])
+  const [matchPageIndex, setMatchPageIndex] = useState(0)
   const [matchSelection, setMatchSelection] = useState<MatchSelection>(null)
   const [matchMatchedAtomIds, setMatchMatchedAtomIds] = useState<string[]>([])
   const [matchMistakes, setMatchMistakes] = useState(0)
@@ -1129,9 +1147,10 @@ function App() {
   const [draggedNoteIds, setDraggedNoteIds] = useState<string[]>([])
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
-  const [atomSearchQuery, setAtomSearchQuery] = useState('')
-  const [atomProjectFilter, setAtomProjectFilter] = useState('all')
+  const [atomProjectSearchQuery, setAtomProjectSearchQuery] = useState('')
+  const [atomProjectFilter, setAtomProjectFilter] = useState('')
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
+  const [atomRowDrafts, setAtomRowDrafts] = useState<Record<string, { phrase: string; definition: string }>>({})
   const [openProjectMenuId, setOpenProjectMenuId] = useState('')
   const [openLooseNoteMenuId, setOpenLooseNoteMenuId] = useState('')
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
@@ -1199,8 +1218,6 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const aiPromptInputRef = useRef<HTMLInputElement>(null)
   const flashcardSetTitleInputRef = useRef<HTMLInputElement>(null)
-  const atomsTitleSwitcherRef = useRef<HTMLDivElement | null>(null)
-  const atomProjectFilterRef = useRef<HTMLDivElement | null>(null)
   const flashcardProjectFilterRef = useRef<HTMLDivElement | null>(null)
   const quizAnswerDropdownRef = useRef<HTMLDivElement | null>(null)
   const aiContextRangeRef = useRef<EditorRange | null>(null)
@@ -1352,6 +1369,16 @@ function App() {
         return b.latestActivityAt - a.latestActivityAt || a.project.name.localeCompare(b.project.name)
       })
   }, [noteIndexes, projects])
+  const atomProjectCards = useMemo(() => {
+    const query = normalizeSearch(atomProjectSearchQuery)
+    return projects
+      .filter((project) => project.id !== UNASSIGNED_PROJECT_ID)
+      .filter((project) => !query || project.name.toLowerCase().includes(query) || (project.description ?? '').toLowerCase().includes(query))
+      .sort((a, b) => {
+        const created = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        return created || a.name.localeCompare(b.name)
+      })
+  }, [atomProjectSearchQuery, projects])
 
   useEffect(() => {
     notesRef.current = notes
@@ -1425,8 +1452,21 @@ function App() {
         }
       }
 
-      const normalizedProjects = storedProjects.map((project) => ({ ...project, description: project.description ?? '' }))
-      if (storedProjects.some((project) => project.description === undefined) && !loadIssueAreas.has('projects')) {
+      const needsFallbackProject = !firstRealProjectId(storedProjects)
+      const fallbackProject: Project | null = needsFallbackProject
+        ? {
+          id: createId('project'),
+          name: FALLBACK_PROJECT_NAME,
+          description: 'Default project for existing atoms.',
+          color: '#1A1A1A',
+          createdAt: nowIso(),
+        }
+        : null
+      const normalizedProjects = [
+        ...storedProjects.map((project) => ({ ...project, description: project.description ?? '' })),
+        ...(fallbackProject ? [fallbackProject] : []),
+      ]
+      if ((storedProjects.some((project) => project.description === undefined) || fallbackProject) && !loadIssueAreas.has('projects')) {
         try {
           await projectsStore.saveMany(normalizedProjects)
         } catch (error) {
@@ -1436,7 +1476,8 @@ function App() {
       }
       setProjects(normalizedProjects)
 
-      const projectIds = new Set(storedProjects.map((p) => p.id))
+      const projectIds = new Set(normalizedProjects.map((p) => p.id))
+      const defaultAtomProjectId = firstRealProjectId(normalizedProjects)
 
       const normalized = await Promise.all(
         storedNotes.map(async (note) => {
@@ -1505,7 +1546,26 @@ function App() {
       )
 
       setNotes(normalized)
-      setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
+      const normalizedAtoms = storedAtoms.map((atom) => {
+        const projectId = projectIds.has(atom.projectId) && atom.projectId !== UNASSIGNED_PROJECT_ID
+          ? atom.projectId
+          : defaultAtomProjectId
+        return { ...atom, projectId, tags: atom.tags ?? [] }
+      })
+      const repairedAtoms = normalizedAtoms.filter((atom, index) =>
+        atom.projectId !== storedAtoms[index]?.projectId ||
+        (storedAtoms[index]?.tags ?? []).length !== atom.tags.length,
+      )
+      if (repairedAtoms.length && !loadIssueAreas.has('atoms')) {
+        try {
+          await atomsStore.saveMany(repairedAtoms)
+        } catch (error) {
+          console.error('Could not normalize atoms', error)
+          loadIssues.push({ area: 'atoms', message: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+        }
+      }
+      setAtoms(normalizedAtoms)
+      setAtomProjectFilter((current) => current && projectIds.has(current) && current !== UNASSIGNED_PROJECT_ID ? current : defaultAtomProjectId)
       setFlashcardSets(storedFlashcardSets.map(normalizeFlashcardSet))
       if (storedProfile && isBadProfileDisplayName(storedProfile.displayName)) {
         await profileStore.saveLocalWorkspaceProfile({
@@ -2209,31 +2269,10 @@ function App() {
   }, [activeEditorPanel])
 
   useEffect(() => {
-    if (!atomHeadingMenuOpen) return
-    const closeOnOutsidePointer = (event: MouseEvent) => {
-      if (atomsTitleSwitcherRef.current?.contains(event.target as Node)) return
-      setAtomHeadingMenuOpen(false)
-      setAtomHeadingHoverTarget(null)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setAtomHeadingMenuOpen(false)
-        setAtomHeadingHoverTarget(null)
-      }
-    }
-    document.addEventListener('mousedown', closeOnOutsidePointer)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsidePointer)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [atomHeadingMenuOpen])
-
-  useEffect(() => {
     if (!atomProjectMenuOpen) return
     const closeOnOutsidePointer = (event: MouseEvent) => {
       const target = event.target as Node
-      if (atomProjectFilterRef.current?.contains(target) || flashcardProjectFilterRef.current?.contains(target)) return
+      if (flashcardProjectFilterRef.current?.contains(target)) return
       setAtomProjectMenuOpen(false)
     }
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -2323,33 +2362,26 @@ function App() {
   }, [clearAIContextRange, editor])
 
   const atomCards = useMemo(() => buildAtomCards(atoms, noteIndexes, projectById), [atoms, noteIndexes, projectById])
-  const filteredAtomCards = useMemo(() => {
-    const query = normalizeSearch(atomSearchQuery)
-    return atomCards.filter((card) => {
-      const matchesQuery =
-        !query ||
-        card.atom.phrase.toLowerCase().includes(query) ||
-        card.atom.definition.toLowerCase().includes(query) ||
-        card.atom.tags.some((tag) => tag.toLowerCase().includes(query))
-      const matchesProject =
-        atomProjectFilter === 'all' ||
-        (atomProjectFilter === 'none' && card.projectIds.length === 0) ||
-        card.projectIds.includes(atomProjectFilter)
-      return matchesQuery && matchesProject
-    })
-  }, [atomCards, atomProjectFilter, atomSearchQuery])
-  const visibleAtomIds = useMemo(() => filteredAtomCards.map((card) => card.atom.id), [filteredAtomCards])
-  const selectedVisibleAtomCount = visibleAtomIds.filter((id) => selectedAtomIds.includes(id)).length
-  const allVisibleAtomsSelected = visibleAtomIds.length > 0 && selectedVisibleAtomCount === visibleAtomIds.length
-  const atomProjectOptions = useMemo(
-    () => [
-      { value: 'all', label: 'All projects' },
-      ...projects.map((project) => ({ value: project.id, label: project.name })),
-      { value: 'none', label: 'No project yet' },
-    ],
-    [projects],
+  const realProjects = useMemo(() => projects.filter((project) => project.id !== UNASSIGNED_PROJECT_ID), [projects])
+  const openedAtomProject = realProjects.find((project) => project.id === openedAtomProjectId) ?? null
+  const openedProjectAtomCards = useMemo(
+    () => atomCards.filter((card) => card.atom.projectId === openedAtomProjectId).sort((a, b) => a.atom.createdAt.localeCompare(b.atom.createdAt)),
+    [atomCards, openedAtomProjectId],
   )
-  const atomProjectFilterLabel = atomProjectOptions.find((option) => option.value === atomProjectFilter)?.label ?? 'All projects'
+  useEffect(() => {
+    setAtomRowDrafts((current) => {
+      const next: Record<string, { phrase: string; definition: string }> = {}
+      openedProjectAtomCards.forEach((card) => {
+        next[card.atom.id] = current[card.atom.id] ?? { phrase: card.atom.phrase, definition: card.atom.definition }
+      })
+      return next
+    })
+  }, [openedProjectAtomCards])
+  const atomProjectOptions = useMemo(
+    () => realProjects.map((project) => ({ value: project.id, label: project.name })),
+    [realProjects],
+  )
+  const atomProjectFilterLabel = atomProjectOptions.find((option) => option.value === atomProjectFilter)?.label ?? 'Choose project'
   const editingFlashcardSet = flashcardSets.find((set) => set.id === editingFlashcardSetId) ?? null
   const studyingFlashcardSet = flashcardSets.find((set) => set.id === studyingFlashcardSetId) ?? null
   const flashcardSetDraftCards = useMemo(
@@ -2383,6 +2415,10 @@ function App() {
     ? studyingFlashcardSet.aiHintsByAtomId[activeStudyAtom.id]?.hint
     : undefined
   const matchComplete = studyingSetAtoms.length > 0 && matchMatchedAtomIds.length === studyingSetAtoms.length
+  const activeMatchPage = matchPages[matchPageIndex] ?? null
+  const activeMatchPageMatchedCount = activeMatchPage
+    ? activeMatchPage.atomIds.filter((atomId) => matchMatchedAtomIds.includes(atomId)).length
+    : 0
   const matchAverageMs = studyingFlashcardSet?.matchSessionCount
     ? Math.round((studyingFlashcardSet.matchTotalMs ?? 0) / studyingFlashcardSet.matchSessionCount)
     : 0
@@ -2399,7 +2435,7 @@ function App() {
   const quizSetupFormatCount = Number(quizSetupOptions.includeTrueFalse) + Number(quizSetupOptions.includeMultipleChoice) + Number(quizSetupOptions.includeMatching) + Number(quizSetupOptions.includeWritten)
   const quizSetupQuestionCount = Math.min(10, Math.max(1, quizSetupOptions.questionCount || 1), studyingSetAtoms.length || 10)
   const quizSetupCanStart = Boolean(studyingSetAtoms.length && quizSetupFormatCount && quizSetupQuestionCount > 0)
-  const quizReadyToMark = Boolean(activeQuiz && quizQuestionCount > 0 && quizAnsweredCount === quizQuestionCount && !quizResult?.marking)
+  const quizReadyToMark = Boolean(activeQuiz && quizQuestionCount > 0 && !quizResult?.marking)
   const quizMarked = Boolean(quizResult && !quizResult.marking)
 
   const aiCommands = useMemo(
@@ -2470,6 +2506,16 @@ function App() {
       aiPromptHintTimerRef.current = null
     }, 4200)
   }, [aiPrompt, aiPromptHint, aiPromptHintDismissedFor])
+
+  useEffect(() => {
+    if (!realProjects.length) {
+      if (atomProjectFilter) setAtomProjectFilter('')
+      return
+    }
+    if (!realProjects.some((project) => project.id === atomProjectFilter)) {
+      setAtomProjectFilter(realProjects[0].id)
+    }
+  }, [atomProjectFilter, realProjects])
 
   const dashboardStats = useMemo(() => {
     const recentNote = notes[0]
@@ -2977,6 +3023,17 @@ function App() {
   }, [atomSubView, studyMode, matchComplete])
 
   useEffect(() => {
+    if (atomSubView !== 'match' || !activeMatchPage || matchComplete) return
+    const pageComplete = activeMatchPage.atomIds.every((atomId) => matchMatchedAtomIds.includes(atomId))
+    if (!pageComplete) return
+    const nextPage = matchPages[matchPageIndex + 1]
+    if (!nextPage) return
+    setMatchPageIndex((current) => current + 1)
+    setMatchTiles(nextPage.tiles)
+    setMatchSelection(null)
+  }, [activeMatchPage, atomSubView, matchComplete, matchMatchedAtomIds, matchPageIndex, matchPages])
+
+  useEffect(() => {
     if (
       (atomSubView === 'study' && studyRoundComplete) ||
       (atomSubView === 'match' && matchComplete) ||
@@ -2989,19 +3046,35 @@ function App() {
   const switchAtomWorkspace = (nextView: 'atoms' | 'sets') => {
     if (isSetWorkspace(atomSubView)) stopActiveStudySession()
     setAtomSubView(nextView)
-    setAtomHeadingMenuOpen(false)
-    setAtomHeadingHoverTarget(null)
     if (nextView === 'atoms') {
       setEditingFlashcardSetId(null)
       setStudyingFlashcardSetId(null)
       setStudyFlipped(false)
-    } else {
-      setAtomSelectionMode(false)
-      setSelectedAtomIds([])
     }
     if (userSettings.preferredAtomSubView !== nextView) {
       updateUserSettings({ preferredAtomSubView: nextView })
     }
+  }
+
+  const openAtomsWorkspace = () => {
+    setActiveView('atoms')
+    setOpenedAtomProjectId('')
+    switchAtomWorkspace('atoms')
+  }
+
+  const openSetsWorkspace = () => {
+    setActiveView('atoms')
+    switchAtomWorkspace('sets')
+  }
+
+  const returnToAllSets = () => {
+    stopActiveStudySession()
+    setAtomSubView('sets')
+  }
+
+  const returnToStudyModes = () => {
+    stopActiveStudySession()
+    setAtomSubView('set-open')
   }
 
   const requestConfiguredAIText = async (taskInstruction: string, userContent: string, signal: AbortSignal) => {
@@ -3204,7 +3277,13 @@ function App() {
       return
     }
     const now = nowIso()
-    const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
+    const projectId = selectedNote?.projectId && selectedNote.projectId !== UNASSIGNED_PROJECT_ID
+      ? selectedNote.projectId
+      : atomProjectFilter || firstRealProjectId(projects)
+    if (!projectId) {
+      showNotice('Create a project before creating atoms.')
+      return
+    }
     const created = candidates.map((candidate) => ({
       id: createId('atom'),
       projectId,
@@ -3424,12 +3503,17 @@ function App() {
           break
         case 'atom':
           setSelectedProjectId('')
+          setAtomProjectFilter((current) => {
+            const atomProjectId = projectIdForAtom(hit.atom)
+            return atomProjectId !== UNASSIGNED_PROJECT_ID ? atomProjectId : current
+          })
           setActiveView('atoms')
+          switchAtomWorkspace('atoms')
           break
       }
       closeSearch()
     },
-    [closeSearch, openNote],
+    [closeSearch, openNote, switchAtomWorkspace],
   )
 
   const openNoteHistory = useCallback(async () => {
@@ -4491,61 +4575,13 @@ function App() {
     setOpenLooseNoteMenuId('')
   }
 
-  const deleteSelectedAtoms = async () => {
-    const atomIds = selectedAtomIds.filter((id) => atoms.some((atom) => atom.id === id))
-    if (!atomIds.length) return
-    setAppDialog({
-      kind: 'confirm',
-      title: `Delete ${atomIds.length} atom${atomIds.length === 1 ? '' : 's'}`,
-      message: 'The text will stay in your notes, but the atom links will be removed.',
-      confirmLabel: 'Delete',
-      intent: 'danger',
-      onConfirm: async () => {
-        const atomIdSet = new Set(atomIds)
-        const touchedNotes = notes
-          .filter((note) => collectAtomIds(note.content).some((atomId) => atomIdSet.has(atomId)))
-          .map((note) => ({ ...note, content: stripAtomMarks(note.content, atomIdSet), updatedAt: nowIso() }))
-        const updatedSets = flashcardSets
-          .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => !atomIdSet.has(atomId)), updatedAt: nowIso() }))
-          .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
-
-        await atomsStore.deleteManyAndUnlink(atomIds, touchedNotes, updatedSets)
-
-        setAtoms((current) => current.filter((item) => !atomIdSet.has(item.id)))
-        if (updatedSets.length) {
-          setFlashcardSets((current) =>
-            current.map((set) => updatedSets.find((updated) => updated.id === set.id) ?? set),
-          )
-        }
-        setFlippedAtomIds((current) => current.filter((id) => !atomIdSet.has(id)))
-        setSelectedAtomIds([])
-        setAtomSelectionMode(false)
-        setNotes((current) =>
-          current
-            .map((note) => touchedNotes.find((updated) => updated.id === note.id) ?? note)
-            .sort(sortByUpdated),
-        )
-      },
-    })
-  }
-
-  const toggleSelectVisibleAtoms = () => {
-    setAtomSelectionMode(true)
-    setSelectedAtomIds((current) => {
-      if (allVisibleAtomsSelected) return current.filter((id) => !visibleAtomIds.includes(id))
-      return Array.from(new Set([...current, ...visibleAtomIds]))
-    })
-  }
-
-  const openCreateFlashcardSet = (atomIds = selectedAtomIds) => {
+  const openCreateFlashcardSet = (atomIds: string[] = []) => {
     setEditingFlashcardSetId(null)
     setFlashcardSetTitleEditing(false)
     setFlashcardSetDraftName('')
     setFlashcardSetDraftDescription('')
     setFlashcardSetDraftAtomIds(Array.from(new Set(atomIds.filter((id) => atoms.some((atom) => atom.id === id)))))
     setFlashcardSetAtomQuery('')
-    setAtomSelectionMode(false)
-    setSelectedAtomIds([])
     setAtomSubView('set-edit')
   }
 
@@ -4620,7 +4656,7 @@ function App() {
     setAppDialog({
       kind: 'confirm',
       title: 'Reset study progress',
-      message: `Reset all study progress for "${set.name}"? Cards, Match times, AI hints, and quiz progress will start fresh.`,
+      message: `Reset all study progress for "${set.name}"? Cards, Match times, hints, and quiz progress will start fresh.`,
       confirmLabel: 'Reset',
       intent: 'danger',
       onConfirm: async () => {
@@ -4638,6 +4674,8 @@ function App() {
           setReviewStates([])
           setAiHintRunningAtomId(null)
           setMatchTiles([])
+          setMatchPages([])
+          setMatchPageIndex(0)
           setMatchSelection(null)
           setMatchMatchedAtomIds([])
           setMatchMistakes(0)
@@ -4698,11 +4736,11 @@ function App() {
   const startMatchStudy = (set: FlashcardSet) => {
     const availableAtoms = set.atomIds.map((id) => atomById.get(id)).filter((atom): atom is Atom => Boolean(atom))
     if (!availableAtoms.length) return
+    const pages = buildMatchPages(shuffleList(availableAtoms))
     beginStudySession(set.id, 'match')
-    setMatchTiles(shuffleList([
-      ...availableAtoms.map((atom) => ({ id: `${atom.id}-term`, atomId: atom.id, text: atom.phrase, kind: 'term' as const })),
-      ...availableAtoms.map((atom) => ({ id: `${atom.id}-definition`, atomId: atom.id, text: atom.definition, kind: 'definition' as const })),
-    ]))
+    setMatchPages(pages)
+    setMatchPageIndex(0)
+    setMatchTiles(pages[0]?.tiles ?? [])
     setMatchSelection(null)
     setMatchMatchedAtomIds([])
     setMatchMistakes(0)
@@ -4714,21 +4752,27 @@ function App() {
     const atomId = activeStudyAtom.id
     const now = nowIso()
     const existing = reviewStates.find((state) => state.atomId === atomId)
+    const persistedRating: StudyRating = rating === 'again' ? 'again' : 'good'
     const nextState = applyStudyRating(
       reviewStateForCard(existing, studyingFlashcardSetId, atomId, now),
-      rating,
+      persistedRating,
       now,
     )
     await flashcardSetsStore.saveReviewState(nextState)
     setReviewStates((current) => [nextState, ...current.filter((state) => state.atomId !== atomId)])
-    if (rating === 'again' || rating === 'hard') {
+    if (rating === 'again') {
       setStudyLearningAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
+      setStudyAtomIds((current) => {
+        const remaining = current.filter((id) => id !== atomId)
+        return [...remaining, atomId]
+      })
     } else {
       setStudyKnownAtomIds((current) => (current.includes(atomId) ? current : [...current, atomId]))
       setStudyLearningAtomIds((current) => current.filter((id) => id !== atomId))
+      setStudyAtomIds((current) => current.filter((id) => id !== atomId))
     }
-    setStudyAtomIds((current) => current.filter((id) => id !== atomId))
     setStudyIndex((current) => {
+      if (rating === 'again') return Math.min(current, Math.max(0, studyAtoms.length - 1))
       if (studyAtoms.length <= 1) return 0
       return Math.min(current, studyAtoms.length - 2)
     })
@@ -4988,12 +5032,12 @@ function App() {
         setProjects((current) => current.filter((item) => item.id !== projectId))
         setNotes(keptNotes.sort(sortByUpdated))
         setAtoms((current) => current.filter((atom) => !atomIdsToDelete.includes(atom.id)))
+        setOpenedAtomProjectId((current) => (current === projectId ? '' : current))
         if (updatedSets.length) {
           setFlashcardSets((current) =>
             current.map((set) => updatedSets.find((updated) => updated.id === set.id) ?? set),
           )
         }
-        setFlippedAtomIds((current) => current.filter((id) => !atomIdsToDelete.includes(id)))
         setSelectedProjectId('')
         if (selectedNote && projectNoteIds.has(selectedNote.id)) {
           setSelectedNoteId(keptNotes[0]?.id ?? '')
@@ -5026,6 +5070,7 @@ function App() {
         }
         await projectsStore.save(project)
         setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
+        setAtomProjectFilter((current) => current || project.id)
       },
     })
   }
@@ -5070,6 +5115,18 @@ function App() {
     )
   }
 
+  const renameAtomProject = (project: Project) => {
+    setAppDialog({
+      kind: 'prompt',
+      title: 'Rename project',
+      label: 'Project name',
+      value: project.name,
+      placeholder: 'Project name',
+      confirmLabel: 'Save',
+      onConfirm: (name) => void updateProjectName(project.id, name),
+    })
+  }
+
   const atomiseSelection = () => {
     if (!editor) return
     const { from, to, empty } = editor.state.selection
@@ -5083,7 +5140,13 @@ function App() {
     }
 
     if (empty) {
-      const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
+      const projectId = selectedNote?.projectId && selectedNote.projectId !== UNASSIGNED_PROJECT_ID
+        ? selectedNote.projectId
+        : atomProjectFilter || firstRealProjectId(projects)
+      if (!projectId) {
+        showNotice('Create a project before creating atoms.')
+        return
+      }
       showNotice('')
       setActiveEditorPanel(null)
       setAtomDialog({
@@ -5097,7 +5160,13 @@ function App() {
 
     const phrase = editor.state.doc.textBetween(from, to, ' ').trim()
     if (!phrase) return
-    const projectId = selectedNote?.projectId ?? UNASSIGNED_PROJECT_ID
+    const projectId = selectedNote?.projectId && selectedNote.projectId !== UNASSIGNED_PROJECT_ID
+      ? selectedNote.projectId
+      : atomProjectFilter || firstRealProjectId(projects)
+    if (!projectId) {
+      showNotice('Create a project before creating atoms.')
+      return
+    }
     const existing = findProjectAtomByPhrase(atoms, projectId, phrase)
     showNotice('')
     setAtomDialog({
@@ -5162,6 +5231,58 @@ function App() {
     }
     showNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
     setAtomDialog(null)
+  }
+
+  const updateAtomInline = async (atom: Atom, patch: Pick<Atom, 'phrase' | 'definition'>) => {
+    const phrase = patch.phrase.trim()
+    const definition = patch.definition.trim()
+    if (!phrase || !definition) return
+    const next: Atom = {
+      ...atom,
+      phrase,
+      definition,
+      updatedAt: nowIso(),
+    }
+    await atomsStore.save(next)
+    setAtoms((current) => current.map((item) => (item.id === next.id ? next : item)))
+    setAtomRowDrafts((current) => ({ ...current, [next.id]: { phrase: next.phrase, definition: next.definition } }))
+  }
+
+  const deleteAtomInline = async (atom: Atom) => {
+    setAppDialog({
+      kind: 'confirm',
+      title: 'Delete atom',
+      message: `Delete "${atom.phrase}"? The text will stay in your notes, but atom links and set references will be removed.`,
+      confirmLabel: 'Delete',
+      intent: 'danger',
+      onConfirm: async () => {
+        const atomIdSet = new Set([atom.id])
+        const touchedNotes = notes
+          .filter((note) => collectAtomIds(note.content).includes(atom.id))
+          .map((note) => ({ ...note, content: stripAtomMarks(note.content, atomIdSet), updatedAt: nowIso() }))
+        const updatedSets = flashcardSets
+          .map((set) => ({ ...set, atomIds: set.atomIds.filter((atomId) => atomId !== atom.id), updatedAt: nowIso() }))
+          .filter((set, index) => set.atomIds.length !== flashcardSets[index].atomIds.length)
+
+        await atomsStore.deleteManyAndUnlink([atom.id], touchedNotes, updatedSets)
+        setAtoms((current) => current.filter((item) => item.id !== atom.id))
+        setAtomRowDrafts((current) => {
+          const next = { ...current }
+          delete next[atom.id]
+          return next
+        })
+        if (updatedSets.length) {
+          setFlashcardSets((current) =>
+            current.map((set) => updatedSets.find((updated) => updated.id === set.id) ?? set),
+          )
+        }
+        setNotes((current) =>
+          current
+            .map((note) => touchedNotes.find((updated) => updated.id === note.id) ?? note)
+            .sort(sortByUpdated),
+        )
+      },
+    })
   }
 
   const addLink = () => {
@@ -5536,6 +5657,8 @@ function App() {
           onNewNote={() => openTemplateChooser()}
           onOpenNote={openProjectQuickNote}
           onOpenProfile={openProfileModal}
+          onOpenAtoms={openAtomsWorkspace}
+          onOpenSets={openSetsWorkspace}
           onOpenSearch={() => {
             setSearchQuery('')
             setSearchActiveIndex(0)
@@ -5619,7 +5742,7 @@ function App() {
                       type="button"
                       onClick={() => {
                         if (homeTip.cta?.action === 'newNote') openTemplateChooser()
-                        if (homeTip.cta?.action === 'openAtoms') setActiveView('atoms')
+                        if (homeTip.cta?.action === 'openAtoms') openAtomsWorkspace()
                         if (homeTip.cta?.action === 'openProjects') {
                           setSelectedProjectId('')
                           setActiveView('projects')
@@ -6415,130 +6538,9 @@ function App() {
         {activeView === 'atoms' && (
           <section className="main-pane compact-pane">
             <PageHeader
-              title={
-                <div className="atoms-title-switcher" ref={atomsTitleSwitcherRef}>
-                  <button
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded={atomHeadingMenuOpen}
-                    onClick={() => setAtomHeadingMenuOpen((open) => !open)}
-                  >
-                    {isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}
-                    <ChevronDown size={18} aria-hidden />
-                  </button>
-                  {atomHeadingMenuOpen && (
-                    <div
-                      className="atoms-title-menu"
-                      role="menu"
-                      data-highlight={atomHeadingHoverTarget ?? (isSetWorkspace(atomSubView) ? 'sets' : 'atoms')}
-                      onPointerLeave={() => setAtomHeadingHoverTarget(null)}
-                    >
-                      <span className="atoms-title-menu-highlight" aria-hidden />
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={atomSubView === 'atoms'}
-                        className={atomSubView === 'atoms' ? 'is-active' : ''}
-                        onPointerEnter={() => setAtomHeadingHoverTarget('atoms')}
-                        onFocus={() => setAtomHeadingHoverTarget('atoms')}
-                        onBlur={() => setAtomHeadingHoverTarget(null)}
-                        onClick={() => switchAtomWorkspace('atoms')}
-                      >
-                        <span>Atoms</span>
-                        <small>Browse and flip atom cards</small>
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={isSetWorkspace(atomSubView)}
-                        className={isSetWorkspace(atomSubView) ? 'is-active' : ''}
-                        onPointerEnter={() => setAtomHeadingHoverTarget('sets')}
-                        onFocus={() => setAtomHeadingHoverTarget('sets')}
-                        onBlur={() => setAtomHeadingHoverTarget(null)}
-                        onClick={() => switchAtomWorkspace('sets')}
-                      >
-                        <span>Sets</span>
-                        <small>Create and study atom flashcard sets</small>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              }
+              title={isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}
               action={
                 <div className="atoms-header-controls">
-                  {atomSubView === 'atoms' && (
-                    <>
-                      <label className="atoms-search">
-                        <Search size={15} />
-                        <input
-                          value={atomSearchQuery}
-                          onChange={(event) => setAtomSearchQuery(event.target.value)}
-                          placeholder="Search atoms..."
-                        />
-                      </label>
-                      <div className="atoms-project-filter" ref={atomProjectFilterRef}>
-                        <button
-                          type="button"
-                          aria-haspopup="listbox"
-                          aria-expanded={atomProjectMenuOpen}
-                          onClick={() => setAtomProjectMenuOpen((open) => !open)}
-                        >
-                          <span>{atomProjectFilterLabel}</span>
-                          <ChevronDown size={15} aria-hidden />
-                        </button>
-                        {atomProjectMenuOpen && (
-                          <div className="atoms-project-menu" role="listbox" aria-label="Filter atoms by project">
-                            {atomProjectOptions.map((option) => (
-                              <button
-                                type="button"
-                                role="option"
-                                aria-selected={atomProjectFilter === option.value}
-                                className={atomProjectFilter === option.value ? 'is-active' : ''}
-                                key={option.value}
-                                onClick={() => {
-                                  setAtomProjectFilter(option.value)
-                                  setAtomProjectMenuOpen(false)
-                                }}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="atoms-selection-actions">
-                        {atomSelectionMode && (
-                          <button className="atoms-select-action atoms-select-action--soft" type="button" onClick={toggleSelectVisibleAtoms}>
-                            {allVisibleAtomsSelected ? 'Clear' : 'All'}
-                          </button>
-                        )}
-                        <button
-                          className={atomSelectionMode ? 'atoms-select-action atoms-select-action--done is-active' : 'atoms-select-action'}
-                          type="button"
-                          aria-pressed={atomSelectionMode}
-                          onClick={() => {
-                            setAtomSelectionMode((current) => {
-                              if (current) setSelectedAtomIds([])
-                              return !current
-                            })
-                          }}
-                        >
-                          {atomSelectionMode ? 'Done' : 'Select'}
-                        </button>
-                        {atomSelectionMode && selectedAtomIds.length > 0 && (
-                          <>
-                            <button className="atoms-select-action atoms-select-action--create" type="button" onClick={() => openCreateFlashcardSet()}>
-                              Create set
-                            </button>
-                            <button className="atoms-delete-action" type="button" onClick={deleteSelectedAtoms}>
-                              <Trash2 size={15} />
-                              Delete {selectedAtomIds.length}
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </>
-                  )}
                   {atomSubView === 'sets' && (
                     <button className="atoms-select-action" type="button" onClick={() => openCreateFlashcardSet([])}>
                       <Plus size={15} />
@@ -6559,71 +6561,162 @@ function App() {
             />
             <div className="atoms-page">
               {(atomSubView === 'set-open' || atomSubView === 'study' || atomSubView === 'match' || atomSubView === 'quiz-setup' || atomSubView === 'quiz') && (
-                <div className="flashcard-back-row">
-                  <button type="button" onClick={() => {
-                    stopActiveStudySession()
-                    setAtomSubView('sets')
-                  }}>
+                <div className="flashcard-back-row workspace-breadcrumb-row">
+                  <button type="button" onClick={returnToAllSets}>
                     <ArrowLeft size={15} aria-hidden />
-                    Back to sets
+                    All sets
                   </button>
+                  {atomSubView !== 'set-open' && (
+                    <>
+                      <span aria-hidden>/</span>
+                      <button type="button" onClick={returnToStudyModes}>
+                        {studyingFlashcardSet?.name ?? 'Study set'}
+                      </button>
+                      <span aria-hidden>/</span>
+                      <span>{studyMode === 'match' ? 'Match' : studyMode === 'quiz' ? 'Quiz' : atomSubView === 'quiz-setup' ? 'Quiz setup' : 'Flashcards'}</span>
+                    </>
+                  )}
                 </div>
               )}
 
               {atomSubView === 'atoms' && (
-                <VirtualGrid
-                  className="atom-card-grid atom-card-grid--virtual"
-                  items={filteredAtomCards}
-                  minItemWidth={320}
-                  rowHeight={190}
-                  overscan={4}
-                  ariaLabel="Atoms"
-                  renderItem={(card) => {
-                    const isFlipped = flippedAtomIds.includes(card.atom.id)
-                    const isSelected = selectedAtomIds.includes(card.atom.id)
-                    return (
-                      <button
-                        className={`atom-panel-card ${isFlipped ? 'is-flipped' : ''} ${atomSelectionMode ? 'is-selecting' : ''} ${isSelected ? 'is-selected' : ''}`}
-                        type="button"
-                        key={card.atom.id}
-                        aria-pressed={atomSelectionMode ? isSelected : isFlipped}
-                        onClick={() => {
-                          if (atomSelectionMode) {
-                            setSelectedAtomIds((current) =>
-                              current.includes(card.atom.id)
-                                ? current.filter((id) => id !== card.atom.id)
-                                : [...current, card.atom.id],
-                            )
-                            return
-                          }
-                          setFlippedAtomIds((current) =>
-                            current.includes(card.atom.id)
-                              ? current.filter((id) => id !== card.atom.id)
-                              : [...current, card.atom.id],
-                          )
-                        }}
-                      >
-                        {atomSelectionMode && <span className="atom-card-check" aria-hidden />}
-                        <div className="atom-card-inner">
-                          <div className="atom-card-face atom-card-front">
-                            <div>
-                              <strong>{card.atom.phrase}</strong>
-                            </div>
-                          </div>
-                          <div className="atom-card-face atom-card-back">
-                            <div>
-                              <p>{card.atom.definition}</p>
-                            </div>
-                            <footer>
-                              <span>{card.projectNames.join(', ') || 'No project yet'}</span>
-                              <span>Click to flip back</span>
-                            </footer>
-                          </div>
-                        </div>
+                <>
+                  {openedAtomProject && (
+                    <div className="flashcard-back-row workspace-breadcrumb-row">
+                      <button type="button" onClick={() => setOpenedAtomProjectId('')}>
+                        <ArrowLeft size={15} aria-hidden />
+                        Atoms
                       </button>
-                    )
-                  }}
-                />
+                      <span aria-hidden>/</span>
+                      <span>{openedAtomProject.name}</span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {atomSubView === 'atoms' && (
+                openedAtomProject ? (
+                  <section className="atom-project-editor" aria-labelledby="atom-project-editor-title">
+                    <header className="atom-project-editor-header">
+                      <div>
+                        <h3 id="atom-project-editor-title">{openedAtomProject.name}</h3>
+                      </div>
+                    </header>
+                    <div className="atom-edit-list">
+                      {openedProjectAtomCards.length ? (
+                        openedProjectAtomCards.map((card, index) => (
+                          <article className="atom-edit-row" key={card.atom.id}>
+                            <span className="atom-edit-index">{index + 1}</span>
+                            <label>
+                              <input
+                                value={atomRowDrafts[card.atom.id]?.phrase ?? card.atom.phrase}
+                                placeholder="Enter term"
+                                onChange={(event) => setAtomRowDrafts((current) => ({
+                                  ...current,
+                                  [card.atom.id]: {
+                                    phrase: event.target.value,
+                                    definition: current[card.atom.id]?.definition ?? card.atom.definition,
+                                  },
+                                }))}
+                                onBlur={() => void updateAtomInline(card.atom, atomRowDrafts[card.atom.id] ?? { phrase: card.atom.phrase, definition: card.atom.definition })}
+                              />
+                              <span>Term</span>
+                            </label>
+                            <label>
+                              <input
+                                value={atomRowDrafts[card.atom.id]?.definition ?? card.atom.definition}
+                                placeholder="Enter definition"
+                                onChange={(event) => setAtomRowDrafts((current) => ({
+                                  ...current,
+                                  [card.atom.id]: {
+                                    phrase: current[card.atom.id]?.phrase ?? card.atom.phrase,
+                                    definition: event.target.value,
+                                  },
+                                }))}
+                                onBlur={() => void updateAtomInline(card.atom, atomRowDrafts[card.atom.id] ?? { phrase: card.atom.phrase, definition: card.atom.definition })}
+                              />
+                              <span>Definition</span>
+                            </label>
+                            <button type="button" className="atom-edit-delete" aria-label={`Delete ${card.atom.phrase}`} onClick={() => void deleteAtomInline(card.atom)}>
+                              <Trash2 size={14} aria-hidden />
+                            </button>
+                          </article>
+                        ))
+                      ) : (
+                        <section className="flashcard-empty-state">
+                          <AtomIcon size={22} aria-hidden />
+                          <h3>No atoms in this project yet</h3>
+                          <p>Atomise text from a note in this project to add the first one.</p>
+                        </section>
+                      )}
+                    </div>
+                  </section>
+                ) : (
+                  <section className="atom-project-browser" aria-label="Atom projects">
+                    <label className="atoms-search atom-project-search">
+                      <Search size={15} />
+                      <input
+                        value={atomProjectSearchQuery}
+                        onChange={(event) => setAtomProjectSearchQuery(event.target.value)}
+                        placeholder="Search projects..."
+                      />
+                    </label>
+                    <div className="atom-project-card-grid">
+                      {atomProjectCards.length ? (
+                        atomProjectCards.map((project) => (
+                          <article className="atom-project-card-wrap" key={project.id}>
+                            <button className="atom-project-card" type="button" onClick={() => setOpenedAtomProjectId(project.id)}>
+                              <strong>{project.name}</strong>
+                              <span
+                                className="atom-project-edit"
+                                role="button"
+                                tabIndex={0}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  renameAtomProject(project)
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== 'Enter' && event.key !== ' ') return
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  renameAtomProject(project)
+                                }}
+                              >
+                                Edit
+                              </span>
+                              <span
+                                className={`atom-project-pin ${project.pinnedAt ? 'is-pinned' : ''}`}
+                                role="button"
+                                tabIndex={0}
+                                aria-label={`${project.pinnedAt ? 'Unpin' : 'Pin'} ${project.name}`}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  void toggleProjectPinned(project)
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== 'Enter' && event.key !== ' ') return
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  void toggleProjectPinned(project)
+                                }}
+                              >
+                                <Pin size={17} aria-hidden />
+                              </span>
+                            </button>
+                          </article>
+                        ))
+                      ) : (
+                        <section className="flashcard-empty-state">
+                          <Layers3 size={22} aria-hidden />
+                          <h3>No projects found</h3>
+                          <p>Create or search for a project before editing atoms.</p>
+                        </section>
+                      )}
+                    </div>
+                  </section>
+                )
               )}
 
               {atomSubView === 'sets' && (
@@ -6661,9 +6754,6 @@ function App() {
                             {set.description?.trim() && <p>{set.description.trim()}</p>}
                           </div>
                           <footer>
-                            <span>{setAtoms.length} card{setAtoms.length === 1 ? '' : 's'}</span>
-                            {set.lastStudiedAt && <span>Studied {formatDay(set.lastStudiedAt)}</span>}
-                            {Boolean(set.totalStudyMs) && <span>{formatDuration(set.totalStudyMs ?? 0)} studied</span>}
                             <span className="flashcard-set-actions">
                               <button
                                 type="button"
@@ -6830,31 +6920,6 @@ function App() {
 
               {atomSubView === 'set-open' && studyingFlashcardSet && (
                 <div className="flashcard-set-open">
-                  <section className="flashcard-set-stats" aria-label="Set study stats">
-                    <div>
-                      <span>Cards</span>
-                      <strong>{studyingSetAtoms.length}</strong>
-                    </div>
-                    <div>
-                      <span>Last studied</span>
-                      <strong>{studyingFlashcardSet.lastStudiedAt ? formatDay(studyingFlashcardSet.lastStudiedAt) : 'Not yet'}</strong>
-                    </div>
-                    <div>
-                      <span>Total study</span>
-                      <strong>{formatDuration(studyingFlashcardSet.totalStudyMs ?? 0)}</strong>
-                    </div>
-                    <div>
-                      <span>Fastest match</span>
-                      <strong>{studyingFlashcardSet.matchBestMs ? formatTimer(studyingFlashcardSet.matchBestMs) : 'No time'}</strong>
-                    </div>
-                    <div>
-                      <span>Avg match</span>
-                      <strong>{matchAverageMs ? formatTimer(matchAverageMs) : 'No time'}</strong>
-                    </div>
-                    <button type="button" onClick={() => void resetFlashcardSetStudyProgress(studyingFlashcardSet)}>
-                      Reset study progress
-                    </button>
-                  </section>
                   <div className="flashcard-mode-picker">
                     <header>
                       <span>Choose study mode</span>
@@ -6865,7 +6930,7 @@ function App() {
                       <button type="button" onClick={() => void startFlashcardStudy(studyingFlashcardSet)}>
                         <Brain size={18} aria-hidden />
                         <span>Flashcards</span>
-                        <small>Review due cards with Again, Hard, Good, Easy.</small>
+                        <small>Review due cards with Again and Know.</small>
                       </button>
                       <button type="button" onClick={() => startMatchStudy(studyingFlashcardSet)}>
                         <Layers3 size={18} aria-hidden />
@@ -6998,7 +7063,6 @@ function App() {
                     </div>
                   </section>
                   <div className="flashcard-study-controls">
-                    <button type="button" onClick={() => setAtomSubView('set-open')}>Back to modes</button>
                     <button
                       type="button"
                       className="primary"
@@ -7093,16 +7157,14 @@ function App() {
                           onClick={() => void generateAIHint(activeStudyAtom)}
                         >
                           <Sparkles size={14} aria-hidden />
-                          {activeStudyHint ? 'Refresh AI hint' : aiHintRunningAtomId === activeStudyAtom.id ? 'Making hint...' : 'AI hint'}
+                          {activeStudyHint ? 'Refresh hint' : aiHintRunningAtomId === activeStudyAtom.id ? 'Making hint...' : 'Hint'}
                         </button>
                         {activeStudyHint && <p>{activeStudyHint}</p>}
                       </section>
                       <div className="flashcard-study-controls">
                         <button type="button" aria-label="Previous card" onClick={() => moveStudyCard(-1)}>{'<'}</button>
                         <button type="button" onClick={() => void markStudyCard('again')}>Again</button>
-                        <button type="button" onClick={() => void markStudyCard('hard')}>Hard</button>
-                        <button type="button" className="primary" onClick={() => void markStudyCard('good')}>Good</button>
-                        <button type="button" onClick={() => void markStudyCard('easy')}>Easy</button>
+                        <button type="button" className="primary" onClick={() => void markStudyCard('good')}>Know</button>
                         <button type="button" aria-label="Next card" onClick={() => moveStudyCard(1)}>{'>'}</button>
                       </div>
                     </>
@@ -7140,12 +7202,13 @@ function App() {
                   </header>
                   <div className="flashcard-study-progress" aria-label="Match progress">
                     <span>{matchMatchedAtomIds.length} of {studyingSetAtoms.length} matched</span>
+                    {activeMatchPage && <span>Page {matchPageIndex + 1} of {matchPages.length}: {activeMatchPageMatchedCount} of {activeMatchPage.atomIds.length}</span>}
                     <span>Time {formatTimer(studyElapsedMs)}</span>
                     {Boolean(studyingFlashcardSet?.matchBestMs) && <span>Fastest {formatTimer(studyingFlashcardSet?.matchBestMs ?? 0)}</span>}
                     {Boolean(matchAverageMs) && <span>Avg {formatTimer(matchAverageMs)}</span>}
                     <span>{matchMistakes} mistake{matchMistakes === 1 ? '' : 's'}</span>
                   </div>
-                  <div className="flashcard-match-board" aria-label="Match cards">
+                  <div className={`flashcard-match-board ${matchTiles.length <= 12 ? 'is-compact-page' : ''}`} aria-label="Match cards">
                     {matchTiles.map((tile) => (
                       <button
                         type="button"
@@ -7177,14 +7240,6 @@ function App() {
                     <div>
                       <span>{studyingFlashcardSet?.name ?? 'Quiz set'}</span>
                       <h3>{quizGenerating ? 'Generating quiz' : quizMarked ? 'Quiz results' : 'AI quiz'}</h3>
-                    </div>
-                    <div className="flashcard-study-options">
-                      {studyingFlashcardSet && quizMarked && (
-                        <>
-                          <button type="button" onClick={retakeQuiz}>Retake same quiz</button>
-                          <button type="button" onClick={() => startNewQuizSetup(studyingFlashcardSet)}>New quiz</button>
-                        </>
-                      )}
                     </div>
                   </header>
                   <div className="flashcard-study-progress" aria-label="Quiz progress">
@@ -8120,6 +8175,32 @@ function buildAtomCards(atoms: Atom[], noteIndexes: NoteIndexes, projectById: Ma
   })
 }
 
+function tilesForMatchAtoms(atoms: Atom[]) {
+  return shuffleList([
+    ...atoms.map((atom) => ({ id: `${atom.id}-term`, atomId: atom.id, text: atom.phrase, kind: 'term' as const })),
+    ...atoms.map((atom) => ({ id: `${atom.id}-definition`, atomId: atom.id, text: atom.definition, kind: 'definition' as const })),
+  ])
+}
+
+function buildMatchPages(atoms: Atom[]): MatchPage[] {
+  const pages: Atom[][] = []
+  for (let index = 0; index < atoms.length; index += 8) {
+    pages.push(atoms.slice(index, index + 8))
+  }
+  if (pages.length > 1 && pages[pages.length - 1].length === 1) {
+    const previous = pages[pages.length - 2]
+    const loneAtom = pages[pages.length - 1][0]
+    const borrowedAtom = previous.pop()
+    if (borrowedAtom) pages[pages.length - 1] = [borrowedAtom, loneAtom]
+  }
+  return pages
+    .filter((pageAtoms) => pageAtoms.length > 0)
+    .map((pageAtoms) => ({
+      atomIds: pageAtoms.map((atom) => atom.id),
+      tiles: tilesForMatchAtoms(pageAtoms),
+    }))
+}
+
 function truncateOneLine(value: string, max: number) {
   const t = value.replace(/\s+/g, ' ').trim()
   if (t.length <= max) return t
@@ -8231,16 +8312,6 @@ function formatTimer(ms: number) {
   const hours = Math.floor(minutes / 60)
   const remainingMinutes = minutes % 60
   return `${hours}:${remainingMinutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
-}
-
-function formatDuration(ms: number) {
-  const totalMinutes = Math.floor(Math.max(0, ms) / 60000)
-  if (totalMinutes < 1) return '0 min'
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (!hours) return `${minutes} min`
-  if (!minutes) return `${hours} hr`
-  return `${hours} hr ${minutes} min`
 }
 
 function initialsFromName(name: string) {
