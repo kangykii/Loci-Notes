@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject, SyntheticEvent, WheelEvent } from 'react'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -51,7 +51,7 @@ import {
   Table2,
   Trash2,
   Users,
-  X,
+  X as XIcon,
 } from 'lucide-react'
 import { AtomMark } from './AtomMark'
 import { AuthorshipMark } from './AuthorshipMark'
@@ -124,6 +124,7 @@ import type {
   AITaskType,
 } from './ai/aiTasks'
 import { AIResultDialog } from './components/dialogs/AIResultDialog'
+import { ModalBackdrop } from './components/dialogs/ModalBackdrop'
 import { PageHeader } from './components/layout/PageHeader'
 import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
@@ -212,6 +213,8 @@ import { friendGroupService } from './services/friendGroupService'
 import { notificationService } from './services/notificationService'
 import { profileService } from './services/profileService'
 import { sharingService } from './services/sharingService'
+import { surveyService } from './services/surveyService'
+import type { SurveyPrompt } from './services/surveyService'
 import { initialUpdateState, updateService } from './services/updateService'
 import type { UpdateState } from './services/updateService'
 import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
@@ -233,6 +236,152 @@ type StudyDirection = 'term' | 'definition'
 const RELEASE_TEMPLATE_CHOOSER_ENABLED = false
 const RELEASE_COMMUNITY_ENABLED = false
 const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
+
+type FloatingEditorToolbarLayoutOptions = {
+  activeView: View
+  appFullscreen: boolean
+  appImmersiveFullscreen: boolean
+  appShellRef: RefObject<HTMLElement | null>
+  fullscreenExitStaging: boolean
+  selectedNoteId: string
+  sidebarRevealAnimating: boolean
+  toolbarRef: RefObject<HTMLDivElement | null>
+}
+
+function useFloatingEditorToolbarLayout({
+  activeView,
+  appFullscreen,
+  appImmersiveFullscreen,
+  appShellRef,
+  fullscreenExitStaging,
+  selectedNoteId,
+  sidebarRevealAnimating,
+  toolbarRef,
+}: FloatingEditorToolbarLayoutOptions) {
+  const frameRef = useRef<number | null>(null)
+  const deferredMeasureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const layoutMeasureRefs = useRef<number[]>([])
+
+  const clearLayoutMeasureTimers = useCallback(() => {
+    layoutMeasureRefs.current.forEach((timer) => clearTimeout(timer))
+    layoutMeasureRefs.current = []
+  }, [])
+
+  const updateFloatingToolbarPosition = useCallback(() => {
+    const wrap = toolbarRef.current
+    if (!wrap) return
+
+    if (activeView !== 'editor') {
+      wrap.style.removeProperty('--floating-toolbar-center-x')
+      wrap.style.removeProperty('--floating-toolbar-max-width')
+      return
+    }
+
+    const editorPane = appShellRef.current?.querySelector<HTMLElement>('.main-pane.editor-pane')
+    if (!editorPane) return
+
+    const rect = editorPane.getBoundingClientRect()
+    const viewportPadding = window.matchMedia('(max-width: 760px)').matches ? 14 : 24
+    const viewportWidth = window.innerWidth
+    const centerX = rect.left + rect.width / 2
+    const clampedCenterX = Math.min(viewportWidth - viewportPadding, Math.max(viewportPadding, centerX))
+    const availableViewportWidth = Math.max(0, viewportWidth - viewportPadding * 2)
+    const availableEditorWidth = Math.max(0, rect.width - viewportPadding * 2)
+    const maxWidth = Math.max(
+      Math.min(260, availableViewportWidth),
+      Math.min(940, availableEditorWidth, availableViewportWidth),
+    )
+
+    wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
+    wrap.style.setProperty('--floating-toolbar-max-width', `${maxWidth}px`)
+  }, [activeView, appShellRef, toolbarRef])
+
+  const scheduleFloatingToolbarPosition = useCallback(() => {
+    if (frameRef.current) return
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null
+      updateFloatingToolbarPosition()
+    })
+  }, [updateFloatingToolbarPosition])
+
+  const queueFloatingToolbarRemeasure = useCallback((delayMs = 0) => {
+    scheduleFloatingToolbarPosition()
+    if (deferredMeasureRef.current) clearTimeout(deferredMeasureRef.current)
+    deferredMeasureRef.current = setTimeout(() => {
+      deferredMeasureRef.current = null
+      scheduleFloatingToolbarPosition()
+    }, delayMs)
+  }, [scheduleFloatingToolbarPosition])
+
+  const queueFloatingToolbarLayoutRemeasure = useCallback(() => {
+    clearLayoutMeasureTimers()
+    layoutMeasureRefs.current = [0, 80, 180, 320, 520].map((delay) =>
+      window.setTimeout(scheduleFloatingToolbarPosition, delay),
+    )
+  }, [clearLayoutMeasureTimers, scheduleFloatingToolbarPosition])
+
+  useLayoutEffect(() => {
+    scheduleFloatingToolbarPosition()
+  }, [activeView, scheduleFloatingToolbarPosition, selectedNoteId])
+
+  useEffect(() => {
+    queueFloatingToolbarLayoutRemeasure()
+  }, [
+    activeView,
+    appFullscreen,
+    appImmersiveFullscreen,
+    fullscreenExitStaging,
+    queueFloatingToolbarLayoutRemeasure,
+    selectedNoteId,
+    sidebarRevealAnimating,
+  ])
+
+  useEffect(() => {
+    if (activeView !== 'editor') return
+
+    const editorPane = appShellRef.current?.querySelector<HTMLElement>('.main-pane.editor-pane')
+    const appShell = appShellRef.current
+    const visualViewport = window.visualViewport
+    const onLayoutChange = () => queueFloatingToolbarLayoutRemeasure()
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(onLayoutChange)
+      : null
+
+    if (editorPane) resizeObserver?.observe(editorPane)
+    if (appShell) resizeObserver?.observe(appShell)
+    window.addEventListener('resize', onLayoutChange)
+    visualViewport?.addEventListener('resize', onLayoutChange)
+    visualViewport?.addEventListener('scroll', onLayoutChange)
+    editorPane?.addEventListener('transitionrun', onLayoutChange)
+    editorPane?.addEventListener('transitionend', onLayoutChange)
+    appShell?.addEventListener('transitionrun', onLayoutChange)
+    appShell?.addEventListener('transitionend', onLayoutChange)
+    queueFloatingToolbarLayoutRemeasure()
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', onLayoutChange)
+      visualViewport?.removeEventListener('resize', onLayoutChange)
+      visualViewport?.removeEventListener('scroll', onLayoutChange)
+      editorPane?.removeEventListener('transitionrun', onLayoutChange)
+      editorPane?.removeEventListener('transitionend', onLayoutChange)
+      appShell?.removeEventListener('transitionrun', onLayoutChange)
+      appShell?.removeEventListener('transitionend', onLayoutChange)
+    }
+  }, [activeView, appShellRef, queueFloatingToolbarLayoutRemeasure])
+
+  useEffect(() => () => {
+    clearLayoutMeasureTimers()
+    if (deferredMeasureRef.current) clearTimeout(deferredMeasureRef.current)
+    if (frameRef.current) cancelAnimationFrame(frameRef.current)
+  }, [clearLayoutMeasureTimers])
+
+  return {
+    queueFloatingToolbarRemeasure,
+    scheduleFloatingToolbarPosition,
+    updateFloatingToolbarPosition,
+  }
+}
 
 function InkCharacter({
   character,
@@ -968,9 +1117,14 @@ type GroupDialogDraft = {
   memberAccountIds: string[]
 }
 
+type SidebarQuickSection = {
+  id: string
+  title: string
+  notes: Note[]
+}
+
 type SidebarProps = {
   activeView: View
-  activeProject: Project | undefined
   activeNoteId: string | undefined
   atomSubView: AtomSubView
   draggedNoteIds: string[]
@@ -979,11 +1133,12 @@ type SidebarProps = {
   profileDisplayName: string
   profileHandleLabel: string
   profileInitials: string
-  projectQuickNotes: Note[]
+  projectQuickSections: SidebarQuickSection[]
   onAssignNoteToProjectDrop: (event: React.DragEvent<HTMLElement>, targetProjectId: string) => void
   onDragEnterProject: (projectId: string) => void
   onDragLeaveProject: (projectId: string) => void
   onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
+  onHideSidebarNote: (sectionId: string, noteId: string) => void
   onNewNote: () => void
   onOpenNote: (noteId: string) => void
   onOpenProfile: () => void
@@ -998,7 +1153,6 @@ type SidebarProps = {
 
 const Sidebar = memo(function Sidebar({
   activeView,
-  activeProject,
   activeNoteId,
   atomSubView,
   draggedNoteIds,
@@ -1007,11 +1161,12 @@ const Sidebar = memo(function Sidebar({
   profileDisplayName,
   profileHandleLabel,
   profileInitials,
-  projectQuickNotes,
+  projectQuickSections,
   onAssignNoteToProjectDrop,
   onDragEnterProject,
   onDragLeaveProject,
   onDragOverProject,
+  onHideSidebarNote,
   onNewNote,
   onOpenNote,
   onOpenProfile,
@@ -1025,10 +1180,6 @@ const Sidebar = memo(function Sidebar({
 }: SidebarProps) {
   const [editingNoteId, setEditingNoteId] = useState('')
   const [editingNoteTitle, setEditingNoteTitle] = useState('')
-  const projectQuickNavHeight = Math.min(projectQuickNotes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
-  const projectQuickNavStyle = {
-    '--project-quick-nav-height': `${projectQuickNavHeight}px`,
-  } as React.CSSProperties
 
   const startNoteRename = (note: Note) => {
     setEditingNoteId(note.id)
@@ -1090,67 +1241,92 @@ const Sidebar = memo(function Sidebar({
         </button>
       </nav>
 
-      {activeProject && projectQuickNotes.length > 0 && (
-        <div className="sidebar-section sidebar-project-section" key={activeProject.id}>
-          <span className="sidebar-section-label">{activeProject.name}</span>
-          <VirtualList
-            className="project-quick-nav"
-            style={projectQuickNavStyle}
-            items={projectQuickNotes}
-            rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
-            overscan={6}
-            ariaLabel={`${activeProject.name} documents`}
-            renderItem={(note, index) => (
-              <div
-                className={`quick-note-row ${note.id === activeNoteId ? 'is-active' : ''}`}
-                style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
-              >
-                <button type="button" onClick={() => {
-                  onOpenNote(note.id)
-                }}>
-                  {editingNoteId === note.id ? (
-                    <input
-                      className="note-title-rename-input sidebar-note-title-input"
-                      value={editingNoteTitle}
-                      onBlur={() => commitNoteRename(note)}
-                      onChange={(event) => setEditingNoteTitle(event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      onDoubleClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+      {projectQuickSections.map((section) => {
+        const projectQuickNavHeight = Math.min(section.notes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
+        const projectQuickNavStyle = {
+          '--project-quick-nav-height': `${projectQuickNavHeight}px`,
+        } as React.CSSProperties
+        return (
+          <div className="sidebar-section sidebar-project-section" key={section.id}>
+            <span className="sidebar-section-label">{section.title}</span>
+            <VirtualList
+              className="project-quick-nav"
+              style={projectQuickNavStyle}
+              items={section.notes}
+              rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
+              overscan={6}
+              ariaLabel={`${section.title} documents`}
+              renderItem={(note, index) => {
+                const isEditing = editingNoteId === note.id
+                const isActive = note.id === activeNoteId
+                return (
+                  <div
+                    className={`quick-note-row ${isActive ? 'is-active' : ''} ${isEditing ? 'is-editing' : ''}`}
+                    style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
+                  >
+                    <button className="quick-note-open" type="button" onClick={() => {
+                      onOpenNote(note.id)
+                    }}>
+                      {isEditing ? (
+                        <input
+                          className="note-title-rename-input sidebar-note-title-input"
+                          value={editingNoteTitle}
+                          onBlur={() => commitNoteRename(note)}
+                          onChange={(event) => setEditingNoteTitle(event.target.value)}
+                          onClick={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              commitNoteRename(note)
+                            }
+                            if (event.key === 'Escape') {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              setEditingNoteTitle(note.title || 'Untitled Note')
+                              setEditingNoteId('')
+                            }
+                          }}
+                          aria-label="Document name"
+                          autoFocus
+                        />
+                      ) : (
+                        <span
+                          className="sidebar-note-title"
+                          title="Double-click to rename"
+                          onDoubleClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            startNoteRename(note)
+                          }}
+                        >
+                          {note.title || 'Untitled Note'}
+                        </span>
+                      )}
+                    </button>
+                    {!isEditing && (
+                      <button
+                        className="quick-note-hide"
+                        type="button"
+                        aria-label={`Hide ${note.title || 'Untitled Note'} from sidebar`}
+                        title="Hide from sidebar"
+                        onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
-                          commitNoteRename(note)
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          setEditingNoteTitle(note.title || 'Untitled Note')
-                          setEditingNoteId('')
-                        }
-                      }}
-                      aria-label="Document name"
-                      autoFocus
-                    />
-                  ) : (
-                    <span
-                      className="sidebar-note-title"
-                      title="Double-click to rename"
-                      onDoubleClick={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        startNoteRename(note)
-                      }}
-                    >
-                      {note.title || 'Untitled Note'}
-                    </span>
-                  )}
-                </button>
-              </div>
-            )}
-          />
-        </div>
-      )}
+                          onHideSidebarNote(section.id, note.id)
+                        }}
+                      >
+                        <XIcon size={20} strokeWidth={2.5} aria-hidden />
+                      </button>
+                    )}
+                  </div>
+                )
+              }}
+            />
+          </div>
+        )
+      })}
 
       <div className="sidebar-bottom">
         {RELEASE_COMMUNITY_ENABLED && (
@@ -1254,11 +1430,15 @@ function App() {
   const [draggedNoteIds, setDraggedNoteIds] = useState<string[]>([])
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
+  const [openSidebarProjectIds, setOpenSidebarProjectIds] = useState<string[]>([])
+  const [hiddenSidebarNoteIdsByProjectId, setHiddenSidebarNoteIdsByProjectId] = useState<Record<string, string[]>>({})
   const [atomSearchQuery, setAtomSearchQuery] = useState('')
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
   const [openProjectMenuId, setOpenProjectMenuId] = useState('')
   const [openLooseNoteMenuId, setOpenLooseNoteMenuId] = useState('')
+  const [editingLooseNoteId, setEditingLooseNoteId] = useState('')
+  const [editingLooseNoteTitle, setEditingLooseNoteTitle] = useState('')
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [editorFocusMode, setEditorFocusMode] = useState(false)
   const [editorFocusModeVisual, setEditorFocusModeVisual] = useState(false)
@@ -1311,6 +1491,11 @@ function App() {
   const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
   const [groupDialogDraft, setGroupDialogDraft] = useState<GroupDialogDraft | null>(null)
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
+  const [activeSurveyPrompt, setActiveSurveyPrompt] = useState<SurveyPrompt | null>(null)
+  const [surveyAnswer, setSurveyAnswer] = useState('')
+  const [surveyComment, setSurveyComment] = useState('')
+  const [surveyLoading, setSurveyLoading] = useState(false)
+  const [surveySubmitting, setSurveySubmitting] = useState(false)
   const [, setShowSaveState] = useState(true)
   const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
@@ -1346,8 +1531,6 @@ function App() {
   const postOnboardingRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarRevealCleanupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const floatingToolbarFrameRef = useRef<number | null>(null)
-  const floatingToolbarDeferredMeasureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
@@ -1398,6 +1581,10 @@ function App() {
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const atomById = useMemo(() => new Map(atoms.map((atom) => [atom.id, atom])), [atoms])
   const noteIndexes = useMemo(() => createNoteIndexes(notes, noteIndexCacheRef.current), [notes])
+  const projectSectionIdForNote = useCallback(
+    (note: Note) => (note.projectId !== UNASSIGNED_PROJECT_ID && projectById.has(note.projectId) ? note.projectId : UNASSIGNED_PROJECT_ID),
+    [projectById],
+  )
   const hasExplicitAIContext = Boolean(aiContextRange)
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
@@ -1410,6 +1597,7 @@ function App() {
     : 'Signed out · local workspace only'
   const acceptedFriendCount = friendships.filter((friendship) => friendship.status === 'accepted').length
   const pendingFriendCount = friendships.filter((friendship) => friendship.status !== 'accepted').length
+  const surveyPromptReady = authSession.status === 'signed-in' && Boolean(activeSurveyPrompt)
   const selectedCommunityFriend = communityTarget?.kind === 'friend'
     ? friendships.find((friendship) => friendship.id === communityTarget.id)
     : undefined
@@ -1423,7 +1611,6 @@ function App() {
     ? sharedNoteExports.filter((share) => selectedCommunityRecipientIds.some((accountId) => share.recipientAccountIds.includes(accountId)))
     : []
   const acceptedFriendships = friendships.filter((friendship) => friendship.status === 'accepted')
-  const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
   const localDatabaseNeedsRepair = localLoadIssues.some((issue) =>
     /notes|noteBodies|noteMetas|database|dexie|starter workspace/i.test(issue),
   )
@@ -1503,19 +1690,27 @@ function App() {
     ])
   }, [showConflictNotification, showNotification])
 
-  const projectQuickNotes = useMemo(
-    () =>
-      activeProjectForQuickNav
-        ? noteIndexes.notesByProjectId.get(activeProjectForQuickNav.id) ?? []
-        : [],
-    [activeProjectForQuickNav, noteIndexes],
-  )
   const unassignedNotes = useMemo(() => {
     const projectIds = new Set(projects.map((project) => project.id))
     return notes
       .filter((note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId))
       .sort(sortByUpdated)
   }, [notes, projects])
+  const projectQuickSections = useMemo<SidebarQuickSection[]>(() => {
+    return openSidebarProjectIds.flatMap((sectionId) => {
+      const title = sectionId === UNASSIGNED_PROJECT_ID
+        ? 'Unsorted'
+        : projectById.get(sectionId)?.name
+      if (!title) return []
+      const hiddenIds = new Set(hiddenSidebarNoteIdsByProjectId[sectionId] ?? [])
+      const sectionNotes = (sectionId === UNASSIGNED_PROJECT_ID
+        ? unassignedNotes
+        : noteIndexes.notesByProjectId.get(sectionId) ?? []
+      ).filter((note) => !hiddenIds.has(note.id))
+      if (!sectionNotes.length) return []
+      return [{ id: sectionId, title, notes: sectionNotes }]
+    })
+  }, [hiddenSidebarNoteIdsByProjectId, noteIndexes, openSidebarProjectIds, projectById, unassignedNotes])
   const projectCards = useMemo<ProjectCardSummary[]>(() => {
     return projects
       .map((project) => {
@@ -1566,8 +1761,6 @@ function App() {
       if (postOnboardingRevealTimeoutRef.current) clearTimeout(postOnboardingRevealTimeoutRef.current)
       if (sidebarRevealTimeoutRef.current) clearTimeout(sidebarRevealTimeoutRef.current)
       if (sidebarRevealCleanupTimeoutRef.current) clearTimeout(sidebarRevealCleanupTimeoutRef.current)
-      if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
-      if (floatingToolbarFrameRef.current) cancelAnimationFrame(floatingToolbarFrameRef.current)
     }
   }, [])
 
@@ -1785,9 +1978,10 @@ function App() {
     }
   }, [notes, runWorkerJob])
 
-  const checkForUpdates = useCallback(async (manual = false) => {
+  const checkForUpdates = useCallback(async (manual = false, autoInstall = false) => {
     await updateService.check({
       manual,
+      autoInstall,
       isDesktop: Boolean(window.__TAURI_INTERNALS__),
       onStateChange: setUpdateState,
     })
@@ -1805,7 +1999,7 @@ function App() {
   useEffect(() => {
     if (updateCheckRanRef.current || !window.__TAURI_INTERNALS__) return
     updateCheckRanRef.current = true
-    void checkForUpdates()
+    void checkForUpdates(false, true)
   }, [checkForUpdates])
 
   useEffect(() => {
@@ -1835,6 +2029,39 @@ function App() {
       cancelled = true
     }
   }, [showNotification])
+
+  useEffect(() => {
+    const accountId = authSession.accountId
+    if (authSession.status !== 'signed-in' || !accountId) {
+      setActiveSurveyPrompt(null)
+      setSurveyAnswer('')
+      setSurveyComment('')
+      setSurveyLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setSurveyLoading(true)
+    void surveyService.getActivePrompt(accountId, 'settings')
+      .then((prompt) => {
+        if (cancelled) return
+        setActiveSurveyPrompt(prompt)
+        setSurveyAnswer(prompt?.kind === 'single-choice' ? prompt.options[0] ?? '' : '')
+        setSurveyComment('')
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.warn('Could not load survey prompt', error)
+        setActiveSurveyPrompt(null)
+      })
+      .finally(() => {
+        if (!cancelled) setSurveyLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authSession.accountId, authSession.status])
 
   useEffect(() => {
     if (!RELEASE_COMMUNITY_ENABLED) return
@@ -2138,6 +2365,43 @@ function App() {
     scheduleNoteSave(updated, 'title' in patch || 'content' in patch || 'templateData' in patch)
   }, [])
 
+  const startLooseNoteRename = useCallback((note: Note) => {
+    setOpenLooseNoteMenuId('')
+    setEditingLooseNoteId(note.id)
+    setEditingLooseNoteTitle(note.title || 'Untitled Note')
+  }, [])
+
+  const commitLooseNoteRename = useCallback((note: Note) => {
+    const nextTitle = editingLooseNoteTitle.replace(/\s*\r?\n\s*/g, ' ').trim() || 'Untitled Note'
+    setEditingLooseNoteTitle(nextTitle)
+    setEditingLooseNoteId('')
+    if (nextTitle !== note.title) void persistNote({ title: nextTitle }, note.id)
+  }, [editingLooseNoteTitle, persistNote])
+
+  const openSidebarSectionForNote = useCallback((note: Note, options: { revealNote?: boolean } = {}) => {
+    const sectionId = projectSectionIdForNote(note)
+    setOpenSidebarProjectIds((current) => (current.includes(sectionId) ? current : [sectionId, ...current]))
+    if (options.revealNote !== false) {
+      setHiddenSidebarNoteIdsByProjectId((current) => {
+        const hiddenIds = current[sectionId] ?? []
+        if (!hiddenIds.includes(note.id)) return current
+        const nextHiddenIds = hiddenIds.filter((id) => id !== note.id)
+        const next = { ...current }
+        if (nextHiddenIds.length) next[sectionId] = nextHiddenIds
+        else delete next[sectionId]
+        return next
+      })
+    }
+  }, [projectSectionIdForNote])
+
+  const hideSidebarNote = useCallback((sectionId: string, noteId: string) => {
+    setHiddenSidebarNoteIdsByProjectId((current) => {
+      const hiddenIds = current[sectionId] ?? []
+      if (hiddenIds.includes(noteId)) return current
+      return { ...current, [sectionId]: [...hiddenIds, noteId] }
+    })
+  }, [])
+
   const handleNoteDropTargetDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.dataTransfer.dropEffect = 'move'
@@ -2150,6 +2414,7 @@ function App() {
     }
     const currentNote = notesRef.current.find((note) => note.id === noteId)
     if (currentNote) {
+      openSidebarSectionForNote(currentNote)
       setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(currentNote.content ?? emptyDoc)))
     } else {
       setEditorCityMarginaliaOpacity(1)
@@ -2167,7 +2432,79 @@ function App() {
       )
     })
     void mediaStore.preloadForNote(noteId, { priority: 'visible' })
-  }, [])
+  }, [openSidebarSectionForNote])
+
+  const nextVisibleSidebarNote = useCallback((excludingNoteIds: string[] = []) => {
+    const excluded = new Set(excludingNoteIds)
+    const noteById = new Map(notesRef.current.map((note) => [note.id, note]))
+    const visibleIds = new Set<string>()
+    for (const section of projectQuickSections) {
+      for (const note of section.notes) {
+        if (!excluded.has(note.id)) visibleIds.add(note.id)
+      }
+    }
+
+    const history = noteOpenHistoryRef.current.filter((id) => {
+      const note = noteById.get(id)
+      return note && visibleIds.has(id)
+    })
+    noteOpenHistoryRef.current = history
+    const historyNoteId = history.find((id) => !excluded.has(id))
+    if (historyNoteId) return noteById.get(historyNoteId)
+
+    for (const section of projectQuickSections) {
+      const note = section.notes.find((item) => !excluded.has(item.id))
+      if (note) return note
+    }
+    return undefined
+  }, [projectQuickSections])
+
+  const closeSidebarNote = useCallback((noteId: string) => {
+    const note = notesRef.current.find((item) => item.id === noteId)
+    if (!note) return
+    const sectionId = projectSectionIdForNote(note)
+    hideSidebarNote(sectionId, noteId)
+    noteOpenHistoryRef.current = noteOpenHistoryRef.current.filter((id) => id !== noteId)
+
+    if (selectedNoteIdRef.current !== noteId) return
+    const nextNote = nextVisibleSidebarNote([noteId])
+    setActiveEditorPanel(null)
+    setNoteHistoryOpen(false)
+    showNotice('')
+    if (nextNote) {
+      openNote(nextNote.id, { trackHistory: false })
+      return
+    }
+    setSelectedNoteId('')
+    setActiveView('home')
+  }, [hideSidebarNote, nextVisibleSidebarNote, openNote, projectSectionIdForNote, showNotice])
+
+  const closeSidebarProject = useCallback((sectionId: string) => {
+    setOpenSidebarProjectIds((current) => current.filter((id) => id !== sectionId))
+    setHiddenSidebarNoteIdsByProjectId((current) => {
+      if (!(sectionId in current)) return current
+      const next = { ...current }
+      delete next[sectionId]
+      return next
+    })
+
+    const currentNote = notesRef.current.find((note) => note.id === selectedNoteIdRef.current)
+    if (!currentNote || projectSectionIdForNote(currentNote) !== sectionId) return
+    const closingNoteIds = notesRef.current
+      .filter((note) => projectSectionIdForNote(note) === sectionId)
+      .map((note) => note.id)
+    noteOpenHistoryRef.current = noteOpenHistoryRef.current.filter((id) => !closingNoteIds.includes(id))
+    const nextNote = nextVisibleSidebarNote(closingNoteIds)
+    setActiveEditorPanel(null)
+    setNoteHistoryOpen(false)
+    showNotice('')
+    if (nextNote) {
+      openNote(nextNote.id, { trackHistory: false })
+      return
+    }
+    setSelectedNoteId('')
+    setActiveView('home')
+  }, [nextVisibleSidebarNote, openNote, projectSectionIdForNote, showNotice])
 
   const persistNotesProject = useCallback(async (noteIds: string[], targetProjectId: string) => {
     const noteIdSet = new Set(noteIds)
@@ -2610,12 +2947,7 @@ function App() {
   useEffect(() => {
     if (!activeEditorPanel) return
     const closeOnOutsidePointer = (event: MouseEvent) => {
-      if (activeEditorPanel === 'format') {
-        const dialog = formatDialogRef.current
-        if (!dialog || dialog.contains(event.target as Node)) return
-        setActiveEditorPanel(null)
-        return
-      }
+      if (activeEditorPanel === 'format' && formatDialogRef.current?.contains(event.target as Node)) return
       const wrap = floatingEditorWrapRef.current
       if (!wrap || wrap.contains(event.target as Node)) return
       setActiveEditorPanel(null)
@@ -2653,6 +2985,27 @@ function App() {
     if (activeEditorPanel !== 'format') return
     setFormatDialogQuery('')
   }, [activeEditorPanel])
+
+  const editorModalOverlayOpen =
+    activeView === 'editor' &&
+    (activeEditorPanel === 'format' || Boolean(atomDialog) || Boolean(aiResult))
+
+  useEffect(() => {
+    if (!editorModalOverlayOpen) return
+    const scrollEl = documentScrollRef.current
+    if (!scrollEl) return
+
+    const previousOverflow = scrollEl.style.overflow
+    const previousPaddingRight = scrollEl.style.paddingRight
+    const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth
+    scrollEl.style.overflow = 'hidden'
+    if (scrollbarWidth > 0) scrollEl.style.paddingRight = `${scrollbarWidth}px`
+
+    return () => {
+      scrollEl.style.overflow = previousOverflow
+      scrollEl.style.paddingRight = previousPaddingRight
+    }
+  }, [editorModalOverlayOpen])
 
   useEffect(() => {
     if (!atomHeadingMenuOpen) return
@@ -3187,6 +3540,39 @@ function App() {
     const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
     await settingsStore.save(normalized)
     setUserSettings(normalized)
+  }
+
+  const dismissSurveyPrompt = async () => {
+    if (!activeSurveyPrompt || !authSession.accountId) return
+    await surveyService.dismissPrompt(authSession.accountId, activeSurveyPrompt.id)
+    setActiveSurveyPrompt(null)
+    setSurveyAnswer('')
+    setSurveyComment('')
+    showNotification({ message: 'Survey prompt dismissed.', tone: 'info' })
+  }
+
+  const submitSurveyPrompt = async () => {
+    if (!activeSurveyPrompt || !authSession.accountId || surveySubmitting) return
+    setSurveySubmitting(true)
+    try {
+      await surveyService.submitResponse({
+        prompt: activeSurveyPrompt,
+        accountId: authSession.accountId,
+        answer: surveyAnswer,
+        comment: surveyComment,
+      })
+      setActiveSurveyPrompt(null)
+      setSurveyAnswer('')
+      setSurveyComment('')
+      showNotification({ message: 'Thanks for the input.', tone: 'success' })
+    } catch (error) {
+      showNotification({
+        message: error instanceof Error ? error.message : 'Could not submit survey response.',
+        tone: 'error',
+      })
+    } finally {
+      setSurveySubmitting(false)
+    }
   }
 
   const recordFocusModeSession = useCallback((durationMs: number) => {
@@ -3856,6 +4242,32 @@ function App() {
         aiPromptInputRef.current?.blur()
         return
       }
+      const isEditorCloseShortcut =
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        activeView === 'editor' &&
+        Boolean(selectedNoteIdRef.current) &&
+        !appDialog &&
+        !atomDialog &&
+        !noteHistoryOpen &&
+        !profileModalOpen &&
+        !searchOpen &&
+        !settingsModalOpen &&
+        !templateProjectId
+      if (isEditorCloseShortcut && event.key.toLowerCase() === 'w' && !event.repeat) {
+        event.preventDefault()
+        closeSidebarNote(selectedNoteIdRef.current)
+        return
+      }
+      if (isEditorCloseShortcut && event.key.toLowerCase() === 'q' && !event.repeat) {
+        const currentNote = notesRef.current.find((note) => note.id === selectedNoteIdRef.current)
+        if (currentNote) {
+          event.preventDefault()
+          closeSidebarProject(projectSectionIdForNote(currentNote))
+        }
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         if (atomDialog) return
@@ -3872,7 +4284,7 @@ function App() {
     }
     document.addEventListener('keydown', onDocKeyDown)
     return () => document.removeEventListener('keydown', onDocKeyDown)
-  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchToPreviousOpenedNote, templateProjectId])
+  }, [activeEditorPanel, activeView, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, closeSidebarNote, closeSidebarProject, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, projectSectionIdForNote, searchOpen, settingsModalOpen, switchToPreviousOpenedNote, templateProjectId])
 
   
   useEffect(() => {
@@ -4071,51 +4483,20 @@ function App() {
     setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
   }, [measureGutterBlockControls])
 
-  const updateFloatingToolbarPosition = useCallback(() => {
-    const wrap = floatingEditorWrapRef.current
-    if (!wrap) return
-    if (activeView !== 'editor') {
-      wrap.style.removeProperty('--floating-toolbar-center-x')
-      wrap.style.removeProperty('--floating-toolbar-max-width')
-      return
-    }
-
-    const noteCard = document.querySelector<HTMLElement>('.document-card')
-    if (!noteCard) return
-
-    const rect = noteCard.getBoundingClientRect()
-    const viewportPadding = window.matchMedia('(max-width: 760px)').matches ? 14 : 24
-    const centerX = rect.left + rect.width / 2
-    const clampedCenterX = Math.min(window.innerWidth - viewportPadding, Math.max(viewportPadding, centerX))
-    const maxWidth = Math.max(
-      260,
-      Math.min(
-        940,
-        rect.width - 24,
-        window.innerWidth - viewportPadding * 2,
-      ),
-    )
-
-    wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
-    wrap.style.setProperty('--floating-toolbar-max-width', `${maxWidth}px`)
-  }, [activeView])
-
-  const scheduleFloatingToolbarPosition = useCallback(() => {
-    if (floatingToolbarFrameRef.current) return
-    floatingToolbarFrameRef.current = requestAnimationFrame(() => {
-      floatingToolbarFrameRef.current = null
-      updateFloatingToolbarPosition()
-    })
-  }, [updateFloatingToolbarPosition])
-
-  const queueFloatingToolbarRemeasure = useCallback((delayMs = 0) => {
-    scheduleFloatingToolbarPosition()
-    if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
-    floatingToolbarDeferredMeasureRef.current = setTimeout(() => {
-      floatingToolbarDeferredMeasureRef.current = null
-      scheduleFloatingToolbarPosition()
-    }, delayMs)
-  }, [scheduleFloatingToolbarPosition])
+  const {
+    queueFloatingToolbarRemeasure,
+    scheduleFloatingToolbarPosition,
+    updateFloatingToolbarPosition,
+  } = useFloatingEditorToolbarLayout({
+    activeView,
+    appFullscreen,
+    appImmersiveFullscreen,
+    appShellRef,
+    fullscreenExitStaging,
+    selectedNoteId,
+    sidebarRevealAnimating,
+    toolbarRef: floatingEditorWrapRef,
+  })
 
   const { markActiveEditorBlock } = useFocusModePlugin({
     editor,
@@ -4264,7 +4645,6 @@ function App() {
     window.addEventListener('resize', scheduleEditorResizeMeasurements)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
-    documentScrollRef.current?.addEventListener('scroll', scheduleFloatingToolbarPosition)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
       editor.off('selectionUpdate', markActiveEditorBlock)
@@ -4274,23 +4654,18 @@ function App() {
       window.removeEventListener('resize', scheduleEditorResizeMeasurements)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
-      documentScrollRef.current?.removeEventListener('scroll', scheduleFloatingToolbarPosition)
       if (editorResizeFrameRef.current) {
         cancelAnimationFrame(editorResizeFrameRef.current)
         editorResizeFrameRef.current = null
       }
     }
-  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFloatingToolbarPosition, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
 
   useEffect(() => {
     markActiveEditorBlock()
     scheduleEditorResizeMeasurements()
     queueFloatingToolbarRemeasure(180)
   }, [editorFocusMode, markActiveEditorBlock, queueFloatingToolbarRemeasure, scheduleEditorResizeMeasurements])
-
-  useEffect(() => {
-    queueFloatingToolbarRemeasure(220)
-  }, [activeView, appFullscreen, appImmersiveFullscreen, fullscreenExitStaging, queueFloatingToolbarRemeasure, selectedNoteId, sidebarRevealAnimating])
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
@@ -6121,7 +6496,7 @@ function App() {
                 ) : null}
               </div>
               <button type="button" className="toast-notice-dismiss" aria-label="Dismiss notification" onClick={() => dismissNotification(notification.id)}>
-                <X size={14} aria-hidden />
+                <XIcon size={14} aria-hidden />
               </button>
             </div>
           ))}
@@ -6145,7 +6520,6 @@ function App() {
       >
         <Sidebar
           activeView={activeView}
-          activeProject={activeProjectForQuickNav}
           activeNoteId={selectedNote?.id}
           atomSubView={atomSubView}
           draggedNoteIds={draggedNoteIds}
@@ -6154,11 +6528,12 @@ function App() {
           profileDisplayName={profileDisplayName}
           profileHandleLabel={profileHandleLabel}
           profileInitials={profileInitials}
-          projectQuickNotes={projectQuickNotes}
+          projectQuickSections={projectQuickSections}
           onAssignNoteToProjectDrop={assignNoteToProjectDrop}
           onDragEnterProject={setDragOverProjectId}
           onDragLeaveProject={(projectId) => setDragOverProjectId((current) => (current === projectId ? '' : current))}
           onDragOverProject={handleNoteDropTargetDragOver}
+          onHideSidebarNote={hideSidebarNote}
           onNewNote={() => openTemplateChooser()}
           onOpenNote={openProjectQuickNote}
           onOpenProfile={() => setProfileModalOpen(true)}
@@ -6247,7 +6622,14 @@ function App() {
                       type="button"
                       onClick={() => {
                         if (homeTip.cta?.action === 'newNote') openTemplateChooser()
-                        if (homeTip.cta?.action === 'openAtoms') setActiveView('atoms')
+                        if (homeTip.cta?.action === 'openAtoms') {
+                          setAtomSubView('atoms')
+                          setActiveView('atoms')
+                        }
+                        if (homeTip.cta?.action === 'openSets') {
+                          setAtomSubView('sets')
+                          setActiveView('atoms')
+                        }
                         if (homeTip.cta?.action === 'openProjects') {
                           setSelectedProjectId('')
                           setActiveView('projects')
@@ -6392,7 +6774,7 @@ function App() {
                           <label key={task.id} className="planner-task-row">
                             <input type="checkbox" checked={task.done} onChange={(event) => updatePlannerTask(task.id, { done: event.target.checked })} />
                             <input value={task.text} onChange={(event) => updatePlannerTask(task.id, { text: event.target.value })} />
-                            <button className="template-icon-button" type="button" aria-label="Remove task" onClick={() => removePlannerTask(task.id)}><X size={14} /></button>
+                            <button className="template-icon-button" type="button" aria-label="Remove task" onClick={() => removePlannerTask(task.id)}><XIcon size={14} /></button>
                           </label>
                         ))}
                       </div>
@@ -6405,7 +6787,7 @@ function App() {
                           <div key={item.id} className="planner-schedule-row">
                             <input type="time" value={item.time} onChange={(event) => updatePlannerSchedule(item.id, { time: event.target.value })} />
                             <input value={item.text} onChange={(event) => updatePlannerSchedule(item.id, { text: event.target.value })} />
-                            <button className="template-icon-button" type="button" aria-label="Remove schedule block" onClick={() => removePlannerSchedule(item.id)}><X size={14} /></button>
+                            <button className="template-icon-button" type="button" aria-label="Remove schedule block" onClick={() => removePlannerSchedule(item.id)}><XIcon size={14} /></button>
                           </div>
                         ))}
                       </div>
@@ -6649,13 +7031,7 @@ function App() {
         )}
 
         {activeView === 'editor' && selectedNote && activeEditorPanel === 'format' && (
-          <div
-            className="modal-backdrop format-modal-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setActiveEditorPanel(null)
-            }}
-          >
+          <ModalBackdrop containerRef={documentScrollRef} className="format-modal-backdrop" onClose={() => setActiveEditorPanel(null)}>
             <section
               className="format-dialog"
               role="dialog"
@@ -6674,7 +7050,7 @@ function App() {
                   role="searchbox"
                   value={formatDialogQuery}
                   onChange={(event) => setFormatDialogQuery(event.target.value)}
-                  placeholder="Search formats…"
+                  placeholder="Search formats..."
                   aria-label="Filter format options"
                   autoComplete="off"
                   spellCheck={false}
@@ -6720,7 +7096,7 @@ function App() {
                 <button type="button" onClick={() => setActiveEditorPanel(null)}>Cancel</button>
               </footer>
             </section>
-          </div>
+          </ModalBackdrop>
         )}
 
         {activeView === 'projects' && (
@@ -6785,6 +7161,7 @@ function App() {
                         const projectDescription = project.description?.trim() || 'No description yet'
                         const openProject = () => {
                           if (Date.now() < suppressProjectNavUntilRef.current) return
+                          setOpenSidebarProjectIds((current) => (current.includes(project.id) ? current : [project.id, ...current]))
                           setSelectedProjectId(project.id)
                         }
                         return (
@@ -6955,7 +7332,33 @@ function App() {
                             }}
                           >
                             <span className="project-row-main">
-                              <strong title={noteTitle}>{noteTitle}</strong>
+                              {editingLooseNoteId === note.id ? (
+                                <input
+                                  className="note-title-rename-input project-loose-note-title-input"
+                                  value={editingLooseNoteTitle}
+                                  onBlur={() => commitLooseNoteRename(note)}
+                                  onChange={(event) => setEditingLooseNoteTitle(event.target.value)}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onDoubleClick={(event) => event.stopPropagation()}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      commitLooseNoteRename(note)
+                                    }
+                                    if (event.key === 'Escape') {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      setEditingLooseNoteTitle(note.title || 'Untitled Note')
+                                      setEditingLooseNoteId('')
+                                    }
+                                  }}
+                                  aria-label="Rename note"
+                                  autoFocus
+                                />
+                              ) : (
+                                <strong title={noteTitle}>{noteTitle}</strong>
+                              )}
                             </span>
                             <span className="project-loose-note-menu">
                               <button
@@ -6982,6 +7385,13 @@ function App() {
                                   onMouseDown={(event) => event.stopPropagation()}
                                   onClick={(event) => event.stopPropagation()}
                                 >
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action"
+                                    onClick={() => startLooseNoteRename(note)}
+                                  >
+                                    Rename note
+                                  </button>
                                   <button
                                     type="button"
                                     className="project-card-menu-action"
@@ -7537,7 +7947,7 @@ function App() {
               onMouseDown={(event) => event.stopPropagation()}
             >
               <button className="settings-modal-close" type="button" aria-label="Close settings" onClick={() => setSettingsModalOpen(false)}>
-                <X size={16} aria-hidden />
+                <XIcon size={16} aria-hidden />
               </button>
             <div className="settings-hub">
               <aside className="settings-section-rail" aria-label="Settings sections">
@@ -7677,6 +8087,62 @@ function App() {
                       </div>
                     </section>
 
+                    <section className="settings-card settings-section-group survey-settings-card">
+                      <div className="settings-card-heading">
+                        <CheckSquare size={18} />
+                        <div>
+                          <h3>User input</h3>
+                          <p>Short product prompts from the Loci team. Responses are tied to your signed-in account, not your notes.</p>
+                        </div>
+                      </div>
+                      {surveyPromptReady && activeSurveyPrompt ? (
+                        <div className="survey-prompt-panel">
+                          <div className="survey-prompt-copy">
+                            <strong>{activeSurveyPrompt.title}</strong>
+                            {activeSurveyPrompt.body && <p>{activeSurveyPrompt.body}</p>}
+                          </div>
+                          {activeSurveyPrompt.kind === 'single-choice' ? (
+                            <div className="survey-option-list" role="radiogroup" aria-label={activeSurveyPrompt.title}>
+                              {activeSurveyPrompt.options.map((option) => (
+                                <label key={option} className="survey-option">
+                                  <input
+                                    type="radio"
+                                    name={`survey-${activeSurveyPrompt.id}`}
+                                    value={option}
+                                    checked={surveyAnswer === option}
+                                    onChange={(event) => setSurveyAnswer(event.target.value)}
+                                  />
+                                  <span>{option}</span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <label className="survey-text-answer">
+                              <span>Your answer</span>
+                              <textarea value={surveyAnswer} onChange={(event) => setSurveyAnswer(event.target.value)} />
+                            </label>
+                          )}
+                          <label className="survey-text-answer">
+                            <span>Optional context</span>
+                            <textarea value={surveyComment} onChange={(event) => setSurveyComment(event.target.value)} />
+                          </label>
+                          <div className="survey-actions">
+                            <button type="button" onClick={() => void dismissSurveyPrompt()} disabled={surveySubmitting}>
+                              Don&apos;t show again
+                            </button>
+                            <button type="button" className="primary" onClick={() => void submitSurveyPrompt()} disabled={surveySubmitting || !surveyAnswer.trim()}>
+                              {surveySubmitting ? 'Sending...' : 'Send response'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="settings-data-list">
+                          <span><strong>{surveyLoading ? 'Checking' : authSession.status === 'signed-in' ? 'None' : 'Signed out'}</strong> Active prompt</span>
+                          <span><strong>Admin only</strong> User counts stay in PocketBase</span>
+                        </div>
+                      )}
+                    </section>
+
                     <section className="settings-card settings-section-group">
                       <div className="settings-card-heading">
                         <Settings size={18} />
@@ -7726,7 +8192,10 @@ function App() {
                         <span><kbd>Ctrl</kbd> + <kbd>K</kbd> Search</span>
                         <span><kbd>Cmd</kbd> + <kbd>K</kbd> Search</span>
                         <span><kbd>Ctrl</kbd> + <kbd>Page Up/Down</kbd> Switch project documents</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>W</kbd> Close current note</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>Q</kbd> Close current sidebar project</span>
                         <span><kbd>Ctrl</kbd> + <kbd>\</kbd> Clear formatting</span>
+                        <span><kbd>X</kbd> Hide a hovered sidebar note</span>
                       </div>
                     </section>
                   </div>
@@ -8074,6 +8543,7 @@ function App() {
           result={aiResult}
           selectedProjectName={selectedProject?.name}
           aiInstructionUpdating={aiInstructionUpdating}
+          containerRef={activeView === 'editor' ? documentScrollRef : undefined}
           onClose={closeAIResult}
           onDraftChange={(patch) => setAiResult((current) => (current ? { ...current, ...patch } : current))}
           onPrimaryAction={() => {
@@ -8480,13 +8950,7 @@ function App() {
       )}
 
       {atomDialog && (
-        <div
-          className="modal-backdrop atom-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setAtomDialog(null)
-          }}
-        >
+        <ModalBackdrop containerRef={documentScrollRef} className="atom-dialog-backdrop" onClose={() => setAtomDialog(null)}>
           <section className="atom-dialog" role="dialog" aria-modal="true" aria-labelledby="atom-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <h2 id="atom-dialog-title" className="visually-hidden">
               Add term and meaning
@@ -8520,7 +8984,7 @@ function App() {
               <button type="button" className="primary" onClick={() => void saveAtomDialog()} disabled={!atomDialog.phrase.trim() || !atomDialog.definition.trim()}>Save</button>
             </footer>
           </section>
-        </div>
+        </ModalBackdrop>
       )}
 
       {profileLoaded && !localProfile && (
@@ -8541,7 +9005,7 @@ function App() {
         >
           <section className="profile-dialog profile-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <button className="profile-dialog-close" type="button" aria-label="Close profile" onClick={() => setProfileModalOpen(false)}>
-              <X size={16} aria-hidden />
+              <XIcon size={16} aria-hidden />
             </button>
             <header className="profile-progress-hero">
               <div className="avatar profile-preview-avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>

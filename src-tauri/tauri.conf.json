@@ -34,6 +34,18 @@
     "active": true,
     "targets": "nsis",
     "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "template": "windows/installer-loci.nsi",
+        "headerImage": "windows/installer-assets/loci-installer-header.bmp",
+        "sidebarImage": "windows/installer-assets/loci-installer-sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "uninstallerHeaderImage": "windows/installer-assets/loci-installer-header.bmp",
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

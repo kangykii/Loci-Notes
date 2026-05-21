@@ -194,9 +194,11 @@ export function ProjectDetail({
               <summary aria-label="More project actions" title="More project actions">
                 <MoreHorizontal size={18} aria-hidden />
               </summary>
-              <button type="button" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
-                <Trash2 size={15} aria-hidden /> Delete project
-              </button>
+              <div className="project-header-menu-popover loci-dropdown-popover" role="menu">
+                <button type="button" className="loci-dropdown-item is-danger" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
+                  <Trash2 size={15} aria-hidden /> Delete project
+                </button>
+              </div>
             </details>
           </div>
         }

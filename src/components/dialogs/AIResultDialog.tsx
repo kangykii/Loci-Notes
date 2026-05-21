@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { X } from 'lucide-react'
+import { ModalBackdrop } from './ModalBackdrop'
 import {
   MARK_WRITING_FEEDBACK_SECTIONS,
   aiDraftLabel,
@@ -166,6 +167,8 @@ export function AIResultDialog({
   result,
   selectedProjectName,
   aiInstructionUpdating,
+  anchorRef,
+  containerRef,
   onClose,
   onDraftChange,
   onPrimaryAction,
@@ -176,6 +179,8 @@ export function AIResultDialog({
   result: AIResult
   selectedProjectName?: string
   aiInstructionUpdating: boolean
+  anchorRef?: RefObject<HTMLElement | null>
+  containerRef?: RefObject<HTMLElement | null>
   onClose: () => void
   onDraftChange: (patch: Partial<Pick<AIResult, 'draftText' | 'projectInstructionDraft'>>) => void
   onPrimaryAction: () => void
@@ -184,13 +189,7 @@ export function AIResultDialog({
   onCopy: () => void
 }) {
   return (
-    <div
-      className="modal-backdrop ai-result-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
+    <ModalBackdrop anchorRef={anchorRef} containerRef={containerRef} className="ai-result-backdrop" onClose={onClose}>
       <section
         className={`ai-result-dialog${result.canReplaceSelection && result.selectionOriginalText !== undefined ? ' ai-result-dialog--wide' : ''}`}
         role="dialog"
@@ -285,6 +284,6 @@ export function AIResultDialog({
           <button type="button" onClick={onCopy}>Copy</button>
         </footer>
       </section>
-    </div>
+    </ModalBackdrop>
   )
 }

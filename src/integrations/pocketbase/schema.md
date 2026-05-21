@@ -186,3 +186,23 @@ The local Dexie table `remoteEntityMappings` stores sync identity:
 - Required fields: id, placement, title, cachedAt, updatedAt.
 - Indexed fields: id, placement, campaignId, startsAt, endsAt, updatedAt.
 - Access rules: public or authenticated read depending on placement; admin-only write.
+
+### survey_prompts
+- Type: base.
+- Required fields: title, kind, placement, status.
+- Optional fields: body, options, startsAt, endsAt, updatedAt, metadata.
+- Indexed fields: id, placement, status, startsAt, endsAt, updatedAt.
+- Access rules: authenticated users can read active prompts; admins create, update, archive, and delete prompts.
+- Notes: `kind` is `single-choice` or `free-text`; `placement` is `settings` or `app-banner`; `status` is `draft`, `active`, or `archived`.
+
+### survey_responses
+- Type: base.
+- Required fields: promptId, accountId, answer.
+- Optional fields: comment, appVersion, createdAt, metadata.
+- Indexed fields: id, promptId, accountId, createdAt, `[accountId+promptId]`.
+- Access rules: authenticated users can create responses only where `accountId` is their own user id; users cannot list or read responses; admins can read responses for analysis.
+- Notes: `promptId` and `accountId` are text fields rather than relations so future workspace, anonymous, or external identity models can be added without remigrating the initial table. Client-side local state prevents repeated prompts in the current app; add a unique index later only if the product requires one server-side response per user.
+
+## Admin Reporting
+
+Registered user count should come from the PocketBase Admin UI or an admin-only API query against the existing `users` auth collection. Do not expose aggregate user counts to the public Tauri client.

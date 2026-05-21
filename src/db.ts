@@ -310,6 +310,14 @@ export type RemoteContentItem = {
   updatedAt: string
 }
 
+export type SurveyPromptState = {
+  id: string
+  promptId: string
+  accountId: string
+  status: 'dismissed' | 'submitted'
+  updatedAt: string
+}
+
 export type Atom = {
   id: string
   projectId: string
@@ -504,6 +512,7 @@ class LociNotesDatabase extends Dexie {
   communityPresetReplies!: Dexie.Table<CommunityPresetReply, string>
   communitySyncQueue!: Dexie.Table<CommunitySyncQueueItem, string>
   remoteContentItems!: Dexie.Table<RemoteContentItem, string>
+  surveyPromptStates!: Dexie.Table<SurveyPromptState, string>
   remoteEntityMappings!: Dexie.Table<RemoteEntityMapping, string>
 
   constructor() {
@@ -848,6 +857,36 @@ class LociNotesDatabase extends Dexie {
       communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
       communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
       remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
+    })
+    this.version(18).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      surveyPromptStates: 'id, promptId, accountId, [accountId+promptId], status, updatedAt',
       remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
     })
   }

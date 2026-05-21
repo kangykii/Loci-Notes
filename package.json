@@ -14,6 +14,8 @@
     "package": "node scripts/package-release.mjs",
     "lint": "eslint .",
     "test": "vitest run",
+    "pb:migrate": "pocketbase migrate up",
+    "pb:serve": "pocketbase serve --http=127.0.0.1:8090",
     "readiness:verify": "node scripts/verify-internet-readiness.mjs",
     "release:verify": "node scripts/verify-release.mjs",
     "preview": "vite preview",

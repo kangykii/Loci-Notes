@@ -1,4 +1,5 @@
 import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, FileText, Highlighter, History, MoreHorizontal, Sparkles, X } from 'lucide-react'
 import type { AICommandId } from '../../ai/aiTasks'
 
@@ -83,7 +84,7 @@ export function EditorBottomToolbar({
   onPromptKeyDown,
   onDismissPromptHint,
 }: EditorBottomToolbarProps) {
-  return (
+  const toolbar = (
     <div className="floating-editor-wrap" ref={wrapRef}>
       {activePanel === 'more' && (
         <div className="floating-editor-panel">
@@ -213,4 +214,6 @@ export function EditorBottomToolbar({
       </div>
     </div>
   )
+
+  return createPortal(toolbar, document.body)
 }

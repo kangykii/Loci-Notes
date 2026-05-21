@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+pb_data
+pocketbase
+pocketbase.exe
 .tauri-signing-private-key
 .tauri-signing-private-key.pub
 .tauri-signing-private-key.password

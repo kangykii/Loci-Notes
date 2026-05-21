@@ -231,9 +231,11 @@ export function CommunityView({
                     <summary aria-label="More actions">
                       <MoreHorizontal size={18} aria-hidden />
                     </summary>
-                    <button type="button" onClick={() => onRemoveFriend(selectedFriend.id)}>
-                      Remove user
-                    </button>
+                    <div className="community-header-menu-popover loci-dropdown-popover" role="menu">
+                      <button type="button" className="loci-dropdown-item is-danger" onClick={() => onRemoveFriend(selectedFriend.id)}>
+                        Remove user
+                      </button>
+                    </div>
                   </details>
                 )}
               </header>
@@ -303,28 +305,32 @@ export function CommunityView({
                   <summary aria-label="More note actions">
                     <Plus size={18} aria-hidden />
                   </summary>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!stagedNote) return
-                      onSendNote('edit', stagedNote.id)
-                      setStagedNoteId(null)
-                    }}
-                    disabled={!canSendStagedNote}
-                  >
-                    Send editable note
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!stagedNote) return
-                      onCreateCollaboration(stagedNote.id)
-                      setStagedNoteId(null)
-                    }}
-                    disabled={!canSendStagedNote}
-                  >
-                    Edit together
-                  </button>
+                  <div className="community-composer-menu-popover loci-dropdown-popover" role="menu">
+                    <button
+                      type="button"
+                      className="loci-dropdown-item"
+                      onClick={() => {
+                        if (!stagedNote) return
+                        onSendNote('edit', stagedNote.id)
+                        setStagedNoteId(null)
+                      }}
+                      disabled={!canSendStagedNote}
+                    >
+                      Send editable note
+                    </button>
+                    <button
+                      type="button"
+                      className="loci-dropdown-item"
+                      onClick={() => {
+                        if (!stagedNote) return
+                        onCreateCollaboration(stagedNote.id)
+                        setStagedNoteId(null)
+                      }}
+                      disabled={!canSendStagedNote}
+                    >
+                      Edit together
+                    </button>
+                  </div>
                 </details>
                 <div className="community-composer-search">
                   <Search size={16} aria-hidden />

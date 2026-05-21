@@ -21,6 +21,7 @@ export type UpdateState = {
 export type UpdateService = {
   check: (options: {
     manual?: boolean
+    autoInstall?: boolean
     isDesktop: boolean
     onStateChange: (state: UpdateState) => void
   }) => Promise<void>
@@ -61,7 +62,7 @@ function checkpointWarningMessage(error: unknown) {
 }
 
 export const updateService: UpdateService = {
-  async check({ manual = false, isDesktop, onStateChange }) {
+  async check({ manual = false, autoInstall = false, isDesktop, onStateChange }) {
     if (operationInFlight) {
       onStateChange({
         status: operationInFlight === 'install' ? 'installing' : 'checking',
@@ -111,6 +112,12 @@ export const updateService: UpdateService = {
       }
 
       pendingUpdate = update
+      if (autoInstall) {
+        operationInFlight = null
+        await updateService.installAvailable({ isDesktop, onStateChange })
+        return
+      }
+
       onStateChange({
         status: 'available',
         phase: 'available',
