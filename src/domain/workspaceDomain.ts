@@ -2,8 +2,8 @@ import type { Table } from 'dexie'
 import { db, noteBodyStore, noteToMediaAssets, noteToMeta } from '../db'
 import type { FlashcardSet, Note } from '../db'
 
-const atomUnlinkTables = [db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.flashcardSets] as unknown as Table<unknown, string>[]
-const projectDeleteTables = [db.projects, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.atoms, db.noteSnapshots, db.flashcardSets] as unknown as Table<unknown, string>[]
+const atomUnlinkTables = [db.atoms, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.flashcardSets, db.flashcardReviewStates] as unknown as Table<unknown, string>[]
+const projectDeleteTables = [db.projects, db.notes, db.noteMetas, db.noteBodies, db.mediaAssets, db.atoms, db.noteSnapshots, db.flashcardSets, db.flashcardReviewStates] as unknown as Table<unknown, string>[]
 const notesTable = db.notes as unknown as { bulkPut(items: Note[]): Promise<unknown> }
 
 export type DeleteAtomsAndUnlinkInput = {
@@ -33,6 +33,9 @@ export const workspaceDomain = {
         if (assets.length) await db.mediaAssets.bulkPut(assets)
       }
       if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
+      if (atomIds.length) {
+        await Promise.all(atomIds.map((atomId) => db.flashcardReviewStates.where('atomId').equals(atomId).delete()))
+      }
     })
   },
 
@@ -49,6 +52,9 @@ export const workspaceDomain = {
       if (snapshotIdsToDelete.length) await db.noteSnapshots.bulkDelete(snapshotIdsToDelete)
       if (atomIdsToDelete.length) await db.atoms.bulkDelete(atomIdsToDelete)
       if (updatedSets.length) await db.flashcardSets.bulkPut(updatedSets)
+      if (atomIdsToDelete.length) {
+        await Promise.all(atomIdsToDelete.map((atomId) => db.flashcardReviewStates.where('atomId').equals(atomId).delete()))
+      }
     })
   },
 }

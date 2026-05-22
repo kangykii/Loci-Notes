@@ -1,4 +1,5 @@
 import type { AIProviderId } from './aiTypes'
+import type { CachedFlashcardQuiz, FlashcardQuizQuestion } from '../db'
 
 export type AITaskType =
   | 'ai_atomise'
@@ -15,6 +16,9 @@ export type AITaskType =
   | 'update_project_instructions'
   | 'app_help'
   | 'atom_task'
+  | 'flashcard_hint'
+  | 'flashcard_quiz'
+  | 'flashcard_short_answer_mark'
   | 'general'
 
 export type AICommandId = 'rewrite' | 'continue' | 'summarise' | 'atomise' | 'mark' | 'custom'
@@ -53,6 +57,12 @@ export type AIBlockPayload =
   | { kind: 'list'; data: AIListPayload; targetBlockId?: string }
   | { kind: 'code'; data: AICodePayload; targetBlockId?: string }
   | { kind: 'latex'; data: AILatexPayload; targetBlockId?: string }
+
+export type FlashcardShortAnswerMark = {
+  score: number
+  correct: boolean
+  feedback: string
+}
 
 export type AIResult = {
   prompt: string
@@ -99,6 +109,9 @@ export const AI_TASK_CONTRACTS: Record<AITaskType, string> = {
   update_project_instructions: 'Task: update_project_instructions. Draft a concise replacement project description with exactly these plain-text section labels: Summary, Instructions, Writing style, Marking criteria. Use current project memory as the base, integrate reusable guidance from the latest AI draft, and avoid copying note-specific content.',
   app_help: 'Task: app_help. Answer as product guidance for Loci Notes. Do not write document text unless asked.',
   atom_task: 'Task: atom_task. Return atom candidates as one per line in the format "Phrase — definition". Keep definitions short and clear.',
+  flashcard_hint: 'Task: flashcard_hint. Return one concise study hint for the supplied flashcard. Do not reveal the answer directly. Use plain text only, maximum 24 words.',
+  flashcard_quiz: 'Task: flashcard_quiz. Return strict JSON only, no markdown. Shape: {"questions":[{"type":"true-false","prompt":"Statement","answer":true,"explanation":"Why","atomIds":["atom_id"]},{"type":"multiple-choice","prompt":"Question","choices":["A","B","C","D"],"answer":"Exact choice","explanation":"Why","atomIds":["atom_id"]},{"type":"matching","prompt":"Match the pairs","pairs":[{"left":"Term","right":"Definition"}],"atomIds":["atom_id"]},{"type":"short-answer","prompt":"Question","expectedAnswer":"Ideal answer","rubric":"Self-check rubric","atomIds":["atom_id"]}]}. Use the supplied atom IDs exactly. Follow the requested answer direction, selected question formats, and maximum question count from the user content. Do not exceed the requested question count. Change wording and ordering each time.',
+  flashcard_short_answer_mark: 'Task: flashcard_short_answer_mark. Return strict JSON only, no markdown. Shape: {"score":0-1,"correct":true|false,"feedback":"One concise explanation"}. Mark the student answer against the expected answer and rubric. Be fair with wording differences.',
   general: 'Task: general. Answer briefly. Ask for missing context only when necessary.',
 }
 
@@ -290,6 +303,109 @@ export function parseAIQuotePayload(text: string): AIQuotePayload {
   const authorSource = value.author ?? value.citation
   const author = typeof authorSource === 'string' && authorSource.trim() ? authorSource.trim() : undefined
   return { mode: value.mode === 'update' ? 'update' : 'create', quote, author }
+}
+
+function normalizeAtomIds(value: unknown, allowedAtomIds: Set<string>) {
+  if (!Array.isArray(value)) return []
+  return value.map(String).filter((id) => allowedAtomIds.has(id))
+}
+
+export function parseFlashcardQuizPayload(text: string, allowedAtomIds: string[], generatedAt: string): CachedFlashcardQuiz {
+  const value = parseAIJson(text) as { questions?: Array<Record<string, unknown>> }
+  const allowedAtomIdSet = new Set(allowedAtomIds)
+  const questions: FlashcardQuizQuestion[] = []
+  for (const item of Array.isArray(value.questions) ? value.questions : []) {
+    const type = item.type
+    const atomIds = normalizeAtomIds(item.atomIds, allowedAtomIdSet)
+    if (type === 'multiple-choice') {
+      const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
+      const choices = Array.isArray(item.choices)
+        ? Array.from(new Set(item.choices.map(String).map((choice) => choice.trim()).filter(Boolean))).slice(0, 6)
+        : []
+      const answer = typeof item.answer === 'string' ? item.answer.trim() : ''
+      if (prompt && choices.length >= 2 && answer && choices.includes(answer)) {
+        questions.push({
+          id: `quiz_q_${questions.length + 1}`,
+          type,
+          prompt,
+          choices,
+          answer,
+          explanation: typeof item.explanation === 'string' && item.explanation.trim() ? item.explanation.trim() : undefined,
+          atomIds,
+        })
+      }
+    }
+    if (type === 'true-false') {
+      const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
+      const answer = typeof item.answer === 'boolean'
+        ? item.answer
+        : typeof item.answer === 'string'
+          ? item.answer.trim().toLowerCase() === 'true'
+          : null
+      if (prompt && typeof answer === 'boolean') {
+        questions.push({
+          id: `quiz_q_${questions.length + 1}`,
+          type,
+          prompt,
+          answer,
+          explanation: typeof item.explanation === 'string' && item.explanation.trim() ? item.explanation.trim() : undefined,
+          atomIds,
+        })
+      }
+    }
+    if (type === 'matching') {
+      const prompt = typeof item.prompt === 'string' && item.prompt.trim() ? item.prompt.trim() : 'Match the pairs.'
+      const pairs = Array.isArray(item.pairs)
+        ? item.pairs.flatMap((pair) => {
+          if (!pair || typeof pair !== 'object') return []
+          const left = 'left' in pair && typeof pair.left === 'string' ? pair.left.trim() : ''
+          const right = 'right' in pair && typeof pair.right === 'string' ? pair.right.trim() : ''
+          return left && right ? [{ left, right }] : []
+        }).slice(0, 6)
+        : []
+      if (pairs.length >= 2) {
+        questions.push({
+          id: `quiz_q_${questions.length + 1}`,
+          type,
+          prompt,
+          pairs,
+          atomIds,
+        })
+      }
+    }
+    if (type === 'short-answer') {
+      const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
+      const expectedAnswer = typeof item.expectedAnswer === 'string' ? item.expectedAnswer.trim() : ''
+      const rubric = typeof item.rubric === 'string' ? item.rubric.trim() : ''
+      if (prompt && expectedAnswer && rubric) {
+        questions.push({
+          id: `quiz_q_${questions.length + 1}`,
+          type,
+          prompt,
+          expectedAnswer,
+          rubric,
+          atomIds,
+        })
+      }
+    }
+  }
+  if (!questions.length) throw new Error('Quiz JSON needs at least one valid question.')
+  return {
+    id: `quiz_${generatedAt.replace(/[^a-z0-9]/gi, '')}`,
+    generatedAt,
+    questions,
+  }
+}
+
+export function parseFlashcardShortAnswerMark(text: string): FlashcardShortAnswerMark {
+  const value = parseAIJson(text) as Partial<FlashcardShortAnswerMark>
+  const rawScore = typeof value.score === 'number' ? value.score : Number(value.score)
+  const score = Number.isFinite(rawScore) ? Math.min(1, Math.max(0, rawScore)) : 0
+  return {
+    score,
+    correct: typeof value.correct === 'boolean' ? value.correct : score >= 0.7,
+    feedback: typeof value.feedback === 'string' && value.feedback.trim() ? value.feedback.trim() : 'Marked against the expected answer.',
+  }
 }
 
 export function parseAIListPayload(text: string): AIListPayload {

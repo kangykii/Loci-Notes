@@ -203,7 +203,7 @@ describe('Dexie migrations', () => {
     await seedVersion1Workspace()
     await db.open()
 
-    expect(db.verno).toBe(18)
+    expect(db.verno).toBe(19)
     await expect(db.notes.get('note_old')).resolves.toMatchObject({
       id: 'note_old',
       templateId: 'blank',
@@ -225,13 +225,14 @@ describe('Dexie migrations', () => {
     })
     await expect(db.remoteContentItems.count()).resolves.toBe(0)
     await expect(db.surveyPromptStates.count()).resolves.toBe(0)
+    await expect(db.flashcardReviewStates.count()).resolves.toBe(0)
   })
 
   it('preserves version 10 notes, media tables, settings, snapshots, and flashcard sets', async () => {
     await seedVersion10Workspace()
     await db.open()
 
-    expect(db.verno).toBe(18)
+    expect(db.verno).toBe(19)
     await expect(db.noteMetas.get('note_v10')).resolves.toMatchObject({
       id: 'note_v10',
       projectId: 'project_v10',
@@ -255,13 +256,14 @@ describe('Dexie migrations', () => {
     })
     await expect(db.remoteEntityMappings.count()).resolves.toBe(0)
     await expect(db.surveyPromptStates.count()).resolves.toBe(0)
+    await expect(db.flashcardReviewStates.count()).resolves.toBe(0)
   })
 
   it('preserves version 15 shared note snapshots through current schema upgrades', async () => {
     await seedVersion15SharedSnapshot()
     await db.open()
 
-    expect(db.verno).toBe(18)
+    expect(db.verno).toBe(19)
     await expect(db.sharedNoteExports.get('share_v15')).resolves.toMatchObject({
       id: 'share_v15',
       snapshotId: 'shared_snapshot_v15',
@@ -271,5 +273,6 @@ describe('Dexie migrations', () => {
       title: 'Shared Version 15 Note',
       contentHash: 'shared-v15',
     })
+    await expect(db.flashcardReviewStates.count()).resolves.toBe(0)
   })
 })

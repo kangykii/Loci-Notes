@@ -1,0 +1,214 @@
+.main-pane.aurora-mica-pane {
+  padding: 42px 48px;
+  background:
+    radial-gradient(ellipse at 50% 28%, rgba(91, 107, 163, 0.12), transparent 64%),
+    linear-gradient(135deg, rgba(244, 244, 242, 0.98), rgba(231, 230, 226, 0.9)),
+    var(--color-secondary);
+  overflow: auto;
+  isolation: isolate;
+}
+
+.aurora-mica-surface {
+  --aurora-ink: #2E3440;
+  --aurora-sage: rgba(126, 151, 128, 0.14);
+  --aurora-teal: rgba(103, 158, 163, 0.12);
+  --aurora-violet: rgba(132, 116, 169, 0.105);
+  --aurora-blue: rgba(89, 111, 184, 0.13);
+  --aurora-rose: rgba(178, 126, 154, 0.075);
+  --aurora-amber: rgba(187, 160, 99, 0.06);
+  --aurora-pearl: rgba(244, 244, 242, 0.86);
+  --aurora-glass: rgba(244, 244, 242, 0.72);
+  --aurora-glass-strong: rgba(244, 244, 242, 0.8);
+  --aurora-edge: rgba(255, 255, 255, 0.48);
+  position: relative;
+  min-height: 100%;
+  overflow: visible;
+  opacity: 0.998;
+}
+
+.aurora-mica-surface--sidebar {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: auto;
+  min-height: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.aurora-mica-surface--community {
+  min-height: 0;
+  height: 100%;
+  overflow: visible;
+}
+
+.aurora-mica-background {
+  position: absolute;
+  inset: -42px -48px;
+  z-index: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 52% 34%, rgba(75, 88, 150, 0.12), transparent 62%);
+  transition: opacity 2600ms ease;
+}
+
+.aurora-mica-bloom {
+  position: absolute;
+  display: block;
+  width: var(--aurora-bloom-size-x);
+  height: var(--aurora-bloom-size-y);
+  left: var(--aurora-bloom-x);
+  top: var(--aurora-bloom-y);
+  border-radius: 50%;
+  opacity: 0;
+  transform: translate3d(-50%, -50%, 0);
+  transform-origin: center;
+  mix-blend-mode: normal;
+  background:
+    radial-gradient(ellipse at 50% 50%, var(--aurora-bloom-color), transparent 58%),
+    radial-gradient(ellipse at 58% 44%, var(--aurora-bloom-accent), transparent 72%);
+  filter: blur(0.1px);
+  transition: opacity 2400ms ease;
+}
+
+.aurora-mica-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background-image:
+    radial-gradient(circle at 18% 24%, rgba(46, 52, 64, 0.055) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 72% 64%, rgba(255, 255, 255, 0.18) 0 1px, transparent 1.4px);
+  background-size: 3px 3px, 5px 5px;
+  mix-blend-mode: soft-light;
+  transition: opacity 2600ms ease;
+}
+
+.aurora-mica-content {
+  position: relative;
+  z-index: 1;
+  min-height: 100%;
+}
+
+.aurora-mica-surface--sidebar .aurora-mica-content {
+  display: none;
+}
+
+.aurora-mica-surface--community .aurora-mica-content {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+}
+
+.aurora-mica-surface[data-revealed='true'] .aurora-mica-background {
+  opacity: 1;
+}
+
+.aurora-mica-surface[data-revealed='true'] .aurora-mica-bloom {
+  opacity: var(--aurora-bloom-opacity);
+}
+
+.aurora-mica-surface[data-revealed='true'] .aurora-mica-grain {
+  opacity: 0.055;
+}
+
+.aurora-mica-surface[data-animate='true'] .aurora-mica-bloom {
+  animation: auroraMicaBloomHop var(--aurora-bloom-duration) ease-in-out infinite alternate;
+}
+
+.aurora-mica-surface[data-variant='atoms'] {
+  --aurora-teal: rgba(103, 158, 163, 0.13);
+  --aurora-violet: rgba(132, 116, 169, 0.085);
+  --aurora-blue: rgba(89, 111, 184, 0.115);
+}
+
+.aurora-mica-surface[data-variant='projects'] {
+  --aurora-sage: rgba(126, 151, 128, 0.145);
+  --aurora-violet: rgba(132, 116, 169, 0.095);
+  --aurora-rose: rgba(178, 126, 154, 0.07);
+}
+
+.aurora-mica-surface[data-variant='community'] {
+  --aurora-teal: rgba(103, 158, 163, 0.12);
+  --aurora-blue: rgba(89, 111, 184, 0.11);
+  --aurora-rose: rgba(178, 126, 154, 0.06);
+}
+
+.aurora-mica-surface[data-variant='sidebar'] .aurora-mica-background {
+  inset: 0;
+  overflow: visible;
+  background: radial-gradient(ellipse at 50% 28%, rgba(75, 88, 150, 0.09), transparent 64%);
+}
+
+.aurora-mica-surface[data-variant='sidebar'][data-revealed='true'] .aurora-mica-bloom {
+  opacity: 0.66;
+}
+
+.app-shell.is-layout-transitioning .aurora-mica-content,
+.aurora-mica-surface[data-reduce-motion='true'] .aurora-mica-content {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.app-shell.is-layout-transitioning .aurora-mica-bloom,
+.app-shell.is-layout-transitioning .aurora-mica-grain {
+  animation: none !important;
+  transition: none;
+}
+
+@keyframes auroraMicaBloomHop {
+  0% {
+    left: var(--aurora-bloom-x);
+    top: var(--aurora-bloom-y);
+    transform: translate3d(-50%, -50%, 0);
+  }
+
+  28% {
+    left: var(--aurora-hop-x-1);
+    top: var(--aurora-hop-y-1);
+    transform: translate3d(-50%, -50%, 0);
+  }
+
+  58% {
+    left: var(--aurora-hop-x-2);
+    top: var(--aurora-hop-y-2);
+    transform: translate3d(-50%, -50%, 0);
+  }
+
+  82% {
+    left: var(--aurora-hop-x-3);
+    top: var(--aurora-hop-y-3);
+    transform: translate3d(-50%, -50%, 0);
+  }
+
+  100% {
+    left: var(--aurora-bloom-x);
+    top: var(--aurora-bloom-y);
+    transform: translate3d(-50%, -50%, 0);
+  }
+}
+
+@media (max-width: 760px) {
+  .main-pane.aurora-mica-pane {
+    padding: 32px 22px;
+  }
+
+  .aurora-mica-background {
+    inset: -32px -22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-mica-bloom,
+  .aurora-mica-grain,
+  .aurora-mica-content {
+    animation: none !important;
+    transition: none;
+  }
+
+  .aurora-mica-bloom {
+    transform: translate3d(-50%, -50%, 0);
+  }
+}

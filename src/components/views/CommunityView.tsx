@@ -4,6 +4,7 @@ import type { FriendGroup, Friendship, Note, SharedNoteExport } from '../../db'
 import { collectNotePreviewLines } from '../../editor/blocks'
 import { buildCommunityRecipients, communityRecipientId } from '../../services/communityRecipientService'
 import type { FriendSearchResult } from '../../services/friendService'
+import { AuroraMicaSurface } from '../layout/AuroraMicaSurface'
 import { PageHeader } from '../layout/PageHeader'
 
 export type CommunityTarget =
@@ -34,6 +35,8 @@ type CommunityViewProps = {
   onRemoveFriend: (friendshipId: string) => void
   onSendNote: (permission: SharedNoteExport['permission'], noteId?: string) => void
   onCreateCollaboration: (noteId: string) => void
+  reduceMotion: boolean
+  layoutTransitioning: boolean
   formatDay: (value: string) => string
 }
 
@@ -68,6 +71,8 @@ export function CommunityView({
   onRemoveFriend,
   onSendNote,
   onCreateCollaboration,
+  reduceMotion,
+  layoutTransitioning,
   formatDay,
 }: CommunityViewProps) {
   const [composerQuery, setComposerQuery] = useState('')
@@ -93,17 +98,24 @@ export function CommunityView({
 
   return (
     <section className="main-pane community-pane">
-      <PageHeader
-        title="Community"
-        action={(
-          <div className="community-header-actions">
-            <button type="button" aria-label="Create group" title="Create group" onClick={onCreateGroup}>
-              <Plus size={17} aria-hidden /> Create group
-            </button>
-          </div>
-        )}
-      />
-      <div className="community-messenger">
+      <AuroraMicaSurface
+        active
+        className="aurora-mica-surface--community"
+        layoutTransitioning={layoutTransitioning}
+        reduceMotion={reduceMotion}
+        variant="community"
+      >
+        <PageHeader
+          title="Community"
+          action={(
+            <div className="community-header-actions">
+              <button type="button" aria-label="Create group" title="Create group" onClick={onCreateGroup}>
+                <Plus size={17} aria-hidden /> Create group
+              </button>
+            </div>
+          )}
+        />
+        <div className="community-messenger">
         <aside className="community-rail">
           <div className="community-search-wrap">
             <div className="community-rail-search">
@@ -378,7 +390,8 @@ export function CommunityView({
             </div>
           )}
         </section>
-      </div>
+        </div>
+      </AuroraMicaSurface>
     </section>
   )
 }
