@@ -44,27 +44,6 @@ export const TabIndent = Extension.create({
   },
 })
 
-export const LociFlashcard = TiptapNode.create({
-  name: 'lociFlashcard',
-  group: 'block',
-  content: 'block+',
-  isolating: true,
-
-  addAttributes() {
-    return {
-      atomId: { default: null },
-    }
-  },
-
-  parseHTML() {
-    return [{ tag: 'section[data-loci-flashcard]' }]
-  },
-
-  renderHTML({ HTMLAttributes }) {
-    return ['section', { ...HTMLAttributes, 'data-loci-flashcard': 'true', class: 'loci-flashcard' }, 0]
-  },
-})
-
 export const LociQuote = TiptapNode.create({
   name: 'lociQuote',
   group: 'block',
@@ -77,6 +56,119 @@ export const LociQuote = TiptapNode.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['figure', { ...HTMLAttributes, 'data-loci-quote': 'true', class: 'loci-quote' }, 0]
+  },
+})
+
+function renderLatexPreview(source: string) {
+  return source
+    .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1) / ($2)')
+    .replace(/\\sqrt\{([^{}]+)\}/g, 'sqrt($1)')
+    .replace(/\\cdot/g, '·')
+    .replace(/\\times/g, '×')
+    .replace(/\\pm/g, '±')
+    .replace(/\\leq/g, '≤')
+    .replace(/\\geq/g, '≥')
+    .replace(/\\neq/g, '≠')
+    .replace(/\\alpha/g, 'α')
+    .replace(/\\beta/g, 'β')
+    .replace(/\\gamma/g, 'γ')
+    .replace(/\\delta/g, 'δ')
+    .replace(/\\theta/g, 'θ')
+    .replace(/\\lambda/g, 'λ')
+    .replace(/\\mu/g, 'μ')
+    .replace(/\\pi/g, 'π')
+    .replace(/\\sigma/g, 'σ')
+    .replace(/\\sum/g, 'Σ')
+    .replace(/\\int/g, '∫')
+    .replace(/[{}]/g, '')
+    .trim()
+}
+
+export const LociLatex = TiptapNode.create({
+  name: 'lociLatex',
+  group: 'block',
+  atom: true,
+  isolating: true,
+  selectable: true,
+
+  addAttributes() {
+    return {
+      latex: { default: '' },
+    }
+  },
+
+  parseHTML() {
+    return [{ tag: 'figure[data-loci-latex]' }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    const latex = typeof HTMLAttributes.latex === 'string' ? HTMLAttributes.latex : ''
+    return [
+      'figure',
+      { ...HTMLAttributes, 'data-loci-latex': 'true', class: 'loci-latex', 'data-latex': latex },
+      ['pre', { class: 'loci-latex-source' }, latex],
+      ['div', { class: 'loci-latex-preview' }, renderLatexPreview(latex) || 'Equation preview'],
+    ]
+  },
+
+  addNodeView() {
+    return ({ node, getPos, editor }) => {
+      const dom = document.createElement('figure')
+      dom.className = 'loci-latex'
+      dom.dataset.lociLatex = 'true'
+
+      const textarea = document.createElement('textarea')
+      textarea.className = 'loci-latex-source'
+      textarea.value = String(node.attrs.latex ?? '')
+      textarea.rows = Math.max(2, textarea.value.split('\n').length)
+      textarea.setAttribute('aria-label', 'LaTeX equation source')
+      textarea.spellcheck = false
+
+      const preview = document.createElement('div')
+      preview.className = 'loci-latex-preview'
+
+      const syncPreview = () => {
+        const source = textarea.value
+        dom.dataset.latex = source
+        preview.textContent = renderLatexPreview(source) || 'Equation preview'
+        textarea.rows = Math.max(2, source.split('\n').length)
+      }
+
+      textarea.addEventListener('input', () => {
+        const pos = typeof getPos === 'function' ? getPos() : null
+        if (typeof pos !== 'number') return
+        editor.view.dispatch(editor.view.state.tr.setNodeMarkup(pos, undefined, {
+          ...node.attrs,
+          latex: textarea.value,
+        }))
+        syncPreview()
+      })
+      textarea.addEventListener('blur', () => {
+        dom.classList.remove('is-editing')
+      })
+      dom.addEventListener('dblclick', () => {
+        dom.classList.add('is-editing')
+        textarea.focus()
+      })
+
+      dom.append(textarea, preview)
+      syncPreview()
+
+      return {
+        dom,
+        update: (updatedNode) => {
+          if (updatedNode.type.name !== 'lociLatex') return false
+          const nextLatex = String(updatedNode.attrs.latex ?? '')
+          if (textarea.value !== nextLatex) {
+            textarea.value = nextLatex
+            syncPreview()
+          }
+          return true
+        },
+        stopEvent: (event) => event.target === textarea,
+        ignoreMutation: () => true,
+      }
+    }
   },
 })
 

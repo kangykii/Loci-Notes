@@ -70,7 +70,7 @@ function ProjectMemoryTextarea({
   return (
     <textarea
       ref={ref}
-      className="project-memory-field scroll-hover"
+      className="project-memory-field"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -123,14 +123,10 @@ export function ProjectDetail({
   const [projectDescriptionOpen, setProjectDescriptionOpen] = useState(false)
   const [projectTitleEditing, setProjectTitleEditing] = useState(false)
   const [projectTitleDraft, setProjectTitleDraft] = useState(project.name)
+  const effectiveProjectTitleDraft = projectTitleEditing ? projectTitleDraft : project.name
   const [editingNoteId, setEditingNoteId] = useState('')
   const [editingNoteTitle, setEditingNoteTitle] = useState('')
   const projectTitleInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (projectTitleEditing) return
-    setProjectTitleDraft(project.name)
-  }, [project.name, projectTitleEditing])
 
   useEffect(() => {
     if (!projectTitleEditing) return
@@ -139,7 +135,7 @@ export function ProjectDetail({
   }, [projectTitleEditing])
 
   const commitProjectTitle = () => {
-    const nextName = projectTitleDraft.trim()
+    const nextName = effectiveProjectTitleDraft.trim()
     if (nextName && nextName !== project.name) updateName(nextName)
     else setProjectTitleDraft(project.name)
     setProjectTitleEditing(false)
@@ -165,7 +161,7 @@ export function ProjectDetail({
             <input
               ref={projectTitleInputRef}
               className="project-title-input"
-              value={projectTitleDraft}
+              value={effectiveProjectTitleDraft}
               onChange={(event) => setProjectTitleDraft(event.target.value)}
               onBlur={commitProjectTitle}
               onKeyDown={(event) => {
@@ -193,14 +189,16 @@ export function ProjectDetail({
         }
         action={
           <div className="project-header-actions">
-            <button type="button" onClick={newNote}><Plus size={17} /> New note in this project</button>
+            <button type="button" className="project-inline-action" onClick={newNote}><Plus size={17} /> New note in this project</button>
             <details className="project-header-menu">
               <summary aria-label="More project actions" title="More project actions">
                 <MoreHorizontal size={18} aria-hidden />
               </summary>
-              <button type="button" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
-                <Trash2 size={15} aria-hidden /> Delete project
-              </button>
+              <div className="project-header-menu-popover loci-dropdown-popover" role="menu">
+                <button type="button" className="loci-dropdown-item is-danger" onClick={deleteProject} aria-label={`Delete ${project.name}`}>
+                  <Trash2 size={15} aria-hidden /> Delete project
+                </button>
+              </div>
             </details>
           </div>
         }

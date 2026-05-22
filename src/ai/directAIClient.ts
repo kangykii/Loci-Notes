@@ -51,12 +51,26 @@ export async function requestDirectAIText({
   taskInstruction,
   userContent,
   promptCacheKey,
+  temperature,
+  maxTokens,
   signal,
 }: AITextRequest): Promise<AITextResponse> {
   const apiKey = provider.apiKey.trim()
   if (!provider.enabled || !apiKey) throw new Error(`Missing ${providerMeta.name} API key.`)
+  const generationConfig = {
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+  }
+  const openAIOptions = {
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
+  }
+  const chatOptions = {
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+  }
 
-  let responseText = ''
+  let responseText: string | undefined
   let usage: AIUsage | undefined
   if (providerId === 'gemini') {
     const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
@@ -67,6 +81,7 @@ export async function requestDirectAIText({
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: taskInstruction }] },
         contents: [{ role: 'user', parts: [{ text: userContent }] }],
+        ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
       }),
     })
     const data = await response.json()
@@ -87,6 +102,7 @@ export async function requestDirectAIText({
         instructions: taskInstruction,
         input: userContent,
         prompt_cache_key: promptCacheKey ?? 'loci-notes-local',
+        ...openAIOptions,
       }),
     })
     const data = await response.json()
@@ -101,6 +117,7 @@ export async function requestDirectAIText({
     }
     const body: Record<string, unknown> = {
       model: provider.model,
+      ...chatOptions,
       messages: [
         { role: 'system', content: taskInstruction },
         { role: 'user', content: userContent },
@@ -112,7 +129,7 @@ export async function requestDirectAIText({
       headers['x-api-key'] = apiKey
       headers['anthropic-version'] = '2023-06-01'
       delete headers.Authorization
-      body.max_tokens = CLAUDE_REQUIRED_MAX_TOKENS
+      body.max_tokens = maxTokens ?? CLAUDE_REQUIRED_MAX_TOKENS
       body.system = taskInstruction
       body.messages = [{ role: 'user', content: userContent }]
     }

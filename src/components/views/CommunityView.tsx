@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, FileText, MoreHorizontal, Plus, Search, Send, Users, X } from 'lucide-react'
 import type { FriendGroup, Friendship, Note, SharedNoteExport } from '../../db'
 import { collectNotePreviewLines } from '../../editor/blocks'
@@ -87,11 +87,6 @@ export function CommunityView({
     () => (stagedNoteId ? notes.find((note) => note.id === stagedNoteId) ?? null : null),
     [notes, stagedNoteId],
   )
-  useEffect(() => {
-    if (stagedNoteId && !notes.some((note) => note.id === stagedNoteId)) {
-      setStagedNoteId(null)
-    }
-  }, [notes, stagedNoteId])
   const hasRecipient = Boolean(selectedFriend || selectedGroup)
   const canSendStagedNote = hasRecipient && Boolean(stagedNote)
   const sendNoteTitle = canSendStagedNote ? 'Send drafted note' : 'Pick a note from search (Enter or click), then send'
@@ -236,9 +231,11 @@ export function CommunityView({
                     <summary aria-label="More actions">
                       <MoreHorizontal size={18} aria-hidden />
                     </summary>
-                    <button type="button" onClick={() => onRemoveFriend(selectedFriend.id)}>
-                      Remove user
-                    </button>
+                    <div className="community-header-menu-popover loci-dropdown-popover" role="menu">
+                      <button type="button" className="loci-dropdown-item is-danger" onClick={() => onRemoveFriend(selectedFriend.id)}>
+                        Remove user
+                      </button>
+                    </div>
                   </details>
                 )}
               </header>
@@ -308,28 +305,32 @@ export function CommunityView({
                   <summary aria-label="More note actions">
                     <Plus size={18} aria-hidden />
                   </summary>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!stagedNote) return
-                      onSendNote('edit', stagedNote.id)
-                      setStagedNoteId(null)
-                    }}
-                    disabled={!canSendStagedNote}
-                  >
-                    Send editable note
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!stagedNote) return
-                      onCreateCollaboration(stagedNote.id)
-                      setStagedNoteId(null)
-                    }}
-                    disabled={!canSendStagedNote}
-                  >
-                    Edit together
-                  </button>
+                  <div className="community-composer-menu-popover loci-dropdown-popover" role="menu">
+                    <button
+                      type="button"
+                      className="loci-dropdown-item"
+                      onClick={() => {
+                        if (!stagedNote) return
+                        onSendNote('edit', stagedNote.id)
+                        setStagedNoteId(null)
+                      }}
+                      disabled={!canSendStagedNote}
+                    >
+                      Send editable note
+                    </button>
+                    <button
+                      type="button"
+                      className="loci-dropdown-item"
+                      onClick={() => {
+                        if (!stagedNote) return
+                        onCreateCollaboration(stagedNote.id)
+                        setStagedNoteId(null)
+                      }}
+                      disabled={!canSendStagedNote}
+                    >
+                      Edit together
+                    </button>
+                  </div>
                 </details>
                 <div className="community-composer-search">
                   <Search size={16} aria-hidden />

@@ -1,8 +1,8 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject, SyntheticEvent, WheelEvent } from 'react'
 import { useEditor } from '@tiptap/react'
-import { NodeSelection } from '@tiptap/pm/state'
+import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Highlight from '@tiptap/extension-highlight'
@@ -19,6 +19,8 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  CheckSquare,
+  Code2,
   Download,
   FileText,
   Heading1,
@@ -29,14 +31,17 @@ import {
   ImageIcon,
   Info,
   Keyboard,
-  ListTodo,
+  List,
+  ListOrdered,
   Layers3,
   LinkIcon,
   Maximize2,
   Minimize2,
+  Minus,
   MoreVertical,
   Pin,
   Plus,
+  Radical,
   RemoveFormatting,
   Search,
   Settings,
@@ -46,13 +51,14 @@ import {
   Table2,
   Trash2,
   Users,
-  X,
+  X as XIcon,
 } from 'lucide-react'
 import { AtomMark } from './AtomMark'
 import { AuthorshipMark } from './AuthorshipMark'
 import {
   appendNoteSnapshot,
   createId,
+  db,
   deprecatedStarterAtomIds,
   deprecatedStarterNoteIds,
   deprecatedStarterProjectIds,
@@ -91,6 +97,8 @@ import type {
 } from './db'
 import { exportNoteDocx, exportNotePdf } from './exports'
 import { requestAIText } from './ai/aiClient'
+import { buildAIContextFromPolicy } from './ai/aiOrchestrator'
+import type { AIContextDraftItem } from './ai/aiOrchestrator'
 import type { AIProviderId } from './ai/aiTypes'
 import { aiProviders, DEFAULT_AI_TIMEOUT_MS } from './ai/providers'
 import {
@@ -101,6 +109,9 @@ import {
   canResultUpdateProjectInstructions,
   cleanAIDraftFormatting,
   defaultPromptForCommand,
+  parseAICodePayload,
+  parseAILatexPayload,
+  parseAIListPayload,
   parseAIQuotePayload,
   parseAITablePayload,
   parseAtomCandidates,
@@ -117,11 +128,13 @@ import type {
   AITaskType,
 } from './ai/aiTasks'
 import { AIResultDialog } from './components/dialogs/AIResultDialog'
+import { ModalBackdrop } from './components/dialogs/ModalBackdrop'
 import { PageHeader } from './components/layout/PageHeader'
 import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
 import { ProjectDetail } from './components/views/ProjectDetail'
 import { LociEditor } from './components/editor/LociEditor'
+import { FormatSideControls } from './components/editor/FormatSideControls'
 import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
 import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
 import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
@@ -130,8 +143,8 @@ import { VirtualList } from './components/virtual/VirtualList'
 import {
   ActiveBlockHighlight,
   AISelectionHighlight,
-  LociFlashcard,
   LociImage,
+  LociLatex,
   LociQuote,
   TabIndent,
   aiSelectionHighlightKey,
@@ -149,11 +162,15 @@ import {
   createLociBlock,
   cloneTemplateValue,
   ensureDocumentHeading,
-  flashcardBlockDoc,
-  flashcardsFromContent,
   flattenLegacyLociBlocks,
   formatBlockTypeForBlock,
   imageBlockDoc,
+  codeBlockDocFromData,
+  codeDataFromNode,
+  latexBlockDoc,
+  latexDataFromNode,
+  listBlockDocFromData,
+  listDataFromNode,
   normalizeBlocksForContent,
   quoteAuthorNode,
   quoteBlockDocFromData,
@@ -179,6 +196,8 @@ import {
   updatePrimaryTemplateContent,
 } from './notes/templates'
 import { parseProjectMemory, serializeProjectMemory } from './projects/projectMemory'
+import { getProfileGreeting, getProfileNextAction, getProfileProgressMessage } from './profile/profileMessages'
+import { buildProfileStats } from './profile/profileStats'
 import { atomsStore } from './stores/atomsStore'
 import { flashcardSetsStore } from './stores/flashcardSetsStore'
 import { loadLocalAppData } from './stores/appDataStore'
@@ -198,6 +217,8 @@ import { friendGroupService } from './services/friendGroupService'
 import { notificationService } from './services/notificationService'
 import { profileService } from './services/profileService'
 import { sharingService } from './services/sharingService'
+import { surveyService } from './services/surveyService'
+import type { SurveyPrompt } from './services/surveyService'
 import { initialUpdateState, updateService } from './services/updateService'
 import type { UpdateState } from './services/updateService'
 import { applyStudyRating, reviewStateForCard, sortDueAtomIds } from './study/spacedRepetition'
@@ -209,6 +230,7 @@ import { cityMarginaliaIndexForNote, editorMarginaliaOpacityFromText } from './m
 import { useImageLoadCoordinator } from './marginalia/useImageLoadCoordinator'
 import { getGreeting, getSubtagline, getTipByIndex } from './home/tips'
 import './App.css'
+import './components/editor/formatBlocks.css'
 import './styles/marginalia.css'
 
 type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
@@ -227,7 +249,155 @@ type QuizSetupOptions = {
   includeWritten: boolean
 }
 
+const RELEASE_TEMPLATE_CHOOSER_ENABLED = false
+const RELEASE_COMMUNITY_ENABLED = false
 const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
+
+type FloatingEditorToolbarLayoutOptions = {
+  activeView: View
+  appFullscreen: boolean
+  appImmersiveFullscreen: boolean
+  appShellRef: RefObject<HTMLElement | null>
+  fullscreenExitStaging: boolean
+  selectedNoteId: string
+  sidebarRevealAnimating: boolean
+  toolbarRef: RefObject<HTMLDivElement | null>
+}
+
+function useFloatingEditorToolbarLayout({
+  activeView,
+  appFullscreen,
+  appImmersiveFullscreen,
+  appShellRef,
+  fullscreenExitStaging,
+  selectedNoteId,
+  sidebarRevealAnimating,
+  toolbarRef,
+}: FloatingEditorToolbarLayoutOptions) {
+  const frameRef = useRef<number | null>(null)
+  const deferredMeasureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const layoutMeasureRefs = useRef<number[]>([])
+
+  const clearLayoutMeasureTimers = useCallback(() => {
+    layoutMeasureRefs.current.forEach((timer) => clearTimeout(timer))
+    layoutMeasureRefs.current = []
+  }, [])
+
+  const updateFloatingToolbarPosition = useCallback(() => {
+    const wrap = toolbarRef.current
+    if (!wrap) return
+
+    if (activeView !== 'editor') {
+      wrap.style.removeProperty('--floating-toolbar-center-x')
+      wrap.style.removeProperty('--floating-toolbar-max-width')
+      return
+    }
+
+    const editorPane = appShellRef.current?.querySelector<HTMLElement>('.main-pane.editor-pane')
+    if (!editorPane) return
+
+    const rect = editorPane.getBoundingClientRect()
+    const viewportPadding = window.matchMedia('(max-width: 760px)').matches ? 14 : 24
+    const viewportWidth = window.innerWidth
+    const centerX = rect.left + rect.width / 2
+    const clampedCenterX = Math.min(viewportWidth - viewportPadding, Math.max(viewportPadding, centerX))
+    const availableViewportWidth = Math.max(0, viewportWidth - viewportPadding * 2)
+    const availableEditorWidth = Math.max(0, rect.width - viewportPadding * 2)
+    const maxWidth = Math.max(
+      Math.min(260, availableViewportWidth),
+      Math.min(940, availableEditorWidth, availableViewportWidth),
+    )
+
+    wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
+    wrap.style.setProperty('--floating-toolbar-max-width', `${maxWidth}px`)
+  }, [activeView, appShellRef, toolbarRef])
+
+  const scheduleFloatingToolbarPosition = useCallback(() => {
+    if (frameRef.current) return
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null
+      updateFloatingToolbarPosition()
+    })
+  }, [updateFloatingToolbarPosition])
+
+  const queueFloatingToolbarRemeasure = useCallback((delayMs = 0) => {
+    scheduleFloatingToolbarPosition()
+    if (deferredMeasureRef.current) clearTimeout(deferredMeasureRef.current)
+    deferredMeasureRef.current = setTimeout(() => {
+      deferredMeasureRef.current = null
+      scheduleFloatingToolbarPosition()
+    }, delayMs)
+  }, [scheduleFloatingToolbarPosition])
+
+  const queueFloatingToolbarLayoutRemeasure = useCallback(() => {
+    clearLayoutMeasureTimers()
+    layoutMeasureRefs.current = [0, 80, 180, 320, 520].map((delay) =>
+      window.setTimeout(scheduleFloatingToolbarPosition, delay),
+    )
+  }, [clearLayoutMeasureTimers, scheduleFloatingToolbarPosition])
+
+  useLayoutEffect(() => {
+    scheduleFloatingToolbarPosition()
+  }, [activeView, scheduleFloatingToolbarPosition, selectedNoteId])
+
+  useEffect(() => {
+    queueFloatingToolbarLayoutRemeasure()
+  }, [
+    activeView,
+    appFullscreen,
+    appImmersiveFullscreen,
+    fullscreenExitStaging,
+    queueFloatingToolbarLayoutRemeasure,
+    selectedNoteId,
+    sidebarRevealAnimating,
+  ])
+
+  useEffect(() => {
+    if (activeView !== 'editor') return
+
+    const editorPane = appShellRef.current?.querySelector<HTMLElement>('.main-pane.editor-pane')
+    const appShell = appShellRef.current
+    const visualViewport = window.visualViewport
+    const onLayoutChange = () => queueFloatingToolbarLayoutRemeasure()
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(onLayoutChange)
+      : null
+
+    if (editorPane) resizeObserver?.observe(editorPane)
+    if (appShell) resizeObserver?.observe(appShell)
+    window.addEventListener('resize', onLayoutChange)
+    visualViewport?.addEventListener('resize', onLayoutChange)
+    visualViewport?.addEventListener('scroll', onLayoutChange)
+    editorPane?.addEventListener('transitionrun', onLayoutChange)
+    editorPane?.addEventListener('transitionend', onLayoutChange)
+    appShell?.addEventListener('transitionrun', onLayoutChange)
+    appShell?.addEventListener('transitionend', onLayoutChange)
+    queueFloatingToolbarLayoutRemeasure()
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', onLayoutChange)
+      visualViewport?.removeEventListener('resize', onLayoutChange)
+      visualViewport?.removeEventListener('scroll', onLayoutChange)
+      editorPane?.removeEventListener('transitionrun', onLayoutChange)
+      editorPane?.removeEventListener('transitionend', onLayoutChange)
+      appShell?.removeEventListener('transitionrun', onLayoutChange)
+      appShell?.removeEventListener('transitionend', onLayoutChange)
+    }
+  }, [activeView, appShellRef, queueFloatingToolbarLayoutRemeasure])
+
+  useEffect(() => () => {
+    clearLayoutMeasureTimers()
+    if (deferredMeasureRef.current) clearTimeout(deferredMeasureRef.current)
+    if (frameRef.current) cancelAnimationFrame(frameRef.current)
+  }, [clearLayoutMeasureTimers])
+
+  return {
+    queueFloatingToolbarRemeasure,
+    scheduleFloatingToolbarPosition,
+    updateFloatingToolbarPosition,
+  }
+}
 
 function InkCharacter({
   character,
@@ -384,11 +554,16 @@ type LociWorkerResponse =
   | { id: string; type: 'search-results'; noteIds: string[]; indexVersion: number }
   | { id: string; type: 'preview-ready'; noteId: string; preview: string }
 
-const PROJECT_QUICK_NAV_ROW_HEIGHT = 37
+const PROJECT_QUICK_NAV_ROW_HEIGHT = 34
 const PROJECT_QUICK_NAV_MAX_HEIGHT = 240
 const APP_FULLSCREEN_STORAGE_KEY = 'loci-notes:app-fullscreen'
 const SIDEBAR_FLICK_THRESHOLD = 72
 const SIDEBAR_FLICK_COOLDOWN_MS = 380
+const IMMERSIVE_TOP_EXIT_WINDOW_MS = 1200
+const IMMERSIVE_TOP_EXIT_QUIET_MS = 260
+const TRUE_FULLSCREEN_EXIT_STAGE_MS = 260
+const SIDEBAR_REVEAL_STAGE_MS = 280
+const LAYOUT_TRANSITION_MS = 360
 
 type EditorPanel = 'format' | 'more'
 
@@ -477,6 +652,7 @@ function defaultUserSettings(): UserSettings {
   const now = nowIso()
   return {
     id: 'local',
+    theme: 'loci',
     defaultAIProvider: 'openai',
     aiProviders: {
       openai: { enabled: false, apiKey: '', model: 'gpt-5.2', baseUrl: 'https://api.openai.com/v1' },
@@ -493,7 +669,16 @@ function defaultUserSettings(): UserSettings {
     highlighterColor: DEFAULT_HIGHLIGHTER_COLOR,
     reduceMotion: false,
     compactMode: false,
+    editorAnimatedTyping: false,
+    editorAtomUnderlinesDefault: true,
+    editorFocusModeDefault: false,
+    editorFocusModeTotalMs: 0,
+    editorAuthenticWriterDefault: false,
+    editorShowMarginalia: true,
     preferredAtomSubView: 'atoms',
+    studyDefaultDirection: 'term',
+    studyShuffleDefault: false,
+    communityEnabled: false,
     pinnedCommunityRecipientIds: [],
     createdAt: now,
     updatedAt: now,
@@ -513,11 +698,23 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
   if (providers.gemini.model === 'gemini-1.5-flash') providers.gemini.model = base.aiProviders.gemini.model
   if (providers.claude.model === 'claude-3-5-haiku-latest') providers.claude.model = base.aiProviders.claude.model
   if (providers.kimi.model === 'kimi-k2-0711-preview') providers.kimi.model = base.aiProviders.kimi.model
+  const theme = settings.theme === 'light' || settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'loci'
+  const preferredAtomSubView = settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms'
   return {
     ...base,
     ...settings,
+    theme,
     aiProviders: providers,
-    preferredAtomSubView: settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms',
+    editorAnimatedTyping: typeof settings.editorAnimatedTyping === 'boolean' ? settings.editorAnimatedTyping : base.editorAnimatedTyping,
+    editorAtomUnderlinesDefault: typeof settings.editorAtomUnderlinesDefault === 'boolean' ? settings.editorAtomUnderlinesDefault : base.editorAtomUnderlinesDefault,
+    editorFocusModeDefault: typeof settings.editorFocusModeDefault === 'boolean' ? settings.editorFocusModeDefault : base.editorFocusModeDefault,
+    editorFocusModeTotalMs: typeof settings.editorFocusModeTotalMs === 'number' && Number.isFinite(settings.editorFocusModeTotalMs) ? Math.max(0, settings.editorFocusModeTotalMs) : base.editorFocusModeTotalMs,
+    editorAuthenticWriterDefault: typeof settings.editorAuthenticWriterDefault === 'boolean' ? settings.editorAuthenticWriterDefault : base.editorAuthenticWriterDefault,
+    editorShowMarginalia: typeof settings.editorShowMarginalia === 'boolean' ? settings.editorShowMarginalia : base.editorShowMarginalia,
+    preferredAtomSubView,
+    studyDefaultDirection: settings.studyDefaultDirection === 'definition' ? 'definition' : 'term',
+    studyShuffleDefault: typeof settings.studyShuffleDefault === 'boolean' ? settings.studyShuffleDefault : base.studyShuffleDefault,
+    communityEnabled: Boolean(settings.communityEnabled),
     pinnedCommunityRecipientIds: Array.isArray(settings.pinnedCommunityRecipientIds)
       ? settings.pinnedCommunityRecipientIds.filter((id): id is string => typeof id === 'string')
       : [],
@@ -783,6 +980,22 @@ const NOTE_SAVE_DEBOUNCE_MS = 150
 const NOTICE_TOAST_MS = 4000
 const OPTIMISTIC_UNDO_MS = 6000
 
+type AppNotificationAction = {
+  label: string
+  onClick: () => void | Promise<void>
+  intent?: 'primary' | 'danger' | 'neutral'
+}
+
+type AppNotification = {
+  id: string
+  message: string
+  tone?: 'info' | 'success' | 'warning' | 'error'
+  actions?: AppNotificationAction[]
+  persist?: boolean
+}
+
+type AppNotificationInput = string | Omit<AppNotification, 'id'> & { id?: string }
+
 const DEFAULT_PROFILE_COLOR = '#2E3440'
 const BAD_PROFILE_DISPLAY_NAME = 'Your nMae'
 
@@ -843,14 +1056,147 @@ type ProfileDraft = {
   avatarColor: string
 }
 
+function formatAnimatedCount(value: number, decimals = 0) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0
+  return safeValue.toLocaleString(undefined, {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: decimals,
+  })
+}
+
+function AnimatedStatNumber({ value, decimals = 0 }: { value: number; decimals?: number }) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0
+  const [displayValue, setDisplayValue] = useState(safeValue)
+  const [hoverRun, setHoverRun] = useState(0)
+
+  useEffect(() => {
+    setDisplayValue(safeValue)
+  }, [safeValue])
+
+  useEffect(() => {
+    if (hoverRun === 0) return
+    const target = safeValue
+    if (target === 0) {
+      setDisplayValue(0)
+      return
+    }
+    const duration = Math.min(1600, Math.max(650, Math.log10(target + 1) * 420))
+    const startedAt = performance.now()
+    let frameId = 0
+    setDisplayValue(0)
+    const tick = (timestamp: number) => {
+      const progress = Math.min(1, (timestamp - startedAt) / duration)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      setDisplayValue(target * eased)
+      if (progress < 1) frameId = requestAnimationFrame(tick)
+    }
+    frameId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frameId)
+  }, [hoverRun, safeValue])
+
+  return <span className="animated-stat-number" onMouseEnter={() => setHoverRun((run) => run + 1)}>{formatAnimatedCount(displayValue, decimals)}</span>
+}
+
+type OnboardingScreenProps = {
+  profileDraft: ProfileDraft
+  onDraftChange: React.Dispatch<React.SetStateAction<ProfileDraft>>
+  onSubmit: () => void
+}
+
+function OnboardingScreen({ profileDraft, onDraftChange, onSubmit }: OnboardingScreenProps) {
+  const welcomeMessages = useMemo(() => [
+    'Welcome.',
+    'Thank you for using Loci Notes.',
+    'What is your name?',
+  ], [])
+  const [welcomeIndex, setWelcomeIndex] = useState(0)
+  const [typedLength, setTypedLength] = useState(0)
+  const [nameEntryVisible, setNameEntryVisible] = useState(false)
+  const displayName = profileDraft.displayName
+  const canSubmit = displayName.trim().length > 0
+  const activeWelcomeMessage = welcomeMessages[welcomeIndex] ?? ''
+  const typedWelcomeMessage = activeWelcomeMessage.slice(0, typedLength)
+
+  useEffect(() => {
+    if (nameEntryVisible) return
+    if (typedLength < activeWelcomeMessage.length) {
+      const timer = window.setTimeout(() => {
+        setTypedLength((length) => length + 1)
+      }, 72)
+      return () => window.clearTimeout(timer)
+    }
+
+    if (welcomeIndex < welcomeMessages.length - 1) {
+      const timer = window.setTimeout(() => {
+        setWelcomeIndex((index) => index + 1)
+        setTypedLength(0)
+      }, 1500)
+      return () => window.clearTimeout(timer)
+    }
+
+    const timer = window.setTimeout(() => setNameEntryVisible(true), 1000)
+    return () => window.clearTimeout(timer)
+  }, [activeWelcomeMessage.length, nameEntryVisible, typedLength, welcomeIndex, welcomeMessages.length])
+
+  const updateDisplayName = (nextDisplayName: string) => {
+    onDraftChange((current) => ({
+      ...current,
+      displayName: nextDisplayName,
+      initials: initialsFromName(nextDisplayName),
+      handle: current.handleEdited ? current.handle : createBaseHandleFromDisplayName(nextDisplayName),
+    }))
+  }
+
+  return (
+    <section className="onboarding-screen" aria-labelledby="onboarding-title">
+      <div className="onboarding-canvas">
+        <form
+          className="onboarding-card"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (canSubmit) onSubmit()
+          }}
+        >
+          {!nameEntryVisible ? (
+            <h1 id="onboarding-title" className="onboarding-typewriter" aria-live="polite">
+              <span>{typedWelcomeMessage}</span>
+              <span className="onboarding-caret" aria-hidden />
+            </h1>
+          ) : (
+            <>
+              <h1 id="onboarding-title">What is your name?</h1>
+              <label className="onboarding-name-row">
+                <input
+                  className="onboarding-name-input"
+                  value={displayName}
+                  onChange={(event) => updateDisplayName(event.target.value)}
+                  placeholder="Type enter to proceed"
+                  aria-label="Your name"
+                  autoComplete="name"
+                  autoFocus
+                />
+              </label>
+            </>
+          )}
+        </form>
+      </div>
+    </section>
+  )
+}
+
 type GroupDialogDraft = {
   name: string
   memberAccountIds: string[]
 }
 
+type SidebarQuickSection = {
+  id: string
+  title: string
+  notes: Note[]
+}
+
 type SidebarProps = {
   activeView: View
-  activeProject: Project | undefined
   activeNoteId: string | undefined
   atomSubView: AtomSubView
   draggedNoteIds: string[]
@@ -859,16 +1205,18 @@ type SidebarProps = {
   profileDisplayName: string
   profileHandleLabel: string
   profileInitials: string
-  projectQuickNotes: Note[]
+  projectQuickSections: SidebarQuickSection[]
   onAssignNoteToProjectDrop: (event: React.DragEvent<HTMLElement>, targetProjectId: string) => void
   onDragEnterProject: (projectId: string) => void
   onDragLeaveProject: (projectId: string) => void
   onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
+  onHideSidebarNote: (sectionId: string, noteId: string) => void
   onNewNote: () => void
   onOpenNote: (noteId: string) => void
   onOpenProfile: () => void
   onOpenAtoms: () => void
   onOpenSets: () => void
+  onOpenSettings: () => void
   onOpenSearch: () => void
   onOpenProjectsRoot: () => void
   onRenameNote: (noteId: string, title: string) => void
@@ -879,7 +1227,6 @@ type SidebarProps = {
 
 const Sidebar = memo(function Sidebar({
   activeView,
-  activeProject,
   activeNoteId,
   atomSubView,
   draggedNoteIds,
@@ -888,16 +1235,18 @@ const Sidebar = memo(function Sidebar({
   profileDisplayName,
   profileHandleLabel,
   profileInitials,
-  projectQuickNotes,
+  projectQuickSections,
   onAssignNoteToProjectDrop,
   onDragEnterProject,
   onDragLeaveProject,
   onDragOverProject,
+  onHideSidebarNote,
   onNewNote,
   onOpenNote,
   onOpenProfile,
   onOpenAtoms,
   onOpenSets,
+  onOpenSettings,
   onOpenSearch,
   onOpenProjectsRoot,
   onRenameNote,
@@ -907,10 +1256,6 @@ const Sidebar = memo(function Sidebar({
 }: SidebarProps) {
   const [editingNoteId, setEditingNoteId] = useState('')
   const [editingNoteTitle, setEditingNoteTitle] = useState('')
-  const projectQuickNavHeight = Math.min(projectQuickNotes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
-  const projectQuickNavStyle = {
-    '--project-quick-nav-height': `${projectQuickNavHeight}px`,
-  } as React.CSSProperties
 
   const startNoteRename = (note: Note) => {
     setEditingNoteId(note.id)
@@ -978,72 +1323,102 @@ const Sidebar = memo(function Sidebar({
         </button>
       </nav>
 
-      {activeProject && projectQuickNotes.length > 0 && (
-        <div className="sidebar-section sidebar-project-section">
-          <span className="sidebar-section-label">{activeProject.name}</span>
-          <VirtualList
-            className="project-quick-nav scroll-hover"
-            style={projectQuickNavStyle}
-            items={projectQuickNotes}
-            rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
-            overscan={6}
-            ariaLabel={`${activeProject.name} documents`}
-            renderItem={(note) => (
-              <div className={`quick-note-row ${note.id === activeNoteId ? 'is-active' : ''}`}>
-                <button type="button" onClick={() => {
-                  onOpenNote(note.id)
-                }}>
-                  {editingNoteId === note.id ? (
-                    <input
-                      className="note-title-rename-input sidebar-note-title-input"
-                      value={editingNoteTitle}
-                      onBlur={() => commitNoteRename(note)}
-                      onChange={(event) => setEditingNoteTitle(event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      onDoubleClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+      {projectQuickSections.map((section) => {
+        const projectQuickNavHeight = Math.min(section.notes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
+        const projectQuickNavStyle = {
+          '--project-quick-nav-height': `${projectQuickNavHeight}px`,
+        } as React.CSSProperties
+        return (
+          <div className="sidebar-section sidebar-project-section" key={section.id}>
+            <span className="sidebar-section-label">{section.title}</span>
+            <VirtualList
+              className="project-quick-nav"
+              style={projectQuickNavStyle}
+              items={section.notes}
+              rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
+              overscan={6}
+              ariaLabel={`${section.title} documents`}
+              renderItem={(note, index) => {
+                const isEditing = editingNoteId === note.id
+                const isActive = note.id === activeNoteId
+                return (
+                  <div
+                    className={`quick-note-row ${isActive ? 'is-active' : ''} ${isEditing ? 'is-editing' : ''}`}
+                    style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
+                  >
+                    <button className="quick-note-open" type="button" onClick={() => {
+                      onOpenNote(note.id)
+                    }}>
+                      {isEditing ? (
+                        <input
+                          className="note-title-rename-input sidebar-note-title-input"
+                          value={editingNoteTitle}
+                          onBlur={() => commitNoteRename(note)}
+                          onChange={(event) => setEditingNoteTitle(event.target.value)}
+                          onClick={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              commitNoteRename(note)
+                            }
+                            if (event.key === 'Escape') {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              setEditingNoteTitle(note.title || 'Untitled Note')
+                              setEditingNoteId('')
+                            }
+                          }}
+                          aria-label="Document name"
+                          autoFocus
+                        />
+                      ) : (
+                        <span
+                          className="sidebar-note-title"
+                          title="Double-click to rename"
+                          onDoubleClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            startNoteRename(note)
+                          }}
+                        >
+                          {note.title || 'Untitled Note'}
+                        </span>
+                      )}
+                    </button>
+                    {!isEditing && (
+                      <button
+                        className="quick-note-hide"
+                        type="button"
+                        aria-label={`Hide ${note.title || 'Untitled Note'} from sidebar`}
+                        title="Hide from sidebar"
+                        onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
-                          commitNoteRename(note)
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          setEditingNoteTitle(note.title || 'Untitled Note')
-                          setEditingNoteId('')
-                        }
-                      }}
-                      aria-label="Document name"
-                      autoFocus
-                    />
-                  ) : (
-                    <span
-                      className="sidebar-note-title"
-                      title="Double-click to rename"
-                      onDoubleClick={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        startNoteRename(note)
-                      }}
-                    >
-                      {note.title || 'Untitled Note'}
-                    </span>
-                  )}
-                </button>
-              </div>
-            )}
-          />
-        </div>
-      )}
+                          onHideSidebarNote(section.id, note.id)
+                        }}
+                      >
+                        <XIcon size={20} strokeWidth={2.5} aria-hidden />
+                      </button>
+                    )}
+                  </div>
+                )
+              }}
+            />
+          </div>
+        )
+      })}
 
       <div className="sidebar-bottom">
-        <nav className="sidebar-section secondary-nav" aria-label="Community">
-          <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
-            <Users size={18} />
-            <span className="nav-label">Community</span>
-          </button>
-        </nav>
+        {RELEASE_COMMUNITY_ENABLED && (
+          <nav className="sidebar-section secondary-nav" aria-label="Community">
+            <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
+              <Users size={18} />
+              <span className="nav-label">Community</span>
+            </button>
+          </nav>
+        )}
 
         <div className="sidebar-section sidebar-profile-section">
           <button className="profile-row" type="button" onClick={onOpenProfile} aria-label="Open profile">
@@ -1065,10 +1440,10 @@ const Sidebar = memo(function Sidebar({
               {fullscreenActive ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
             <button
-              className={`sidebar-settings ${activeView === 'settings' ? 'active' : ''}`}
+              className="sidebar-settings"
               type="button"
               aria-label="Settings"
-              onClick={() => onSetActiveView('settings')}
+              onClick={onOpenSettings}
             >
               <Settings size={18} />
               <span className="nav-label">Settings</span>
@@ -1111,7 +1486,9 @@ function App() {
     return window.localStorage.getItem(APP_FULLSCREEN_STORAGE_KEY) === 'true'
   })
   const [appImmersiveFullscreen, setAppImmersiveFullscreen] = useState(false)
+  const [fullscreenExitStaging, setFullscreenExitStaging] = useState(false)
   const [sidebarRevealAnimating, setSidebarRevealAnimating] = useState(false)
+  const [layoutTransitioning, setLayoutTransitioning] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [atomSubView, setAtomSubView] = useState<AtomSubView>('atoms')
   const [openedAtomProjectId, setOpenedAtomProjectId] = useState('')
@@ -1148,11 +1525,15 @@ function App() {
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
   const [atomProjectSearchQuery, setAtomProjectSearchQuery] = useState('')
+  const [openSidebarProjectIds, setOpenSidebarProjectIds] = useState<string[]>([])
+  const [hiddenSidebarNoteIdsByProjectId, setHiddenSidebarNoteIdsByProjectId] = useState<Record<string, string[]>>({})
   const [atomProjectFilter, setAtomProjectFilter] = useState('')
   const [atomProjectMenuOpen, setAtomProjectMenuOpen] = useState(false)
   const [atomRowDrafts, setAtomRowDrafts] = useState<Record<string, { phrase: string; definition: string }>>({})
   const [openProjectMenuId, setOpenProjectMenuId] = useState('')
   const [openLooseNoteMenuId, setOpenLooseNoteMenuId] = useState('')
+  const [editingLooseNoteId, setEditingLooseNoteId] = useState('')
+  const [editingLooseNoteTitle, setEditingLooseNoteTitle] = useState('')
   const [atomUnderlinesVisible, setAtomUnderlinesVisible] = useState(true)
   const [editorFocusMode, setEditorFocusMode] = useState(false)
   const [editorFocusModeVisual, setEditorFocusModeVisual] = useState(false)
@@ -1161,8 +1542,7 @@ function App() {
   const { imageLoadStates, ensureImageLoaded } = useImageLoadCoordinator()
   const [, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
-  const [notice, setNotice] = useState('')
-  const [undoNotice, setUndoNotice] = useState<{ message: string; action: () => void } | null>(null)
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchActiveIndex, setSearchActiveIndex] = useState(0)
@@ -1173,7 +1553,6 @@ function App() {
   const [templateProjectId, setTemplateProjectId] = useState<string | null>(null)
   const [activeEditorPanel, setActiveEditorPanel] = useState<EditorPanel | null>(null)
   const [formatDialogQuery, setFormatDialogQuery] = useState('')
-  const formatDialogSearchRef = useRef<HTMLInputElement | null>(null)
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiPromptFocused, setAiPromptFocused] = useState(false)
   const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
@@ -1185,6 +1564,7 @@ function App() {
   const [blockPicker, setBlockPicker] = useState<BlockPickerState>({ open: false, blockId: '', placement: 'after', query: '' })
   const [draggedBlockId, setDraggedBlockId] = useState('')
   const [formatSideControls, setFormatSideControls] = useState<FormatSideControlsRect | null>(null)
+  const [activeFormatBlockId, setActiveFormatBlockId] = useState('')
   const [authorshipMenu, setAuthorshipMenu] = useState<AuthorshipMenuState | null>(null)
   const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
   const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
@@ -1206,10 +1586,19 @@ function App() {
   const [communityTarget, setCommunityTarget] = useState<CommunityTarget | null>(null)
   const [groupDialogDraft, setGroupDialogDraft] = useState<GroupDialogDraft | null>(null)
   const [developerNotifications, setDeveloperNotifications] = useState<RemoteContentItem[]>([])
+  const [activeSurveyPrompt, setActiveSurveyPrompt] = useState<SurveyPrompt | null>(null)
+  const [surveyAnswer, setSurveyAnswer] = useState('')
+  const [surveyComment, setSurveyComment] = useState('')
+  const [surveyLoading, setSurveyLoading] = useState(false)
+  const [surveySubmitting, setSurveySubmitting] = useState(false)
   const [, setShowSaveState] = useState(true)
   const [localLoadIssues, setLocalLoadIssues] = useState<string[]>([])
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
+  const [activeSettingsSection, setActiveSettingsSection] = useState('general')
+  const [openSettingsDropdown, setOpenSettingsDropdown] = useState('')
   const [dashboardNow, setDashboardNow] = useState(() => new Date())
   const [homeVisitCount, setHomeVisitCount] = useState(0)
+  const [postOnboardingReveal, setPostOnboardingReveal] = useState(false)
   const notesRef = useRef<Note[]>([])
   const atomsRef = useRef<Atom[]>([])
   const noteIndexCacheRef = useRef<Map<string, NoteIndexCacheEntry>>(new Map())
@@ -1230,10 +1619,12 @@ function App() {
   const appShellRef = useRef<HTMLElement | null>(null)
   const previousViewRef = useRef<View>('home')
   const sidebarFlickAtRef = useRef(0)
+  const immersiveTopExitArmedAtRef = useRef(0)
+  const immersiveTopExitLastWheelAtRef = useRef(0)
+  const layoutTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const postOnboardingRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sidebarRevealCleanupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const floatingToolbarFrameRef = useRef<number | null>(null)
-  const floatingToolbarDeferredMeasureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
@@ -1245,15 +1636,17 @@ function App() {
   const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorFocusModeVisualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorFocusModeVisualFrameRef = useRef<number | null>(null)
-  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const studySessionStartedAtRef = useRef<number | null>(null)
   const studySessionPersistedRef = useRef(false)
+  const editorFocusModeStartedAtRef = useRef<number | null>(null)
+  const userSettingsRef = useRef<UserSettings>(userSettings)
+  const notificationTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const formatSideFrameRef = useRef<number | null>(null)
   const formatBlockFrameRef = useRef<number | null>(null)
   const editorResizeFrameRef = useRef<number | null>(null)
   const suppressEditorPersistRef = useRef(false)
-  const lastLocalEditorContentRef = useRef<{ noteId: string; content: JSONContent } | null>(null)
+  const lastLocalEditorContentRef = useRef<{ noteId: string; contentKey: string } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
   const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
   const selectedBlocksRef = useRef<LociBlock[]>([])
@@ -1284,6 +1677,10 @@ function App() {
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const atomById = useMemo(() => new Map(atoms.map((atom) => [atom.id, atom])), [atoms])
   const noteIndexes = useMemo(() => createNoteIndexes(notes, noteIndexCacheRef.current), [notes])
+  const projectSectionIdForNote = useCallback(
+    (note: Note) => (note.projectId !== UNASSIGNED_PROJECT_ID && projectById.has(note.projectId) ? note.projectId : UNASSIGNED_PROJECT_ID),
+    [projectById],
+  )
   const hasExplicitAIContext = Boolean(aiContextRange)
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
@@ -1296,6 +1693,7 @@ function App() {
     : 'Signed out · local workspace only'
   const acceptedFriendCount = friendships.filter((friendship) => friendship.status === 'accepted').length
   const pendingFriendCount = friendships.filter((friendship) => friendship.status !== 'accepted').length
+  const surveyPromptReady = authSession.status === 'signed-in' && Boolean(activeSurveyPrompt)
   const selectedCommunityFriend = communityTarget?.kind === 'friend'
     ? friendships.find((friendship) => friendship.id === communityTarget.id)
     : undefined
@@ -1309,7 +1707,6 @@ function App() {
     ? sharedNoteExports.filter((share) => selectedCommunityRecipientIds.some((accountId) => share.recipientAccountIds.includes(accountId)))
     : []
   const acceptedFriendships = friendships.filter((friendship) => friendship.status === 'accepted')
-  const activeProjectForQuickNav = activeView === 'editor' ? selectedProject : openedProject
   const localDatabaseNeedsRepair = localLoadIssues.some((issue) =>
     /notes|noteBodies|noteMetas|database|dexie|starter workspace/i.test(issue),
   )
@@ -1321,35 +1718,95 @@ function App() {
     deprecatedStarterNoteIds.every((noteId) => !notes.some((note) => note.id === noteId)) &&
     deprecatedStarterAtomIds.every((atomId) => !atoms.some((atom) => atom.id === atomId))
 
-  const clearNoticeTimer = useCallback(() => {
-    if (!noticeTimerRef.current) return
-    clearTimeout(noticeTimerRef.current)
-    noticeTimerRef.current = null
+  const dismissNotification = useCallback((id: string) => {
+    const timer = notificationTimersRef.current.get(id)
+    if (timer) clearTimeout(timer)
+    notificationTimersRef.current.delete(id)
+    setNotifications((current) => current.filter((notification) => notification.id !== id))
   }, [])
 
-  const showNotice = useCallback((message: string) => {
-    clearNoticeTimer()
-    setNotice(message)
-    if (!message) return
-    noticeTimerRef.current = setTimeout(() => {
-      setNotice('')
-      noticeTimerRef.current = null
-    }, NOTICE_TOAST_MS)
-  }, [clearNoticeTimer])
+  const clearNotifications = useCallback(() => {
+    notificationTimersRef.current.forEach((timer) => clearTimeout(timer))
+    notificationTimersRef.current.clear()
+    setNotifications([])
+  }, [])
 
-  const projectQuickNotes = useMemo(
-    () =>
-      activeProjectForQuickNav
-        ? noteIndexes.notesByProjectId.get(activeProjectForQuickNav.id) ?? []
-        : [],
-    [activeProjectForQuickNav, noteIndexes],
-  )
+  const showNotification = useCallback((input: AppNotificationInput) => {
+    if (typeof input === 'string') {
+      if (!input) {
+        clearNotifications()
+        return ''
+      }
+      input = { message: input }
+    }
+
+    const id = input.id ?? createId('notification')
+    const notification: AppNotification = {
+      id,
+      message: input.message,
+      tone: input.tone ?? 'info',
+      actions: input.actions,
+      persist: input.persist ?? Boolean(input.actions?.length),
+    }
+
+    const existingTimer = notificationTimersRef.current.get(id)
+    if (existingTimer) clearTimeout(existingTimer)
+    notificationTimersRef.current.delete(id)
+
+    setNotifications((current) => [notification, ...current.filter((item) => item.id !== id)].slice(0, 4))
+
+    if (!notification.persist) {
+      const timer = setTimeout(() => {
+        dismissNotification(id)
+      }, NOTICE_TOAST_MS)
+      notificationTimersRef.current.set(id, timer)
+    }
+
+    return id
+  }, [clearNotifications, dismissNotification])
+
+  const showNotice = useCallback((message: string) => {
+    showNotification(message)
+  }, [showNotification])
+
+  const showConflictNotification = useCallback((message: string, actions: AppNotificationAction[]) => {
+    return showNotification({
+      message,
+      tone: 'warning',
+      persist: true,
+      actions,
+    })
+  }, [showNotification])
+
+  const showSyncConflictNotification = useCallback((message = 'Remote changes conflict with your local version.') => {
+    return showConflictNotification(message, [
+      { label: 'Keep mine', intent: 'neutral', onClick: () => { showNotification({ message: 'Local version kept.', tone: 'success' }) } },
+      { label: 'Use remote', intent: 'neutral', onClick: () => { showNotification({ message: 'Remote version accepted.', tone: 'success' }) } },
+      { label: 'Review', intent: 'primary', onClick: () => { showNotification({ message: 'Conflict review will open here when sync is release-enabled.', tone: 'info' }) } },
+    ])
+  }, [showConflictNotification, showNotification])
+
   const unassignedNotes = useMemo(() => {
     const projectIds = new Set(projects.map((project) => project.id))
     return notes
       .filter((note) => note.projectId === UNASSIGNED_PROJECT_ID || !projectIds.has(note.projectId))
       .sort(sortByUpdated)
   }, [notes, projects])
+  const projectQuickSections = useMemo<SidebarQuickSection[]>(() => {
+    return openSidebarProjectIds.flatMap((sectionId) => {
+      const title = sectionId === UNASSIGNED_PROJECT_ID
+        ? 'Unsorted'
+        : projectById.get(sectionId)?.name
+      if (!title) return []
+      const hiddenIds = new Set(hiddenSidebarNoteIdsByProjectId[sectionId] ?? [])
+      const sectionNotes = (sectionId === UNASSIGNED_PROJECT_ID
+        ? unassignedNotes
+        : noteIndexes.notesByProjectId.get(sectionId) ?? []
+      ).filter((note) => !hiddenIds.has(note.id))
+      if (!sectionNotes.length) return []
+      return [{ id: sectionId, title, notes: sectionNotes }]
+    })
+  }, [hiddenSidebarNoteIdsByProjectId, noteIndexes, openSidebarProjectIds, projectById, unassignedNotes])
   const projectCards = useMemo<ProjectCardSummary[]>(() => {
     return projects
       .map((project) => {
@@ -1406,10 +1863,10 @@ function App() {
 
   useEffect(() => {
     return () => {
+      if (layoutTransitionTimeoutRef.current) clearTimeout(layoutTransitionTimeoutRef.current)
+      if (postOnboardingRevealTimeoutRef.current) clearTimeout(postOnboardingRevealTimeoutRef.current)
       if (sidebarRevealTimeoutRef.current) clearTimeout(sidebarRevealTimeoutRef.current)
       if (sidebarRevealCleanupTimeoutRef.current) clearTimeout(sidebarRevealCleanupTimeoutRef.current)
-      if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
-      if (floatingToolbarFrameRef.current) cancelAnimationFrame(floatingToolbarFrameRef.current)
     }
   }, [])
 
@@ -1578,6 +2035,13 @@ function App() {
       setLocalProfile(storedProfile && !isBadProfileDisplayName(storedProfile.displayName) && storedProfile.displayName.trim() ? storedProfile : null)
       setUserSettings(normalizedSettings)
       setAtomSubView(normalizedSettings.preferredAtomSubView ?? 'atoms')
+      setAtomUnderlinesVisible(normalizedSettings.editorAtomUnderlinesDefault)
+      setEditorFocusMode(normalizedSettings.editorFocusModeDefault)
+      setEditorFocusModeVisual(normalizedSettings.editorFocusModeDefault)
+      setEditorAuthenticWriterMode(normalizedSettings.editorAuthenticWriterDefault)
+      setEditorCityMarginaliaOpacity(normalizedSettings.editorShowMarginalia ? 1 : 0)
+      setStudyDirection(normalizedSettings.studyDefaultDirection)
+      setStudyShuffle(normalizedSettings.studyShuffleDefault)
       setProfileLoaded(true)
       setSelectedNoteId((current) => current || normalized[0]?.id || '')
       setLocalLoadIssues(loadIssues.map((issue) => `${issue.area}: ${issue.message}`))
@@ -1653,18 +2117,28 @@ function App() {
     }
   }, [notes, runWorkerJob])
 
-  const checkForUpdates = useCallback(async (manual = false) => {
-    await updateService.checkAndInstall({
+  const checkForUpdates = useCallback(async (manual = false, autoInstall = false) => {
+    await updateService.check({
       manual,
+      autoInstall,
       isDesktop: Boolean(window.__TAURI_INTERNALS__),
       onStateChange: setUpdateState,
     })
-  }, [])
+    if (manual) showNotification({ message: 'Update check complete.', tone: 'success' })
+  }, [showNotification])
+
+  const installAvailableUpdate = useCallback(async () => {
+    await updateService.installAvailable({
+      isDesktop: Boolean(window.__TAURI_INTERNALS__),
+      onStateChange: setUpdateState,
+    })
+    showNotification({ message: 'Update install started.', tone: 'success' })
+  }, [showNotification])
 
   useEffect(() => {
     if (updateCheckRanRef.current || !window.__TAURI_INTERNALS__) return
     updateCheckRanRef.current = true
-    void checkForUpdates()
+    void checkForUpdates(false, true)
   }, [checkForUpdates])
 
   useEffect(() => {
@@ -1683,29 +2157,79 @@ function App() {
       setFriendGroups(storedFriendGroups)
       setSharedNoteExports(shares)
       setDeveloperNotifications(notifications)
+      if (RELEASE_COMMUNITY_ENABLED && notifications.length) {
+        showNotification({
+          message: `${notifications.length} developer notification${notifications.length === 1 ? '' : 's'} cached.`,
+          tone: 'info',
+        })
+      }
     })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [showNotification])
+
+  useEffect(() => {
+    const accountId = authSession.accountId
+    if (authSession.status !== 'signed-in' || !accountId) {
+      setActiveSurveyPrompt(null)
+      setSurveyAnswer('')
+      setSurveyComment('')
+      setSurveyLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setSurveyLoading(true)
+    void surveyService.getActivePrompt(accountId, 'settings')
+      .then((prompt) => {
+        if (cancelled) return
+        setActiveSurveyPrompt(prompt)
+        setSurveyAnswer(prompt?.kind === 'single-choice' ? prompt.options[0] ?? '' : '')
+        setSurveyComment('')
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.warn('Could not load survey prompt', error)
+        setActiveSurveyPrompt(null)
+      })
+      .finally(() => {
+        if (!cancelled) setSurveyLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authSession.accountId, authSession.status])
+
+  useEffect(() => {
+    if (!RELEASE_COMMUNITY_ENABLED) return
+    let cancelled = false
+    void db.communitySyncQueue
+      .where('status')
+      .equals('failed')
+      .toArray()
+      .then((failedItems) => {
+        if (cancelled || !failedItems.length) return
+        showNotification({
+          message: `${failedItems.length} community sync item${failedItems.length === 1 ? '' : 's'} need attention.`,
+          tone: 'warning',
+          persist: true,
+          actions: [{
+            label: 'Review',
+            intent: 'primary',
+            onClick: () => { showSyncConflictNotification('Community sync has unresolved failures.') },
+          }],
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [showNotification, showSyncConflictNotification])
 
   async function runSavedNoteMaintenance(savedNotes: Note[]) {
     const contentNotes = savedNotes.filter((note) => note.content)
     if (!contentNotes.length) return
-
-    const changedAtoms = contentNotes.flatMap((note) =>
-      flashcardsFromContent(note.content)
-        .map((card) => {
-          const existing = atomsRef.current.find((atom) => atom.id === card.atomId)
-          if (!existing || (existing.phrase === card.phrase && existing.definition === card.definition)) return null
-          return { ...existing, phrase: card.phrase, definition: card.definition, updatedAt: nowIso() }
-        })
-        .filter((atom): atom is Atom => Boolean(atom)),
-    )
-    if (changedAtoms.length) {
-      await atomsStore.saveMany(changedAtoms)
-      setAtoms((current) => current.map((atom) => changedAtoms.find((item) => item.id === atom.id) ?? atom))
-    }
 
     const latestContentNote = contentNotes[contentNotes.length - 1]
     if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
@@ -1725,6 +2249,12 @@ function App() {
       if (!latest) return
       const linkedAtoms = projectAtomsForNote(latest)
       if (!linkedAtoms.length) return
+      debugEditorLog('scheduled atom sync', {
+        noteId: latest.id,
+        atomCount: linkedAtoms.length,
+        isOpenNote: latest.id === selectedNoteIdRef.current,
+        selection: debugEditorState(),
+      })
       void syncAtomMarksForNotes([latest], linkedAtoms)
     }, 1200)
   }
@@ -1808,7 +2338,8 @@ function App() {
       if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
       if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
       if (aiPromptHintTimerRef.current) clearTimeout(aiPromptHintTimerRef.current)
-      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+      notificationTimersRef.current.forEach((timer) => clearTimeout(timer))
+      notificationTimersRef.current.clear()
       optimisticDeleteTimersRef.current.forEach((timer) => clearTimeout(timer))
       if (formatSideFrameRef.current) cancelAnimationFrame(formatSideFrameRef.current)
       if (formatBlockFrameRef.current) cancelAnimationFrame(formatBlockFrameRef.current)
@@ -1837,13 +2368,64 @@ function App() {
     }
   }, [restoreEditorScroll])
 
-  function setEditorContentFromSync(content: JSONContent) {
+  const editorContentKey = (content: JSONContent) => JSON.stringify(content)
+
+  const prosemirrorBlockIndex = (currentEditor = editorRef.current) => {
+    if (!currentEditor || currentEditor.isDestroyed) return -1
+    return currentEditor.state.selection.$from.index(0)
+  }
+
+  const debugEditorState = (currentEditor = editorRef.current) => {
+    if (!currentEditor || currentEditor.isDestroyed) return null
+    const { from, to } = currentEditor.state.selection
+    return {
+      from,
+      to,
+      activeIndex: prosemirrorBlockIndex(currentEditor),
+      childCount: currentEditor.state.doc.childCount,
+      docSize: currentEditor.state.doc.content.size,
+      focused: currentEditor.isFocused,
+    }
+  }
+
+  const debugEditorLog = (message: string, details: Record<string, unknown>) => {
+    if (!(window as typeof window & { __LOCI_EDITOR_DEBUG?: boolean }).__LOCI_EDITOR_DEBUG) return
+    console.debug(`[loci-editor] ${message}`, details)
+  }
+
+  function setEditorContentFromSync(content: JSONContent, reason = 'sync') {
     const currentEditor = editorRef.current
     if (!currentEditor) return
+    const before = debugEditorState(currentEditor)
+    const selection = currentEditor.state.selection
+    const restoreSelection = selection instanceof TextSelection
+      ? { from: selection.from, to: selection.to }
+      : null
     preserveEditorScroll(() => {
       suppressEditorPersistRef.current = true
       currentEditor.commands.setContent(content, { emitUpdate: false })
+      if (restoreSelection) {
+        const nextSize = currentEditor.state.doc.content.size
+        const from = Math.min(restoreSelection.from, nextSize)
+        const to = Math.min(restoreSelection.to, nextSize)
+        try {
+          currentEditor.view.dispatch(
+            currentEditor.state.tr.setSelection(TextSelection.create(currentEditor.state.doc, from, to)),
+          )
+        } catch {
+          currentEditor.view.dispatch(
+            currentEditor.state.tr.setSelection(TextSelection.near(currentEditor.state.doc.resolve(from), -1)),
+          )
+        }
+      }
       suppressEditorPersistRef.current = false
+    })
+    debugEditorLog('setContent', {
+      reason,
+      before,
+      after: debugEditorState(currentEditor),
+      contentBlocks: content.content?.length ?? 0,
+      noteId: selectedNoteIdRef.current,
     })
   }
 
@@ -1871,7 +2453,14 @@ function App() {
     setNotes(nextNotes)
     await notesStore.saveMany(updatedNotes)
     const openNote = updatedById.get(selectedNoteIdRef.current)
-    if (openNote) setEditorContentFromSync(primaryTemplateContent(openNote))
+    if (openNote) {
+      debugEditorLog('atom sync touched open note', {
+        noteId: openNote.id,
+        selection: debugEditorState(),
+        changedBlockCount: primaryTemplateContent(openNote).content?.length ?? 0,
+      })
+      if (!editorRef.current?.isFocused) setEditorContentFromSync(primaryTemplateContent(openNote), 'atom-sync-open-note')
+    }
     return markCount
   }
 
@@ -1894,9 +2483,62 @@ function App() {
       nextPatch.blocks = normalizeBlocksForContent(content, target.blocks)
     }
     const updated = { ...target, ...nextPatch, updatedAt: nowIso() }
-    notesRef.current = notesRef.current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated)
-    setNotes((current) => current.map((note) => (note.id === noteId ? updated : note)).sort(sortByUpdated))
+    const isLocalTypingPatch =
+      noteId === selectedNoteIdRef.current &&
+      Boolean(editorRef.current?.isFocused) &&
+      'content' in patch &&
+      'templateData' in patch &&
+      'blocks' in patch
+    const applyNotePatch = (items: Note[]) => {
+      const mapped = items.map((note) => (note.id === noteId ? updated : note))
+      return isLocalTypingPatch ? mapped : mapped.sort(sortByUpdated)
+    }
+    notesRef.current = applyNotePatch(notesRef.current)
+    setNotes((current) => applyNotePatch(current))
+    debugEditorLog('persistNote', {
+      noteId,
+      isLocalTypingPatch,
+      patchKeys: Object.keys(patch),
+      selection: debugEditorState(),
+    })
     scheduleNoteSave(updated, 'title' in patch || 'content' in patch || 'templateData' in patch)
+  }, [])
+
+  const startLooseNoteRename = useCallback((note: Note) => {
+    setOpenLooseNoteMenuId('')
+    setEditingLooseNoteId(note.id)
+    setEditingLooseNoteTitle(note.title || 'Untitled Note')
+  }, [])
+
+  const commitLooseNoteRename = useCallback((note: Note) => {
+    const nextTitle = editingLooseNoteTitle.replace(/\s*\r?\n\s*/g, ' ').trim() || 'Untitled Note'
+    setEditingLooseNoteTitle(nextTitle)
+    setEditingLooseNoteId('')
+    if (nextTitle !== note.title) void persistNote({ title: nextTitle }, note.id)
+  }, [editingLooseNoteTitle, persistNote])
+
+  const openSidebarSectionForNote = useCallback((note: Note, options: { revealNote?: boolean } = {}) => {
+    const sectionId = projectSectionIdForNote(note)
+    setOpenSidebarProjectIds((current) => (current.includes(sectionId) ? current : [sectionId, ...current]))
+    if (options.revealNote !== false) {
+      setHiddenSidebarNoteIdsByProjectId((current) => {
+        const hiddenIds = current[sectionId] ?? []
+        if (!hiddenIds.includes(note.id)) return current
+        const nextHiddenIds = hiddenIds.filter((id) => id !== note.id)
+        const next = { ...current }
+        if (nextHiddenIds.length) next[sectionId] = nextHiddenIds
+        else delete next[sectionId]
+        return next
+      })
+    }
+  }, [projectSectionIdForNote])
+
+  const hideSidebarNote = useCallback((sectionId: string, noteId: string) => {
+    setHiddenSidebarNoteIdsByProjectId((current) => {
+      const hiddenIds = current[sectionId] ?? []
+      if (hiddenIds.includes(noteId)) return current
+      return { ...current, [sectionId]: [...hiddenIds, noteId] }
+    })
   }, [])
 
   const handleNoteDropTargetDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
@@ -1905,11 +2547,13 @@ function App() {
   }, [])
 
   const openNote = useCallback((noteId: string, options: { trackHistory?: boolean } = {}) => {
+    beginLayoutTransition(240)
     if (options.trackHistory !== false) {
       noteOpenHistoryRef.current = [noteId, ...noteOpenHistoryRef.current.filter((id) => id !== noteId)]
     }
     const currentNote = notesRef.current.find((note) => note.id === noteId)
     if (currentNote) {
+      openSidebarSectionForNote(currentNote)
       setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(currentNote.content ?? emptyDoc)))
     } else {
       setEditorCityMarginaliaOpacity(1)
@@ -1927,7 +2571,79 @@ function App() {
       )
     })
     void mediaStore.preloadForNote(noteId, { priority: 'visible' })
-  }, [])
+  }, [openSidebarSectionForNote])
+
+  const nextVisibleSidebarNote = useCallback((excludingNoteIds: string[] = []) => {
+    const excluded = new Set(excludingNoteIds)
+    const noteById = new Map(notesRef.current.map((note) => [note.id, note]))
+    const visibleIds = new Set<string>()
+    for (const section of projectQuickSections) {
+      for (const note of section.notes) {
+        if (!excluded.has(note.id)) visibleIds.add(note.id)
+      }
+    }
+
+    const history = noteOpenHistoryRef.current.filter((id) => {
+      const note = noteById.get(id)
+      return note && visibleIds.has(id)
+    })
+    noteOpenHistoryRef.current = history
+    const historyNoteId = history.find((id) => !excluded.has(id))
+    if (historyNoteId) return noteById.get(historyNoteId)
+
+    for (const section of projectQuickSections) {
+      const note = section.notes.find((item) => !excluded.has(item.id))
+      if (note) return note
+    }
+    return undefined
+  }, [projectQuickSections])
+
+  const closeSidebarNote = useCallback((noteId: string) => {
+    const note = notesRef.current.find((item) => item.id === noteId)
+    if (!note) return
+    const sectionId = projectSectionIdForNote(note)
+    hideSidebarNote(sectionId, noteId)
+    noteOpenHistoryRef.current = noteOpenHistoryRef.current.filter((id) => id !== noteId)
+
+    if (selectedNoteIdRef.current !== noteId) return
+    const nextNote = nextVisibleSidebarNote([noteId])
+    setActiveEditorPanel(null)
+    setNoteHistoryOpen(false)
+    showNotice('')
+    if (nextNote) {
+      openNote(nextNote.id, { trackHistory: false })
+      return
+    }
+    setSelectedNoteId('')
+    setActiveView('home')
+  }, [hideSidebarNote, nextVisibleSidebarNote, openNote, projectSectionIdForNote, showNotice])
+
+  const closeSidebarProject = useCallback((sectionId: string) => {
+    setOpenSidebarProjectIds((current) => current.filter((id) => id !== sectionId))
+    setHiddenSidebarNoteIdsByProjectId((current) => {
+      if (!(sectionId in current)) return current
+      const next = { ...current }
+      delete next[sectionId]
+      return next
+    })
+
+    const currentNote = notesRef.current.find((note) => note.id === selectedNoteIdRef.current)
+    if (!currentNote || projectSectionIdForNote(currentNote) !== sectionId) return
+    const closingNoteIds = notesRef.current
+      .filter((note) => projectSectionIdForNote(note) === sectionId)
+      .map((note) => note.id)
+    noteOpenHistoryRef.current = noteOpenHistoryRef.current.filter((id) => !closingNoteIds.includes(id))
+    const nextNote = nextVisibleSidebarNote(closingNoteIds)
+    setActiveEditorPanel(null)
+    setNoteHistoryOpen(false)
+    showNotice('')
+    if (nextNote) {
+      openNote(nextNote.id, { trackHistory: false })
+      return
+    }
+    setSelectedNoteId('')
+    setActiveView('home')
+  }, [nextVisibleSidebarNote, openNote, projectSectionIdForNote, showNotice])
 
   const persistNotesProject = useCallback(async (noteIds: string[], targetProjectId: string) => {
     const noteIdSet = new Set(noteIds)
@@ -1979,6 +2695,87 @@ function App() {
     [persistNotesProject],
   )
 
+  const isListBlockActive = () =>
+    Boolean(editorRef.current?.isActive('taskList') || editorRef.current?.isActive('bulletList') || editorRef.current?.isActive('orderedList'))
+
+  const insertParagraphAfterActiveList = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || !isListBlockActive()) return false
+    const { $from } = currentEditor.state.selection
+    if ($from.depth < 1) return false
+    const topLevelNode = $from.node(1)
+    if (!['taskList', 'bulletList', 'orderedList'].includes(topLevelNode.type.name)) return false
+    const insertAt = $from.before(1) + topLevelNode.nodeSize
+    const nextBlockIndex = activeBlockIndex() + 1
+    currentEditor
+      .chain()
+      .focus()
+      .insertContentAt(insertAt, { type: 'paragraph', content: [] })
+      .setTextSelection(insertAt + 1)
+      .run()
+    pendingEnterBlockIndexRef.current = nextBlockIndex
+    return true
+  }
+
+  const addListLineFromShortcut = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || !isListBlockActive()) return false
+    const insertListItemAfterSelection = (itemType: 'taskItem' | 'listItem') => {
+      const { state, view } = currentEditor
+      const { $from } = state.selection
+      const itemDepth = Array.from({ length: $from.depth + 1 }, (_, index) => $from.depth - index)
+        .find((depth) => $from.node(depth).type.name === itemType)
+      if (itemDepth === undefined) return false
+      const insertAt = $from.after(itemDepth)
+      const item = itemType === 'taskItem'
+        ? {
+            type: 'taskItem',
+            attrs: { checked: false },
+            content: [{ type: 'paragraph', content: [] }],
+          }
+        : {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [] }],
+          }
+      const node = currentEditor.schema.nodeFromJSON(item)
+      const tr = state.tr.insert(insertAt, node)
+      tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(insertAt + 2, tr.doc.content.size)), 1))
+      view.dispatch(tr.scrollIntoView())
+      return true
+    }
+
+    if (currentEditor.isActive('taskList')) {
+      if (currentEditor.chain().focus().splitListItem('taskItem').run()) return true
+      return insertListItemAfterSelection('taskItem')
+    }
+    if (currentEditor.chain().focus().splitListItem('listItem').run()) return true
+    return insertListItemAfterSelection('listItem')
+  }
+
+  const handleBackspaceAtBlockBoundary = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || currentEditor.isActive('table') || currentEditor.isActive('taskList') || currentEditor.isActive('bulletList') || currentEditor.isActive('orderedList')) return false
+    const { state, view } = currentEditor
+    const { selection } = state
+    if (!selection.empty || !(selection instanceof TextSelection)) return false
+    const { $from } = selection
+    if ($from.depth < 1 || $from.parentOffset !== 0) return false
+    const blockIndex = activeBlockIndex()
+    if (blockIndex <= 0) return false
+
+    pendingEnterBlockIndexRef.current = blockIndex - 1
+    const blockStart = $from.before(1)
+    const blockNode = $from.node(1)
+    const isEmptyTextBlock = blockNode.isTextblock && blockNode.textContent.length === 0
+    if (!isEmptyTextBlock) return false
+
+    const tr = state.tr.delete(blockStart, blockStart + blockNode.nodeSize)
+    const selectionPos = Math.max(1, blockStart - 1)
+    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(selectionPos, tr.doc.content.size)), -1))
+    view.dispatch(tr.scrollIntoView())
+    return true
+  }
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ link: false, dropcursor: false }),
@@ -1995,8 +2792,8 @@ function App() {
       TableRow,
       TableHeader,
       TableCell,
-      LociFlashcard,
       LociQuote,
+      LociLatex,
       AtomMark,
       AuthorshipMark,
       ActiveBlockHighlight,
@@ -2007,27 +2804,49 @@ function App() {
     editorProps: {
       attributes: { class: 'note-editor' },
       handleKeyDown: (_view, event) => {
-        if (event.key !== 'Enter') return false
-        if (event.shiftKey) {
+        if (event.key === 'Backspace' && handleBackspaceAtBlockBoundary()) {
           event.preventDefault()
           return true
         }
-        pendingEnterBlockIndexRef.current = activeBlockIndex()
+        if (event.key !== 'Enter') return false
+        if (event.shiftKey) {
+          if (!addListLineFromShortcut()) {
+            event.preventDefault()
+            return true
+          }
+          event.preventDefault()
+          return true
+        }
+        if (insertParagraphAfterActiveList()) {
+          event.preventDefault()
+          return true
+        }
         return false
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
       setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(updatedEditor.getText()))
       if (suppressEditorPersistRef.current) return
+      const activeIndex = activeBlockIndex(updatedEditor)
       const id = selectedNoteIdRef.current
       const note = notesRef.current.find((item) => item.id === id)
       if (!note) return
       const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
       const content = templateDataToContent(templateData)
-      const activeIndex = pendingEnterBlockIndexRef.current ?? activeBlockIndex()
+      const normalizedActiveIndex = pendingEnterBlockIndexRef.current ?? activeIndex
       pendingEnterBlockIndexRef.current = null
-      const blocks = normalizeBlocksForContent(content, note.blocks, activeIndex)
-      lastLocalEditorContentRef.current = { noteId: id, content }
+      const blocks = normalizeBlocksForContent(content, note.blocks, normalizedActiveIndex)
+      const contentKey = editorContentKey(content)
+      lastLocalEditorContentRef.current = { noteId: id, contentKey }
+      debugEditorLog('onUpdate', {
+        noteId: id,
+        activeIndex,
+        normalizedActiveIndex,
+        selection: debugEditorState(updatedEditor),
+        sourceBlockCount: content.content?.length ?? 0,
+        savedBlockCount: note.blocks?.length ?? 0,
+        normalizedBlockIds: blocks.map((block) => block.id),
+      })
       void persistNote({ templateData, content, blocks }, id)
     },
   }, [selectedNoteId])
@@ -2076,7 +2895,7 @@ function App() {
       }, 720))
     }
 
-    const els = Array.from(document.querySelectorAll('.scroll-hover'))
+    const els = Array.from(document.querySelectorAll('.scroll-hover, .scroll-region-stable'))
     els.forEach((el) => el.addEventListener('scroll', onScroll, { passive: true }))
 
     return () => {
@@ -2105,46 +2924,92 @@ function App() {
   useEffect(() => {
     if (!editor || !selectedNote) return
     const latestLocalContent = lastLocalEditorContentRef.current
-    if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.content === selectedNote.content) return
     const nextContent = primaryTemplateContent(selectedNote)
-    if (JSON.stringify(editor.getJSON()) !== JSON.stringify(nextContent)) setEditorContentFromSync(nextContent)
+    const nextContentKey = editorContentKey(nextContent)
+    if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.contentKey === nextContentKey) {
+      debugEditorLog('skip setContent', { reason: 'local-content-key-match', noteId: selectedNote.id })
+      return
+    }
+
+    const currentContentKey = editorContentKey(editor.getJSON())
+    if (currentContentKey === nextContentKey) {
+      debugEditorLog('skip setContent', { reason: 'editor-json-match', noteId: selectedNote.id })
+      return
+    }
+
+    if (editor.isFocused && latestLocalContent?.noteId === selectedNote.id) {
+      debugEditorLog('skip setContent', {
+        reason: 'focused-local-note',
+        noteId: selectedNote.id,
+        selection: debugEditorState(editor),
+      })
+      return
+    }
+
+    setEditorContentFromSync(nextContent, 'selected-note-sync')
   }, [editor, selectedNote])
+
+  function activeFormatBlock(): { block: LociBlock; index: number; from: number; to: number } | null {
+    if (!editor) return null
+    const selectionFrom = editor.state.selection.from
+    let runningPos = 1
+    const blocks = selectedBlocksRef.current
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
+      const blockSize = blockContentNodes(block.content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
+      const from = runningPos
+      const to = runningPos + blockSize
+      runningPos = to
+      if (!formatBlockTypeForBlock(block)) continue
+      if (selectionFrom >= from && selectionFrom <= to) return { block, index, from, to }
+    }
+    return null
+  }
 
   const syncFormatSideControls = useCallback(() => {
     const shell = blockEditorShellRef.current
     const editorDom = mountedEditorDom(editor)
-    const activeType: FormatBlockType | null = editor?.isActive('table') ? 'table' : editor?.isActive('lociQuote') ? 'quote' : editor?.isActive('image') ? 'image' : null
-    if (!shell || !editorDom || !activeType) {
+    if (!editor || !shell || !editorDom) {
       setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
       return
     }
+
     const activeElement = document.activeElement instanceof Element ? document.activeElement : null
-    const selectedNode = editor.view.nodeDOM(editor.state.selection.from)
-    const selectedElement = selectedNode instanceof Element ? selectedNode : selectedNode?.parentElement ?? null
-    const selectionNode = activeType === 'table'
-      ? editorDom.querySelector('.selectedCell')?.closest('table')
-      : activeType === 'image'
-        ? selectedElement?.closest('.note-editor .loci-image-frame')
-        : activeElement?.closest('.note-editor .loci-quote')
-    const target = selectionNode ?? (
-      activeType === 'table'
-        ? activeElement?.closest('.note-editor table')
-        : activeType === 'image'
-          ? selectedElement?.closest('.note-editor .loci-image-frame') ?? editorDom.querySelector('.loci-image-frame.ProseMirror-selectednode')
-          : editorDom.querySelector('.loci-quote')
-    )
+    const isInsideEditor = editor.isFocused || Boolean(activeElement && editorDom.contains(activeElement))
+    if (!isInsideEditor) {
+      setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
+      return
+    }
+
+    const active = activeFormatBlock()
+    const activeType = active ? formatBlockTypeForBlock(active.block) : null
+    if (!active || !activeType) {
+      setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
+      return
+    }
+
+    const nodeDom = editor.view.nodeDOM(active.from)
+    const nodeElement = nodeDom instanceof HTMLElement ? nodeDom : nodeDom instanceof Element ? nodeDom.parentElement : null
+    const target = activeType === 'table'
+      ? nodeElement?.closest<HTMLElement>('.tableWrapper') ?? nodeElement?.closest<HTMLElement>('table')
+      : nodeElement
     if (!(target instanceof HTMLElement)) {
       setFormatSideControls((current) => (current ? null : current))
+      setActiveFormatBlockId('')
       return
     }
     const shellRect = shell.getBoundingClientRect()
     const targetRect = target.getBoundingClientRect()
     const next = {
-      blockId: '',
+      blockId: active.block.id,
       type: activeType,
       top: targetRect.top - shellRect.top,
       left: Math.max(0, shellRect.width + 8),
     }
+    setActiveFormatBlockId(active.block.id)
     setFormatSideControls((current) =>
       current &&
       current.blockId === next.blockId &&
@@ -2221,12 +3086,7 @@ function App() {
   useEffect(() => {
     if (!activeEditorPanel) return
     const closeOnOutsidePointer = (event: MouseEvent) => {
-      if (activeEditorPanel === 'format') {
-        const dialog = formatDialogRef.current
-        if (!dialog || dialog.contains(event.target as Node)) return
-        setActiveEditorPanel(null)
-        return
-      }
+      if (activeEditorPanel === 'format' && formatDialogRef.current?.contains(event.target as Node)) return
       const wrap = floatingEditorWrapRef.current
       if (!wrap || wrap.contains(event.target as Node)) return
       setActiveEditorPanel(null)
@@ -2263,10 +3123,28 @@ function App() {
   useEffect(() => {
     if (activeEditorPanel !== 'format') return
     setFormatDialogQuery('')
-    queueMicrotask(() => {
-      formatDialogSearchRef.current?.focus()
-    })
   }, [activeEditorPanel])
+
+  const editorModalOverlayOpen =
+    activeView === 'editor' &&
+    (activeEditorPanel === 'format' || Boolean(atomDialog) || Boolean(aiResult))
+
+  useEffect(() => {
+    if (!editorModalOverlayOpen) return
+    const scrollEl = documentScrollRef.current
+    if (!scrollEl) return
+
+    const previousOverflow = scrollEl.style.overflow
+    const previousPaddingRight = scrollEl.style.paddingRight
+    const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth
+    scrollEl.style.overflow = 'hidden'
+    if (scrollbarWidth > 0) scrollEl.style.paddingRight = `${scrollbarWidth}px`
+
+    return () => {
+      scrollEl.style.overflow = previousOverflow
+      scrollEl.style.paddingRight = previousPaddingRight
+    }
+  }, [editorModalOverlayOpen])
 
   useEffect(() => {
     if (!atomProjectMenuOpen) return
@@ -2302,6 +3180,24 @@ function App() {
       document.removeEventListener('keydown', closeOnEscape)
     }
   }, [quizAnswerMenuOpen])
+
+  useEffect(() => {
+    if (!openSettingsDropdown) return
+    const closeOnOutsidePointer = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('.settings-dropdown')) return
+      setOpenSettingsDropdown('')
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenSettingsDropdown('')
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [openSettingsDropdown])
 
   useEffect(() => {
     if (!openProjectMenuId) return
@@ -2584,6 +3480,11 @@ function App() {
       maxActivity,
     }
   }, [atoms, dashboardNow, noteIndexes, notes, projectById, projects])
+  const profileStats = useMemo(
+    () => buildProfileStats({ notes, projects, atoms, flashcardSets, now: dashboardNow }),
+    [atoms, dashboardNow, flashcardSets, notes, projects],
+  )
+  const focusModeHours = userSettings.editorFocusModeTotalMs / 3_600_000
   const homeHeroCityMarginalia = dashboardStats.recentNote && EDITOR_CITY_MARGINALIA_COUNT > 0
     ? EDITOR_CITY_MARGINALIA[cityMarginaliaIndexForNote(dashboardStats.recentNote.id, EDITOR_CITY_MARGINALIA_COUNT)]
     : null
@@ -2600,6 +3501,13 @@ function App() {
   )
   const homeSubtagline = useMemo(() => getSubtagline(homeVisitCount), [homeVisitCount])
   const homeTip = useMemo(() => getTipByIndex(homeVisitCount), [homeVisitCount])
+  const profileMessageSeed = useMemo(() => {
+    const dayKey = dashboardNow.toISOString().slice(0, 10).replace(/\D/g, '')
+    return Number(dayKey) + homeVisitCount + profileStats.totalNotes * 3 + profileStats.totalAtoms * 5 + profileStats.dailyStreak * 7 + Math.floor(focusModeHours)
+  }, [dashboardNow, focusModeHours, homeVisitCount, profileStats.dailyStreak, profileStats.totalAtoms, profileStats.totalNotes])
+  const profileGreeting = useMemo(() => getProfileGreeting(firstName, profileStats), [firstName, profileStats])
+  const profileProgressMessage = useMemo(() => getProfileProgressMessage(profileStats, profileMessageSeed), [profileMessageSeed, profileStats])
+  const profileNextAction = useMemo(() => getProfileNextAction(profileStats), [profileStats])
   const recentHomeNotes = useMemo(() => notes.slice(0, 5), [notes])
 
   useEffect(() => {
@@ -2729,7 +3637,7 @@ function App() {
     await dialog.onSecondary()
   }, [appDialog])
 
-  const openProfileModal = () => {
+  const resetProfileDraftFromSaved = () => {
     const displayName = localProfile && !isBadProfileDisplayName(localProfile.displayName) ? localProfile.displayName : ''
     const existingHandle = accountProfile?.handle ?? ''
     setProfileDraft({
@@ -2739,12 +3647,24 @@ function App() {
       handleEdited: Boolean(existingHandle),
       avatarColor: localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR,
     })
-    setProfileModalOpen(true)
   }
+
+  useEffect(() => {
+    if (!profileLoaded || localProfile) return
+    setProfileDraft((current) => {
+      if (current.displayName || current.initials || current.handle || current.handleEdited) return current
+      return { ...current, avatarColor: current.avatarColor || DEFAULT_PROFILE_COLOR }
+    })
+  }, [localProfile, profileLoaded])
+
+  useEffect(() => {
+    userSettingsRef.current = userSettings
+  }, [userSettings])
 
   const saveLocalProfile = async () => {
     const displayName = profileDraft.displayName.trim()
     if (!displayName) return
+    const isFirstRunProfile = !localProfile
     const now = nowIso()
     const existingAccountProfile = await profileService.getProfile('local')
     const requestedHandle = normalizeUserHandle(profileDraft.handle || createBaseHandleFromDisplayName(displayName))
@@ -2774,13 +3694,112 @@ function App() {
       updatedAt: now,
       lastCheckedAt: now,
     }))
-    setProfileModalOpen(false)
+    if (isFirstRunProfile) {
+      beginLayoutTransition(420)
+      setAppImmersiveFullscreen(false)
+      setAppFullscreen(true)
+      setPostOnboardingReveal(true)
+      if (postOnboardingRevealTimeoutRef.current) clearTimeout(postOnboardingRevealTimeoutRef.current)
+      postOnboardingRevealTimeoutRef.current = setTimeout(() => {
+        postOnboardingRevealTimeoutRef.current = null
+        setPostOnboardingReveal(false)
+      }, 900)
+    }
+    if (!settingsModalOpen) setProfileModalOpen(false)
   }
 
   const saveUserSettings = async (next: UserSettings) => {
     const normalized = normalizeUserSettings({ ...next, updatedAt: nowIso() })
     await settingsStore.save(normalized)
     setUserSettings(normalized)
+  }
+
+  const dismissSurveyPrompt = async () => {
+    if (!activeSurveyPrompt || !authSession.accountId) return
+    await surveyService.dismissPrompt(authSession.accountId, activeSurveyPrompt.id)
+    setActiveSurveyPrompt(null)
+    setSurveyAnswer('')
+    setSurveyComment('')
+    showNotification({ message: 'Survey prompt dismissed.', tone: 'info' })
+  }
+
+  const submitSurveyPrompt = async () => {
+    if (!activeSurveyPrompt || !authSession.accountId || surveySubmitting) return
+    setSurveySubmitting(true)
+    try {
+      await surveyService.submitResponse({
+        prompt: activeSurveyPrompt,
+        accountId: authSession.accountId,
+        answer: surveyAnswer,
+        comment: surveyComment,
+      })
+      setActiveSurveyPrompt(null)
+      setSurveyAnswer('')
+      setSurveyComment('')
+      showNotification({ message: 'Thanks for the input.', tone: 'success' })
+    } catch (error) {
+      showNotification({
+        message: error instanceof Error ? error.message : 'Could not submit survey response.',
+        tone: 'error',
+      })
+    } finally {
+      setSurveySubmitting(false)
+    }
+  }
+
+  const recordFocusModeSession = useCallback((durationMs: number) => {
+    const safeDuration = Math.max(0, Math.round(durationMs))
+    if (safeDuration < 1000) return
+    const current = userSettingsRef.current
+    const next = normalizeUserSettings({
+      ...current,
+      editorFocusModeTotalMs: current.editorFocusModeTotalMs + safeDuration,
+      updatedAt: nowIso(),
+    })
+    void settingsStore.save(next)
+    setUserSettings(next)
+  }, [])
+
+  const runProfileNextAction = () => {
+    setProfileModalOpen(false)
+    if (profileNextAction.kind === 'newNote') {
+      openTemplateChooser()
+      return
+    }
+    if (profileNextAction.kind === 'continueNote') {
+      openNote(profileNextAction.noteId)
+      return
+    }
+    if (profileNextAction.kind === 'openAtoms') {
+      setActiveView('atoms')
+      setAtomSubView('atoms')
+      return
+    }
+    setSelectedProjectId('')
+    setActiveView('projects')
+  }
+
+  const toggleEditorAtomUnderlines = () => {
+    setAtomUnderlinesVisible((visible) => !visible)
+  }
+
+  const toggleEditorFocusMode = () => {
+    setEditorFocusMode((enabled) => !enabled)
+  }
+
+  const toggleEditorAuthenticWriterMode = () => {
+    setEditorAuthenticWriterMode((enabled) => !enabled)
+  }
+
+  const updateEditorDefault = (patch: Pick<Partial<UserSettings>, 'editorAtomUnderlinesDefault' | 'editorFocusModeDefault' | 'editorAuthenticWriterDefault' | 'editorShowMarginalia'>) => {
+    updateUserSettings(patch)
+    if (typeof patch.editorAtomUnderlinesDefault === 'boolean') setAtomUnderlinesVisible(patch.editorAtomUnderlinesDefault)
+    if (typeof patch.editorFocusModeDefault === 'boolean') {
+      setEditorFocusMode(patch.editorFocusModeDefault)
+      setEditorFocusModeVisual(patch.editorFocusModeDefault)
+    }
+    if (typeof patch.editorAuthenticWriterDefault === 'boolean') setEditorAuthenticWriterMode(patch.editorAuthenticWriterDefault)
+    if (typeof patch.editorShowMarginalia === 'boolean') setEditorCityMarginaliaOpacity(patch.editorShowMarginalia ? 1 : 0)
   }
 
   const searchCommunityUsers = async () => {
@@ -2886,7 +3905,7 @@ function App() {
       showNotice('Choose a friend or group before sending a note.')
       return
     }
-    const options = { ownerAccountId: authSession.accountId, permission }
+    const options = { ownerAccountId: authSession.accountId, permission, note: noteToShare }
     const share = selectedCommunityFriend
       ? await sharingService.sendNoteToFriend(noteToShare.id, selectedCommunityFriend, options)
       : await sharingService.sendNoteToGroup(noteToShare.id, selectedCommunityGroup as FriendGroup, options)
@@ -2921,7 +3940,7 @@ function App() {
       showNotice('Choose a friend or group before starting edit-together.')
       return
     }
-    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const }
+    const options = { ownerAccountId: authSession.accountId, permission: 'edit' as const, note }
     const share = selectedCommunityFriend
       ? await sharingService.sendNoteToFriend(note.id, selectedCommunityFriend, options)
       : await sharingService.sendNoteToGroup(note.id, selectedCommunityGroup as FriendGroup, options)
@@ -2931,6 +3950,7 @@ function App() {
       ownerAccountId: authSession.accountId,
       title: note.title || 'Untitled collaboration',
     })
+    const shareWithSession = await sharingService.attachCollaborationSession(share.id, session.id) ?? share
     await communityActivityService.create({
       recipientKind: selectedCommunityFriend ? 'friend' : 'group',
       recipientId: selectedCommunityFriend?.id ?? (selectedCommunityGroup as FriendGroup).id,
@@ -2944,7 +3964,7 @@ function App() {
         title: session.title,
       },
     })
-    setSharedNoteExports((current) => [{ ...share, collaborationSessionId: session.id }, ...current])
+    setSharedNoteExports((current) => [shareWithSession, ...current])
     showNotice('Edit-together foundation created for this note.')
   }
 
@@ -3088,29 +4108,37 @@ function App() {
       taskInstruction,
       userContent,
       promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+      temperature: userSettings.aiTemperature,
+      maxTokens: userSettings.aiMaxTokens,
       signal,
     })
   }
 
   const buildAIContext = (taskType: AITaskType, selection?: EditorRange) => {
     const appParts = [`Current view: ${activeView}`]
-    if (selectedNote) appParts.push(`Note title: ${selectedNote.title}`)
+    if (selectedNote && userSettings.aiIncludeNoteTitle) appParts.push(`Note title: ${selectedNote.title}`)
     if (selectedProject) appParts.push(`Project: ${selectedProject.name}`)
     if (selectedNote) appParts.push(`Template: ${selectedNote.templateId}`)
-    const parts: string[] = [`App context:\n${appParts.join('\n')}`]
+    const items: AIContextDraftItem[] = [{
+      id: 'app',
+      label: 'App context',
+      sensitivity: 'low',
+      enabledByPolicy: true,
+      content: `App context:\n${appParts.join('\n')}`,
+    }]
     const projectMemory = parseProjectMemory(selectedProject?.description ?? '')
     if (projectMemory.summary.trim()) {
-      parts.push(`Project summary:\n${projectMemory.summary.trim()}`)
+      items.push({ id: 'project-summary', label: 'Project summary', sensitivity: 'medium', enabledByPolicy: true, content: `Project summary:\n${projectMemory.summary.trim()}` })
     }
     if (projectMemory.instructions.trim()) {
-      parts.push(`Project instructions:\n${projectMemory.instructions.trim()}`)
+      items.push({ id: 'project-instructions', label: 'Project instructions', sensitivity: 'medium', enabledByPolicy: true, content: `Project instructions:\n${projectMemory.instructions.trim()}` })
     }
     if (taskUsesWritingStyle(taskType) && projectMemory.writingStyle.trim()) {
-      parts.push(`Project writing style:\n${projectMemory.writingStyle.trim()}`)
+      items.push({ id: 'project-writing-style', label: 'Project writing style', sensitivity: 'medium', enabledByPolicy: true, content: `Project writing style:\n${projectMemory.writingStyle.trim()}` })
     }
     if (taskType === 'mark_writing') {
       const criteria = projectMemory.markingCriteria.trim() || aiMarkingCriteria.trim() || DEFAULT_MARKING_CRITERIA
-      parts.push(`${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}`)
+      items.push({ id: 'marking-criteria', label: 'Marking criteria', sensitivity: 'medium', enabledByPolicy: true, content: `${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}` })
     }
     if (selectedProject) {
       const styleSamples = notes
@@ -3120,40 +4148,54 @@ function App() {
         .map((note) => `${note.title}: ${collectNotePreviewLines(note.content, 3).join(' ') || collectText(note.content).slice(0, 260)}`)
         .filter((sample) => sample.trim().length > 0)
       if (styleSamples.length) {
-        parts.push(`Writing style signals from this project:\n${styleSamples.join('\n')}`)
+        items.push({ id: 'style-samples', label: 'Writing style samples', sensitivity: 'high', enabledByPolicy: taskUsesWritingStyle(taskType), content: `Writing style signals from this project:\n${styleSamples.join('\n')}` })
       }
     }
     if (editor) {
       const { from, to } = selection ?? editor.state.selection
       const selectedText = selection ? editor.state.doc.textBetween(from, to, ' ').trim() : ''
-      if (selectedText) parts.push(`Selected text:\n${selectedText}`)
+      if (selectedText) items.push({ id: 'selected-text', label: 'Selected text', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeSelectedText, content: `Selected text:\n${selectedText}` })
       const nearbyStart = Math.max(0, from - 900)
       const nearbyEnd = Math.min(editor.state.doc.content.size, to + 900)
       const nearby = editor.state.doc.textBetween(nearbyStart, nearbyEnd, '\n').trim()
-      if (nearby && nearby !== selectedText) parts.push(`Nearby editor context:\n${nearby}`)
+      if (nearby && nearby !== selectedText) items.push({ id: 'nearby-context', label: 'Nearby editor context', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `Nearby editor context:\n${nearby}` })
     }
     if (selectedNote) {
       const outline = collectNotePreviewLines(selectedNote.content, 8).join('\n')
-      if (outline) parts.push(`Compact note outline:\n${outline}`)
+      if (outline) items.push({ id: 'note-outline', label: 'Compact note outline', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `Compact note outline:\n${outline}` })
       const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' || taskType === 'ai_atomise' || taskType === 'mark_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
       const excerpt = collectText(selectedNote.content).slice(0, excerptLimit)
-      if (excerpt) parts.push(`${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}`)
+      if (excerpt) items.push({ id: 'note-excerpt', label: 'Note excerpt', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}` })
     }
-    const highlighted = selection ? highlightedFormatBlock(selection) : null
-    if (highlighted?.block.type === 'table') {
+    const activeRange = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
+    const highlighted = activeRange ? highlightedFormatBlock(activeRange) : null
+    const highlightedType = highlighted ? formatBlockTypeForBlock(highlighted.block) : null
+    if (highlighted && highlightedType === 'table') {
       const tableNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'table')
       if (tableNode) {
         const table = tableDataFromNode(tableNode)
-        parts.push(`Highlighted table block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, columns: table.columns, rows: table.rows })}`)
+        items.push({ id: 'highlighted-table', label: 'Highlighted table block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted table block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, columns: table.columns, rows: table.rows })}` })
       }
     }
-    if (highlighted?.block.type === 'quote') {
+    if (highlighted && highlightedType === 'quote') {
       const quoteNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociQuote' || node.type === 'blockquote')
       if (quoteNode) {
-        parts.push(`Highlighted quote block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...quoteDataFromNode(quoteNode) })}`)
+        items.push({ id: 'highlighted-quote', label: 'Highlighted quote block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted quote block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...quoteDataFromNode(quoteNode) })}` })
       }
     }
-    return parts.join('\n\n')
+    if (highlighted && (highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList')) {
+      const listNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'taskList' || node.type === 'bulletList' || node.type === 'orderedList')
+      if (listNode) items.push({ id: 'highlighted-list', label: 'Highlighted list block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted list block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, ...listDataFromNode(listNode) })}` })
+    }
+    if (highlighted && highlightedType === 'code') {
+      const codeNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'codeBlock')
+      if (codeNode) items.push({ id: 'highlighted-code', label: 'Highlighted code block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted code block:\n${codeDataFromNode(codeNode)}` })
+    }
+    if (highlighted && highlightedType === 'latex') {
+      const latexNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociLatex')
+      if (latexNode) items.push({ id: 'highlighted-latex', label: 'Highlighted LaTeX block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted LaTeX block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, latex: latexDataFromNode(latexNode) })}` })
+    }
+    return buildAIContextFromPolicy(items, 'directByok')
   }
 
   const requestAICompletion = async (prompt: string, command: AICommandId = activeAICommand) => {
@@ -3182,7 +4224,8 @@ function App() {
         : undefined
     const actionConfig = aiActionConfig(taskType, !!selection)
     const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Marking criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
-    const context = buildAIContext(taskType, selection)
+    const aiContext = buildAIContext(taskType, selection)
+    const context = aiContext.text
     const userContent = `${context ? `Context:\n${context}\n\n` : ''}User request:\n${prompt.trim()}`
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
     const controller = new AbortController()
@@ -3197,25 +4240,48 @@ function App() {
         taskInstruction,
         userContent,
         promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+        temperature: userSettings.aiTemperature,
+        maxTokens: userSettings.aiMaxTokens,
+        contextManifest: aiContext.manifest,
         signal: controller.signal,
       })
       const { responseText, usage } = result
       const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
-      const highlighted = selection ? highlightedFormatBlock(selection) : null
+      const activeRange = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
+      const highlighted = activeRange ? highlightedFormatBlock(activeRange) : null
+      const highlightedType = highlighted ? formatBlockTypeForBlock(highlighted.block) : null
       const blockPayload: AIBlockPayload | undefined =
         taskType === 'table_block'
           ? {
               kind: 'table',
               data: parseAITablePayload(responseText),
-              targetBlockId: highlighted?.block.type === 'table' ? highlighted.block.id : undefined,
+              targetBlockId: highlightedType === 'table' ? highlighted?.block.id : undefined,
             }
           : taskType === 'quote_block'
             ? {
                 kind: 'quote',
                 data: parseAIQuotePayload(responseText),
-                targetBlockId: highlighted?.block.type === 'quote' ? highlighted.block.id : undefined,
+                targetBlockId: highlightedType === 'quote' ? highlighted?.block.id : undefined,
               }
-            : undefined
+            : taskType === 'list_block'
+              ? {
+                  kind: 'list',
+                  data: parseAIListPayload(responseText),
+                  targetBlockId: highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList' ? highlighted?.block.id : undefined,
+                }
+              : taskType === 'code_block'
+                ? {
+                    kind: 'code',
+                    data: parseAICodePayload(responseText),
+                    targetBlockId: highlightedType === 'code' ? highlighted?.block.id : undefined,
+                  }
+                : taskType === 'latex_block'
+                  ? {
+                      kind: 'latex',
+                      data: parseAILatexPayload(responseText),
+                      targetBlockId: highlightedType === 'latex' ? highlighted?.block.id : undefined,
+                    }
+                  : undefined
       setAiResult({
         prompt,
         taskType,
@@ -3452,6 +4518,32 @@ function App() {
         aiPromptInputRef.current?.blur()
         return
       }
+      const isEditorCloseShortcut =
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        activeView === 'editor' &&
+        Boolean(selectedNoteIdRef.current) &&
+        !appDialog &&
+        !atomDialog &&
+        !noteHistoryOpen &&
+        !profileModalOpen &&
+        !searchOpen &&
+        !settingsModalOpen &&
+        !templateProjectId
+      if (isEditorCloseShortcut && event.key.toLowerCase() === 'w' && !event.repeat) {
+        event.preventDefault()
+        closeSidebarNote(selectedNoteIdRef.current)
+        return
+      }
+      if (isEditorCloseShortcut && event.key.toLowerCase() === 'q' && !event.repeat) {
+        const currentNote = notesRef.current.find((note) => note.id === selectedNoteIdRef.current)
+        if (currentNote) {
+          event.preventDefault()
+          closeSidebarProject(projectSectionIdForNote(currentNote))
+        }
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         if (atomDialog) return
@@ -3468,7 +4560,7 @@ function App() {
     }
     document.addEventListener('keydown', onDocKeyDown)
     return () => document.removeEventListener('keydown', onDocKeyDown)
-  }, [activeEditorPanel, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, searchOpen, switchToPreviousOpenedNote, templateProjectId])
+  }, [activeEditorPanel, activeView, aiPromptFocused, appDialog, atomDialog, clearAIContextRange, closeAppDialog, closeSearch, closeSidebarNote, closeSidebarProject, imageCropEditing, localProfile, noteHistoryOpen, profileModalOpen, projectSectionIdForNote, searchOpen, settingsModalOpen, switchToPreviousOpenedNote, templateProjectId])
 
   
   useEffect(() => {
@@ -3543,14 +4635,19 @@ function App() {
           const rows = await loadNoteSnapshots(id)
           setNoteSnapshots(rows)
           setNoteHistoryOpen(false)
+          showNotification({ message: 'Note restored from history.', tone: 'success' })
         },
       })
     },
-    [editor, persistNote],
+    [editor, persistNote, showNotification],
   )
 
   const openTemplateChooser = (projectOverrideId?: string) => {
     setActiveEditorPanel(null)
+    if (!RELEASE_TEMPLATE_CHOOSER_ENABLED) {
+      void createNoteFromTemplate('blank', projectOverrideId)
+      return
+    }
     setTemplateProjectId(projectOverrideId || UNASSIGNED_PROJECT_ID)
   }
 
@@ -3587,6 +4684,7 @@ function App() {
     openNote(note.id)
     setSelectedNoteIds([])
     setSelectedProjectId(projectId === UNASSIGNED_PROJECT_ID ? '' : projectId)
+    showNotification({ message: 'New note created.', tone: 'success' })
   }
 
   const persistTemplateData = (templateData: NoteTemplateData) => {
@@ -3596,14 +4694,22 @@ function App() {
   const persistBlocks = (blocks: LociBlock[]) => {
     if (!selectedNote) return
     const content = contentFromBlocks(blocks)
-    lastLocalEditorContentRef.current = { noteId: selectedNote.id, content }
+    lastLocalEditorContentRef.current = { noteId: selectedNote.id, contentKey: editorContentKey(content) }
     const templateData = updatePrimaryTemplateContent(selectedNote, content)
     void persistNote({ blocks, templateData, content: templateDataToContent(templateData) })
     if (editor) {
+      const before = debugEditorState(editor)
       preserveEditorScroll(() => {
         suppressEditorPersistRef.current = true
         editor.commands.setContent(content, { emitUpdate: false })
         suppressEditorPersistRef.current = false
+      })
+      debugEditorLog('setContent', {
+        reason: 'persist-blocks',
+        before,
+        after: debugEditorState(editor),
+        contentBlocks: content.content?.length ?? 0,
+        noteId: selectedNote.id,
       })
     }
   }
@@ -3635,7 +4741,9 @@ function App() {
       runningPos = blockTo
       const formatType = formatBlockTypeForBlock(block)
       if (!formatType) continue
-      const touchesBlock = range.from < blockTo && range.to > blockFrom
+      const touchesBlock = range.from === range.to
+        ? range.from >= blockFrom && range.from <= blockTo
+        : range.from < blockTo && range.to > blockFrom
       if (touchesBlock) return { block, index }
     }
     return null
@@ -3656,57 +4764,46 @@ function App() {
     setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
   }, [measureGutterBlockControls])
 
-  const updateFloatingToolbarPosition = useCallback(() => {
-    const wrap = floatingEditorWrapRef.current
-    if (!wrap) return
-    if (activeView !== 'editor') {
-      wrap.style.removeProperty('--floating-toolbar-center-x')
-      wrap.style.removeProperty('--floating-toolbar-max-width')
-      return
-    }
-
-    const noteCard = document.querySelector<HTMLElement>('.document-card')
-    if (!noteCard) return
-
-    const rect = noteCard.getBoundingClientRect()
-    const viewportPadding = window.matchMedia('(max-width: 760px)').matches ? 14 : 24
-    const centerX = rect.left + rect.width / 2
-    const clampedCenterX = Math.min(window.innerWidth - viewportPadding, Math.max(viewportPadding, centerX))
-    const maxWidth = Math.max(
-      260,
-      Math.min(
-        940,
-        rect.width - 24,
-        window.innerWidth - viewportPadding * 2,
-      ),
-    )
-
-    wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
-    wrap.style.setProperty('--floating-toolbar-max-width', `${maxWidth}px`)
-  }, [activeView])
-
-  const scheduleFloatingToolbarPosition = useCallback(() => {
-    if (floatingToolbarFrameRef.current) return
-    floatingToolbarFrameRef.current = requestAnimationFrame(() => {
-      floatingToolbarFrameRef.current = null
-      updateFloatingToolbarPosition()
-    })
-  }, [updateFloatingToolbarPosition])
-
-  const queueFloatingToolbarRemeasure = useCallback((delayMs = 0) => {
-    scheduleFloatingToolbarPosition()
-    if (floatingToolbarDeferredMeasureRef.current) clearTimeout(floatingToolbarDeferredMeasureRef.current)
-    floatingToolbarDeferredMeasureRef.current = setTimeout(() => {
-      floatingToolbarDeferredMeasureRef.current = null
-      scheduleFloatingToolbarPosition()
-    }, delayMs)
-  }, [scheduleFloatingToolbarPosition])
+  const {
+    queueFloatingToolbarRemeasure,
+    scheduleFloatingToolbarPosition,
+    updateFloatingToolbarPosition,
+  } = useFloatingEditorToolbarLayout({
+    activeView,
+    appFullscreen,
+    appImmersiveFullscreen,
+    appShellRef,
+    fullscreenExitStaging,
+    selectedNoteId,
+    sidebarRevealAnimating,
+    toolbarRef: floatingEditorWrapRef,
+  })
 
   const { markActiveEditorBlock } = useFocusModePlugin({
     editor,
     isFocusMode: editorFocusMode && activeView === 'editor',
     scrollContainerRef: documentScrollRef,
   })
+
+  useEffect(() => {
+    const isTracking = editorFocusMode && activeView === 'editor'
+    if (isTracking && editorFocusModeStartedAtRef.current === null) {
+      editorFocusModeStartedAtRef.current = Date.now()
+      return
+    }
+    if (!isTracking && editorFocusModeStartedAtRef.current !== null) {
+      const startedAt = editorFocusModeStartedAtRef.current
+      editorFocusModeStartedAtRef.current = null
+      recordFocusModeSession(Date.now() - startedAt)
+    }
+  }, [activeView, editorFocusMode, recordFocusModeSession])
+
+  useEffect(() => () => {
+    if (editorFocusModeStartedAtRef.current === null) return
+    const startedAt = editorFocusModeStartedAtRef.current
+    editorFocusModeStartedAtRef.current = null
+    recordFocusModeSession(Date.now() - startedAt)
+  }, [recordFocusModeSession])
 
   useEffect(() => {
     if (editorFocusModeVisualTimerRef.current) {
@@ -3829,7 +4926,6 @@ function App() {
     window.addEventListener('resize', scheduleEditorResizeMeasurements)
     documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
     documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
-    documentScrollRef.current?.addEventListener('scroll', scheduleFloatingToolbarPosition)
     return () => {
       editor.off('selectionUpdate', scheduleFormatSideControls)
       editor.off('selectionUpdate', markActiveEditorBlock)
@@ -3839,13 +4935,12 @@ function App() {
       window.removeEventListener('resize', scheduleEditorResizeMeasurements)
       documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
       documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
-      documentScrollRef.current?.removeEventListener('scroll', scheduleFloatingToolbarPosition)
       if (editorResizeFrameRef.current) {
         cancelAnimationFrame(editorResizeFrameRef.current)
         editorResizeFrameRef.current = null
       }
     }
-  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFloatingToolbarPosition, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
 
   useEffect(() => {
     markActiveEditorBlock()
@@ -3853,41 +4948,12 @@ function App() {
     queueFloatingToolbarRemeasure(180)
   }, [editorFocusMode, markActiveEditorBlock, queueFloatingToolbarRemeasure, scheduleEditorResizeMeasurements])
 
-  useEffect(() => {
-    queueFloatingToolbarRemeasure(220)
-  }, [activeView, appFullscreen, appImmersiveFullscreen, queueFloatingToolbarRemeasure, selectedNoteId, sidebarRevealAnimating])
-
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
     const newBlock = createLociBlock(blankBlockNode(type), type)
     const nextBlocks = insertBlockRelative(selectedBlocks, blockId, newBlock, placement)
     persistBlocks(nextBlocks)
     setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
-  }
-
-  const insertFlashcardAfterActive = () => {
-    if (!selectedNote || !selectedBlocksRef.current.length) return
-    const now = nowIso()
-    const atom: Atom = {
-      id: createId('atom'),
-      projectId: selectedNote.projectId,
-      phrase: 'Question',
-      definition: 'Answer',
-      tags: ['Flashcard'],
-      createdAt: now,
-      updatedAt: now,
-      reviewCount: 0,
-      knownCount: 0,
-    }
-    const insertIndex = activeBlockIndex() + 1
-    const block = createLociBlock(flashcardBlockDoc(atom.id), 'flashcard')
-    block.attrs = { atomId: atom.id }
-    const targetBlockId = selectedBlocksRef.current[Math.max(0, insertIndex - 1)]?.id ?? ''
-    const nextBlocks = targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
-    void atomsStore.save(atom)
-    setAtoms((current) => [atom, ...current])
-    persistBlocks(nextBlocks)
-    showNotice('Flashcard block added and linked as an atom.')
   }
 
   const insertImageAfterActive = (src: string) => {
@@ -3910,16 +4976,40 @@ function App() {
 
   const applyAIBlockPayload = (payload: AIBlockPayload) => {
     if (!selectedBlocksRef.current.length) return
-    const content = payload.kind === 'table'
-      ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
-      : quoteBlockDocFromData(payload.data.quote, payload.data.author)
-    const type: LociBlockType = payload.kind === 'table' ? 'table' : 'quote'
+    const previousBlocks = selectedBlocks
+    const content =
+      payload.kind === 'table'
+        ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
+        : payload.kind === 'quote'
+          ? quoteBlockDocFromData(payload.data.quote, payload.data.author)
+          : payload.kind === 'list'
+            ? listBlockDocFromData(payload.data.listType, payload.data.items)
+            : payload.kind === 'code'
+              ? codeBlockDocFromData(payload.data.code)
+              : latexBlockDoc(payload.data.latex)
+    const type: LociBlockType =
+      payload.kind === 'table'
+        ? 'table'
+        : payload.kind === 'quote'
+          ? 'quote'
+          : payload.kind === 'list'
+            ? payload.data.listType
+            : payload.kind === 'code'
+              ? 'code'
+              : 'latex'
     const flatBlocks = selectedBlocksRef.current
     const targetIndex = payload.targetBlockId ? flatBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
     const targetBlock = targetIndex >= 0 ? flatBlocks[targetIndex] : null
-    const nextBlocks = targetBlock?.type === type
+    const targetFormatType = targetBlock ? formatBlockTypeForBlock(targetBlock) : null
+    const canUpdateTarget = targetBlock && (
+      targetBlock.type === type ||
+      targetFormatType === type ||
+      (payload.kind === 'list' && (targetFormatType === 'checklist' || targetFormatType === 'bulletList' || targetFormatType === 'numberedList'))
+    )
+    const nextBlocks = canUpdateTarget && targetBlock
       ? updateBlockById(selectedBlocks, targetBlock.id, (block) => ({
         ...block,
+        type,
         content,
         updatedAt: nowIso(),
       }))
@@ -3930,29 +5020,88 @@ function App() {
           return targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
         })()
     persistBlocks(nextBlocks)
+    showNotification({
+      message: 'AI block inserted.',
+      tone: 'success',
+      actions: [{
+        label: 'Undo',
+        intent: 'primary',
+        onClick: () => {
+          persistBlocks(previousBlocks)
+          showNotification({ message: 'AI block undone.', tone: 'success' })
+        },
+      }],
+    })
   }
 
-  const activeBlockIndex = () => {
-    const blocks = selectedBlocksRef.current
-    if (!editor) return Math.max(0, blocks.length - 1)
-    const selectionFrom = editor.state.selection.from
-    let runningPos = 1
-    for (let index = 0; index < blocks.length; index += 1) {
-      const blockSize = blockContentNodes(blocks[index].content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
-      if (selectionFrom <= runningPos + blockSize) return index
-      runningPos += blockSize
-    }
-    return Math.max(0, blocks.length - 1)
+  const activeBlockIndex = (currentEditor = editor) => {
+    const fallbackIndex = Math.max(0, selectedBlocksRef.current.length - 1)
+    if (!currentEditor || currentEditor.isDestroyed) return fallbackIndex
+    const index = currentEditor.state.selection.$from.index(0)
+    return Math.max(0, Math.min(Math.max(0, currentEditor.state.doc.childCount - 1), index))
   }
 
-  const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn') => {
+  const runTableCommand = (command: 'addRow' | 'removeRow' | 'addColumn' | 'removeColumn' | 'toggleHeader' | 'alignLeft' | 'alignCenter' | 'alignRight' | 'resetSize' | 'mergeCells' | 'splitCell') => {
     if (!editor) return
     const chain = editor.chain().focus()
     if (command === 'addRow') chain.addRowAfter().run()
     if (command === 'removeRow') chain.deleteRow().run()
     if (command === 'addColumn') chain.addColumnAfter().run()
     if (command === 'removeColumn') chain.deleteColumn().run()
+    if (command === 'toggleHeader') chain.toggleHeaderRow().run()
+    if (command === 'alignLeft') chain.setCellAttribute('align', 'left').run()
+    if (command === 'alignCenter') chain.setCellAttribute('align', 'center').run()
+    if (command === 'alignRight') chain.setCellAttribute('align', 'right').run()
+    if (command === 'resetSize') chain.setCellAttribute('colwidth', null).run()
+    if (command === 'mergeCells') chain.mergeCells().run()
+    if (command === 'splitCell') chain.splitCell().run()
     requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const addLineToActiveList = () => {
+    if (!addListLineFromShortcut()) showNotice('Click inside a list first.')
+    requestAnimationFrame(syncFormatSideControls)
+  }
+
+  const copyActiveCodeBlock = () => {
+    if (!editor) return
+    const { $from } = editor.state.selection
+    for (let depth = $from.depth; depth >= 0; depth -= 1) {
+      const node = $from.node(depth)
+      if (node.type.name === 'codeBlock') {
+        void copyToClipboard(node.textContent)
+        showNotice('Code copied.')
+        return
+      }
+    }
+  }
+
+  const activeLatexSource = () => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex')
+    if (activeLatex?.dataset.latex !== undefined) return activeLatex.dataset.latex
+    if (!editor) return ''
+    const { $from } = editor.state.selection
+    for (let depth = $from.depth; depth >= 0; depth -= 1) {
+      const node = $from.node(depth)
+      if (node.type.name === 'lociLatex') return String(node.attrs.latex ?? '')
+    }
+    return ''
+  }
+
+  const copyActiveLatex = () => {
+    const source = activeLatexSource()
+    if (!source) return
+    void copyToClipboard(source)
+    showNotice('Equation copied.')
+  }
+
+  const toggleActiveLatexEditor = () => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex') ?? document.querySelector<HTMLElement>('.loci-latex.ProseMirror-selectednode')
+    if (!activeLatex) return
+    activeLatex.classList.toggle('is-editing')
+    if (activeLatex.classList.contains('is-editing')) activeLatex.querySelector<HTMLTextAreaElement>('.loci-latex-source')?.focus()
   }
 
   const updateImageAttributes = (attrs: Partial<{
@@ -4093,49 +5242,33 @@ function App() {
   const renderFormatSideControls = () => {
     if (!editor || !formatSideControls) return null
     return (
-      <div className="format-side-controls" style={{ top: formatSideControls.top, left: formatSideControls.left }} onMouseDown={(event) => event.preventDefault()}>
-        {formatSideControls.type === 'table' && (
-          <>
-            <button type="button" aria-label="Add table row" onClick={() => runTableCommand('addRow')}><span aria-hidden>R+</span></button>
-            <button type="button" aria-label="Remove table row" onClick={() => runTableCommand('removeRow')}><span aria-hidden>R-</span></button>
-            <button type="button" aria-label="Add table column" onClick={() => runTableCommand('addColumn')}><span aria-hidden>C+</span></button>
-            <button type="button" aria-label="Remove table column" onClick={() => runTableCommand('removeColumn')}><span aria-hidden>C-</span></button>
-          </>
-        )}
-        {formatSideControls.type === 'quote' && (
-          <button type="button" aria-label="Toggle quote author" onClick={toggleQuoteAuthor}><span aria-hidden>Au</span></button>
-        )}
-        {formatSideControls.type === 'image' && (
-          <>
-            <button type="button" aria-label="Fit image to page width" onClick={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}><span aria-hidden>Fit</span></button>
-            <button
-              type="button"
-              aria-label={imageCropEditing ? 'Finish cropping image' : 'Crop image'}
-              onClick={() => {
-                if (imageCropEditing) {
-                  setImageCropEditing(false)
-                  return
-                }
-                const attrs = currentImageAttrs()
-                updateImageAttributes({ cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect, zoom: Math.max(120, attrs.zoom) })
-                setImageCropEditing(true)
-              }}
-            >
-              <span aria-hidden>{imageCropEditing ? 'Done' : 'Crop'}</span>
-            </button>
-            <button className="format-side-control-wide" type="button" aria-label="Cycle crop aspect ratio" onClick={cycleImageAspect}><span aria-hidden>Aspect Ratio</span></button>
-            {imageCropEditing && (
-              <>
-                <button type="button" aria-label="Zoom crop out" onClick={() => zoomImage(-10)}><span aria-hidden>Z-</span></button>
-                <button type="button" aria-label="Zoom crop in" onClick={() => zoomImage(10)}><span aria-hidden>Z+</span></button>
-              </>
-            )}
-            <button type="button" aria-label="Align image left" onClick={() => updateImageAttributes({ align: 'left' })}><span aria-hidden>L</span></button>
-            <button type="button" aria-label="Align image center" onClick={() => updateImageAttributes({ align: 'center' })}><span aria-hidden>C</span></button>
-            <button type="button" aria-label="Align image right" onClick={() => updateImageAttributes({ align: 'right' })}><span aria-hidden>R</span></button>
-          </>
-        )}
-      </div>
+      <FormatSideControls
+        key={activeFormatBlockId || formatSideControls.blockId}
+        type={formatSideControls.type}
+        top={formatSideControls.top}
+        left={formatSideControls.left}
+        imageCropEditing={imageCropEditing}
+        onTableCommand={runTableCommand}
+        onAddListLine={addLineToActiveList}
+        onCopyCode={copyActiveCodeBlock}
+        onEditLatex={toggleActiveLatexEditor}
+        onCopyLatex={copyActiveLatex}
+        onToggleQuoteAuthor={toggleQuoteAuthor}
+        onFitImage={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}
+        onToggleCrop={() => {
+          if (imageCropEditing) {
+            setImageCropEditing(false)
+            return
+          }
+          const attrs = currentImageAttrs()
+          updateImageAttributes({ cropMode: 'cover', aspect: attrs.aspect === 'auto' ? 'wide' : attrs.aspect, zoom: Math.max(120, attrs.zoom) })
+          setImageCropEditing(true)
+        }}
+        onCycleAspect={cycleImageAspect}
+        onZoomOut={() => zoomImage(-10)}
+        onZoomIn={() => zoomImage(10)}
+        onAlignImage={(align) => updateImageAttributes({ align })}
+      />
     )
   }
 
@@ -4526,11 +5659,16 @@ function App() {
         pendingNoteSavesRef.current.delete(note.id)
         const previousNotes = notesRef.current
         const remaining = previousNotes.filter((item) => item.id !== note.id)
+        const destinationProjectId = note.projectId !== UNASSIGNED_PROJECT_ID && projects.some((project) => project.id === note.projectId)
+          ? note.projectId
+          : ''
         notesRef.current = remaining
         setNotes(remaining)
         if (selectedNoteIdRef.current === note.id) {
-          setSelectedNoteId(remaining[0]?.id ?? '')
+          setSelectedNoteId('')
         }
+        setSelectedProjectId(destinationProjectId)
+        setActiveView('projects')
         setActiveEditorPanel(null)
         setNoteHistoryOpen(false)
         showNotice('')
@@ -4542,21 +5680,25 @@ function App() {
           setNotes(previousNotes)
           setSelectedNoteId(note.id)
           setActiveView('editor')
-          setUndoNotice(null)
-          showNotice('Note restored.')
+          showNotification({ message: 'Note restored.', tone: 'success' })
         }
-        setUndoNotice({ message: 'Note deleted.', action: restore })
+        showNotification({
+          id: `delete-note-${note.id}`,
+          message: 'Note deleted.',
+          tone: 'warning',
+          persist: true,
+          actions: [{ label: 'Undo', onClick: restore, intent: 'primary' }],
+        })
         const timer = setTimeout(() => {
           optimisticDeleteTimersRef.current.delete(note.id)
-          setUndoNotice((current) => (current?.message === 'Note deleted.' ? null : current))
+          dismissNotification(`delete-note-${note.id}`)
           void notesStore.deleteWithSnapshots(note.id).catch(() => {
             notesRef.current = previousNotes
             setNotes(previousNotes)
-            showNotice('Could not delete the note. It has been restored.')
+            showNotification({ message: 'Could not delete the note. It has been restored.', tone: 'error' })
           })
         }, OPTIMISTIC_UNDO_MS)
         optimisticDeleteTimersRef.current.set(note.id, timer)
-        if (selectedNoteIdRef.current === note.id) setActiveView(remaining.length ? 'editor' : 'home')
       },
     })
   }
@@ -4573,6 +5715,7 @@ function App() {
     await notesStore.save(duplicatedNote)
     setNotes((current) => [duplicatedNote, ...current].sort(sortByUpdated))
     setOpenLooseNoteMenuId('')
+    showNotification({ message: 'Note duplicated.', tone: 'success' })
   }
 
   const openCreateFlashcardSet = (atomIds: string[] = []) => {
@@ -4628,6 +5771,7 @@ function App() {
     )
     setEditingFlashcardSetId(null)
     setAtomSubView('sets')
+    showNotification({ message: existing ? 'Set updated.' : 'Set created.', tone: 'success' })
   }
 
   const deleteFlashcardSet = async (set: FlashcardSet) => {
@@ -4648,6 +5792,7 @@ function App() {
           setStudyElapsedMs(0)
           setAtomSubView('sets')
         }
+        showNotification({ message: 'Set deleted.', tone: 'success' })
       },
     })
   }
@@ -4722,12 +5867,15 @@ function App() {
     if (!availableIds.length) return
     const states = await flashcardSetsStore.listReviewStates(set.id)
     const dueIds = sortDueAtomIds(availableIds, states, nowIso())
-    const nextIds = studyShuffle ? shuffleList(dueIds) : dueIds
+    const shuffleStudy = userSettings.studyShuffleDefault
+    const nextIds = shuffleStudy ? shuffleList(dueIds) : dueIds
     beginStudySession(set.id, 'flashcards')
     setReviewStates(states)
     setStudyAtomIds(nextIds)
     setStudyIndex(0)
     setStudyFlipped(false)
+    setStudyDirection(userSettings.studyDefaultDirection)
+    setStudyShuffle(shuffleStudy)
     setStudyKnownAtomIds([])
     setStudyLearningAtomIds([])
     setAtomSubView('study')
@@ -4777,6 +5925,38 @@ function App() {
       return Math.min(current, studyAtoms.length - 2)
     })
     setStudyFlipped(false)
+  }
+
+  const restoreDeletedProject = async ({
+    project,
+    projectNotes,
+    projectSnapshots,
+    deletedAtoms,
+    previousSets,
+  }: {
+    project: Project
+    projectNotes: Note[]
+    projectSnapshots: NoteSnapshot[]
+    deletedAtoms: Atom[]
+    previousSets: FlashcardSet[]
+  }) => {
+    await projectsStore.save(project)
+    if (projectNotes.length) await notesStore.saveMany(projectNotes)
+    if (projectSnapshots.length) await db.noteSnapshots.bulkPut(projectSnapshots)
+    if (deletedAtoms.length) await atomsStore.saveMany(deletedAtoms)
+    if (previousSets.length) await flashcardSetsStore.saveMany(previousSets)
+    setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
+    setNotes((current) => [...projectNotes, ...current].sort(sortByUpdated))
+    setAtoms((current) => [...deletedAtoms, ...current.filter((atom) => !deletedAtoms.some((deleted) => deleted.id === atom.id))])
+    if (previousSets.length) {
+      setFlashcardSets((current) =>
+        [...previousSets, ...current.filter((set) => !previousSets.some((previous) => previous.id === set.id))]
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      )
+    }
+    setSelectedProjectId(project.id)
+    setActiveView('projects')
+    showNotification({ message: 'Project restored.', tone: 'success' })
   }
 
   const moveStudyCard = (direction: 1 | -1) => {
@@ -5021,6 +6201,9 @@ function App() {
       onConfirm: async () => {
         const snapshots = await noteSnapshotsStore.list()
         const snapshotIdsToDelete = snapshots.filter((snapshot) => projectNoteIds.has(snapshot.noteId)).map((snapshot) => snapshot.id)
+        const projectSnapshots = snapshots.filter((snapshot) => projectNoteIds.has(snapshot.noteId))
+        const previousSets = flashcardSets.filter((set) => set.atomIds.some((atomId) => atomIdsToDelete.includes(atomId)))
+        const deletedAtoms = atoms.filter((atom) => atomIdsToDelete.includes(atom.id))
 
         const deletedAtomIdSet = new Set(atomIdsToDelete)
         const updatedSets = flashcardSets
@@ -5043,6 +6226,17 @@ function App() {
           setSelectedNoteId(keptNotes[0]?.id ?? '')
           setActiveView(keptNotes.length ? 'editor' : 'projects')
         }
+        showNotification({
+          id: `delete-project-${projectId}`,
+          message: 'Project deleted.',
+          tone: 'warning',
+          persist: true,
+          actions: [{
+            label: 'Undo',
+            intent: 'primary',
+            onClick: () => restoreDeletedProject({ project, projectNotes, projectSnapshots, deletedAtoms, previousSets }),
+          }],
+        })
       },
     })
   }
@@ -5071,6 +6265,7 @@ function App() {
         await projectsStore.save(project)
         setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
         setAtomProjectFilter((current) => current || project.id)
+        showNotification({ message: 'Project created.', tone: 'success' })
       },
     })
   }
@@ -5084,6 +6279,7 @@ function App() {
     }
     await projectsStore.save(duplicatedProject)
     setProjects((current) => [...current, duplicatedProject].sort((a, b) => a.name.localeCompare(b.name)))
+    showNotification({ message: 'Project duplicated.', tone: 'success' })
   }
 
   const updateProjectDescription = async (projectId: string, description: string) => {
@@ -5229,7 +6425,10 @@ function App() {
     } else {
       markCount = selectedNote ? await syncProjectAtomMarks(selectedNote.projectId, [atom]) : applyAtomMarksToEditor(editor, [atom])
     }
-    showNotice(markCount > 1 ? `Atomised ${markCount} matches.` : '')
+    showNotification({
+      message: markCount > 1 ? `Atomised ${markCount} matches.` : existing ? 'Atom updated.' : 'Atom created.',
+      tone: 'success',
+    })
     setAtomDialog(null)
   }
 
@@ -5325,6 +6524,47 @@ function App() {
     })
   }
 
+  const replaceSelectionWithAIResult = (result: AIResult) => {
+    if (!editor || !result.selection) return
+    const selection = result.selection
+    editor
+      .chain()
+      .focus()
+      .setTextSelection(selection)
+      .deleteSelection()
+      .insertContent(textToEditorContent(result.draftText).content ?? [])
+      .run()
+    showNotification({
+      message: 'AI rewrite inserted.',
+      tone: 'success',
+      actions: [{
+        label: 'Undo',
+        intent: 'primary',
+        onClick: () => {
+          editor.chain().focus().undo().run()
+          showNotification({ message: 'AI rewrite undone.', tone: 'success' })
+        },
+      }],
+    })
+  }
+
+  const insertAIResultDraft = (result: AIResult) => {
+    if (!editor) return
+    insertDraftText(editor, result.draftText)
+    showNotification({
+      message: 'AI draft inserted.',
+      tone: 'success',
+      actions: [{
+        label: 'Undo',
+        intent: 'primary',
+        onClick: () => {
+          editor.chain().focus().undo().run()
+          showNotification({ message: 'AI insert undone.', tone: 'success' })
+        },
+      }],
+    })
+  }
+
   const toggleHighlight = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
     if (!editor) return
     if (editor.state.selection.empty) {
@@ -5348,6 +6588,26 @@ function App() {
     setHighlighterArmed(true)
     lastPaintedHighlightRangeRef.current = ''
     editor?.chain().focus().run()
+  }
+
+  const exportCurrentNotePdf = async () => {
+    try {
+      await exportNotePdf(selectedNote, selectedProject)
+      showNotification({ message: 'PDF exported.', tone: 'success' })
+    } catch (error) {
+      console.error('Could not export PDF', error)
+      showNotification({ message: 'Could not export PDF.', tone: 'error' })
+    }
+  }
+
+  const exportCurrentNoteDocx = async () => {
+    try {
+      await exportNoteDocx(selectedNote, selectedProject, atoms)
+      showNotification({ message: 'DOCX exported.', tone: 'success' })
+    } catch (error) {
+      console.error('Could not export DOCX', error)
+      showNotification({ message: 'Could not export DOCX.', tone: 'error' })
+    }
   }
 
   const clearFormatting = useCallback(() => {
@@ -5401,11 +6661,29 @@ function App() {
     {
       id: 'checklist',
       label: 'Checklist',
-      icon: ListTodo,
+      icon: CheckSquare,
       description: 'Turn lines into tappable tasks.',
       group: 'Structure',
       enabled: true,
       action: () => editor?.chain().focus().toggleTaskList().run(),
+    },
+    {
+      id: 'bullet-list',
+      label: 'Bullet list',
+      icon: List,
+      description: 'Turn lines into dot points.',
+      group: 'Structure',
+      enabled: true,
+      action: () => editor?.chain().focus().toggleBulletList().run(),
+    },
+    {
+      id: 'numbered-list',
+      label: 'Numbered list',
+      icon: ListOrdered,
+      description: 'Turn lines into ordered steps.',
+      group: 'Structure',
+      enabled: true,
+      action: () => editor?.chain().focus().toggleOrderedList().run(),
     },
     {
       id: 'table',
@@ -5420,13 +6698,41 @@ function App() {
       },
     },
     {
-      id: 'flashcard',
-      label: 'Flashcard',
-      icon: Brain,
-      description: 'Question-and-answer study card.',
+      id: 'code',
+      label: 'Code',
+      icon: Code2,
+      description: 'Insert a formatted code block.',
       group: 'Structure',
       enabled: true,
-      action: () => insertFlashcardAfterActive(),
+      action: () => editor?.chain().focus().toggleCodeBlock().run(),
+    },
+    {
+      id: 'latex',
+      label: 'LaTeX',
+      icon: Radical,
+      description: 'Insert an equation block.',
+      group: 'Structure',
+      enabled: true,
+      action: () => {
+        const blocks = selectedBlocksRef.current
+        const targetBlockId = blocks[activeBlockIndex()]?.id
+        if (targetBlockId) insertBlock(targetBlockId, 'latex', 'after')
+        else editor?.chain().focus().insertContent(latexBlockDoc().content?.[0] ?? { type: 'lociLatex', attrs: { latex: '' } }).run()
+      },
+    },
+    {
+      id: 'divider',
+      label: 'Divider',
+      icon: Minus,
+      description: 'Separate sections with a rule.',
+      group: 'Structure',
+      enabled: true,
+      action: () => {
+        const blocks = selectedBlocksRef.current
+        const targetBlockId = blocks[activeBlockIndex()]?.id
+        if (targetBlockId) insertBlock(targetBlockId, 'divider', 'after')
+        else editor?.chain().focus().setHorizontalRule().run()
+      },
     },
     {
       id: 'highlight',
@@ -5498,10 +6804,27 @@ function App() {
   const endSidebarRevealAnimation = () => {
     clearSidebarRevealTimers()
     setSidebarRevealAnimating(false)
+    setFullscreenExitStaging(false)
+  }
+
+  const beginLayoutTransition = (durationMs = LAYOUT_TRANSITION_MS) => {
+    if (layoutTransitionTimeoutRef.current) clearTimeout(layoutTransitionTimeoutRef.current)
+    setLayoutTransitioning(true)
+    layoutTransitionTimeoutRef.current = setTimeout(() => {
+      layoutTransitionTimeoutRef.current = null
+      setLayoutTransitioning(false)
+    }, durationMs)
+  }
+
+  const resetImmersiveTopExitArm = () => {
+    immersiveTopExitArmedAtRef.current = 0
+    immersiveTopExitLastWheelAtRef.current = 0
   }
 
   const toggleAppFullscreen = () => {
     endSidebarRevealAnimation()
+    resetImmersiveTopExitArm()
+    beginLayoutTransition()
     setAppFullscreen((active) => {
       const next = !active
       if (!next) setAppImmersiveFullscreen(false)
@@ -5510,8 +6833,39 @@ function App() {
     queueFloatingToolbarRemeasure(220)
   }
 
+  const switchActiveView = (view: View) => {
+    if (view !== activeView) beginLayoutTransition(240)
+    setActiveView(view)
+  }
+
+  const stageExitToSidebarScreen = () => {
+    if (fullscreenExitStaging || sidebarRevealAnimating) return
+    clearSidebarRevealTimers()
+    resetImmersiveTopExitArm()
+    beginLayoutTransition(TRUE_FULLSCREEN_EXIT_STAGE_MS + SIDEBAR_REVEAL_STAGE_MS + 80)
+    setFullscreenExitStaging(true)
+    setAppImmersiveFullscreen(false)
+    queueFloatingToolbarRemeasure(220)
+    sidebarRevealTimeoutRef.current = setTimeout(() => {
+      sidebarRevealTimeoutRef.current = null
+      setSidebarRevealAnimating(true)
+      setAppFullscreen(false)
+      queueFloatingToolbarRemeasure(220)
+      sidebarRevealCleanupTimeoutRef.current = setTimeout(() => {
+        sidebarRevealCleanupTimeoutRef.current = null
+        setSidebarRevealAnimating(false)
+        setFullscreenExitStaging(false)
+        beginLayoutTransition(120)
+      }, SIDEBAR_REVEAL_STAGE_MS)
+    }, TRUE_FULLSCREEN_EXIT_STAGE_MS)
+  }
+
   const handleAppShellWheel = (event: WheelEvent<HTMLElement>) => {
     const now = window.performance.now()
+    if (fullscreenExitStaging || sidebarRevealAnimating) {
+      event.preventDefault()
+      return
+    }
     if (now - sidebarFlickAtRef.current < SIDEBAR_FLICK_COOLDOWN_MS) return
 
     const verticalIntent = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.35
@@ -5540,21 +6894,46 @@ function App() {
       return scrollHost ?? fallbackScrollable ?? null
     }
 
+    if (appFullscreen && appImmersiveFullscreen && verticalIntent && event.deltaY > 6) {
+      resetImmersiveTopExitArm()
+    }
+
     if (appFullscreen && appImmersiveFullscreen && verticalIntent && event.deltaY < -6) {
       const activeScrollable = resolveActiveScrollable()
       const atTop = !activeScrollable || activeScrollable.scrollTop <= 1
-      if (!atTop) return
+      if (!atTop) {
+        resetImmersiveTopExitArm()
+        return
+      }
 
-      sidebarFlickAtRef.current = now
       event.preventDefault()
+      const armedAt = immersiveTopExitArmedAtRef.current
+      const armedRecently = armedAt > 0 && now - armedAt <= IMMERSIVE_TOP_EXIT_WINDOW_MS
+      const sameWheelGesture = immersiveTopExitLastWheelAtRef.current > 0 && now - immersiveTopExitLastWheelAtRef.current < IMMERSIVE_TOP_EXIT_QUIET_MS
+      immersiveTopExitLastWheelAtRef.current = now
+      if (!armedRecently) {
+        immersiveTopExitArmedAtRef.current = now
+        sidebarFlickAtRef.current = now
+        return
+      }
+      if (sameWheelGesture) {
+        sidebarFlickAtRef.current = now
+        return
+      }
+
+      resetImmersiveTopExitArm()
+      sidebarFlickAtRef.current = now
+      beginLayoutTransition(260)
       setAppImmersiveFullscreen(false)
       queueFloatingToolbarRemeasure(220)
       return
     }
 
     if (appFullscreen && !appImmersiveFullscreen && verticalIntent && Math.abs(event.deltaY) > 6) {
+      resetImmersiveTopExitArm()
       sidebarFlickAtRef.current = now
       event.preventDefault()
+      beginLayoutTransition(260)
       setAppImmersiveFullscreen(true)
       queueFloatingToolbarRemeasure(220)
       return
@@ -5567,31 +6946,23 @@ function App() {
     if (nextFullscreen === appFullscreen) return
 
     sidebarFlickAtRef.current = now
+    resetImmersiveTopExitArm()
 
     event.preventDefault()
     if (!nextFullscreen && appFullscreen) {
       if (!appImmersiveFullscreen) {
         endSidebarRevealAnimation()
+        beginLayoutTransition()
         setAppFullscreen(false)
         queueFloatingToolbarRemeasure(220)
         return
       }
-      clearSidebarRevealTimers()
-      setSidebarRevealAnimating(true)
-      sidebarRevealTimeoutRef.current = setTimeout(() => {
-        sidebarRevealTimeoutRef.current = null
-        setAppImmersiveFullscreen(false)
-        setAppFullscreen(false)
-        queueFloatingToolbarRemeasure(220)
-      }, 140)
-      sidebarRevealCleanupTimeoutRef.current = setTimeout(() => {
-        sidebarRevealCleanupTimeoutRef.current = null
-        setSidebarRevealAnimating(false)
-      }, 620)
+      stageExitToSidebarScreen()
       return
     }
 
     endSidebarRevealAnimation()
+    beginLayoutTransition()
     if (nextFullscreen) setAppImmersiveFullscreen(false)
     setAppFullscreen(nextFullscreen)
     queueFloatingToolbarRemeasure(220)
@@ -5611,15 +6982,124 @@ function App() {
     group,
     options: formatOptions.filter((option) => option.group === group && formatOptionMatchesFormatDialog(option)),
   })).filter((section) => section.options.length > 0)
+  const themeOptions = [
+    { value: 'loci', label: 'Loci' },
+    { value: 'light', label: 'Light · coming soon', disabled: true },
+    { value: 'dark', label: 'Dark · coming soon', disabled: true },
+    { value: 'system', label: 'System · coming soon', disabled: true },
+  ] satisfies Array<{ value: UserSettings['theme']; label: string; disabled?: boolean }>
+  const studyWorkspaceOptions = [
+    { value: 'atoms', label: 'Atoms' },
+    { value: 'sets', label: 'Sets' },
+  ] satisfies Array<{ value: 'atoms' | 'sets'; label: string }>
+  const studyDirectionOptions = [
+    { value: 'term', label: 'Term first' },
+    { value: 'definition', label: 'Definition first' },
+  ] satisfies Array<{ value: StudyDirection; label: string }>
+  const timeoutOptions = [
+    { value: 30000, label: '30 seconds' },
+    { value: 60000, label: '60 seconds' },
+    { value: 120000, label: '120 seconds' },
+  ]
+  const renderSettingsDropdown = <Value extends string | number,>({
+    id,
+    value,
+    options,
+    onChange,
+    ariaLabel,
+  }: {
+    id: string
+    value: Value
+    options: Array<{ value: Value; label: string; disabled?: boolean }>
+    onChange: (value: Value) => void
+    ariaLabel: string
+  }) => {
+    const selectedOption = options.find((option) => option.value === value) ?? options[0]
+    const isOpen = openSettingsDropdown === id
+    return (
+      <div className="settings-dropdown">
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
+          aria-label={ariaLabel}
+          onClick={() => setOpenSettingsDropdown((current) => (current === id ? '' : id))}
+        >
+          <span>{selectedOption.label}</span>
+          <ChevronDown size={15} aria-hidden />
+        </button>
+        {isOpen && (
+          <div className="settings-dropdown-menu" role="listbox" aria-label={ariaLabel}>
+            {options.map((option) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className={option.value === value ? 'is-active' : ''}
+                disabled={option.disabled}
+                key={String(option.value)}
+                onClick={() => {
+                  if (option.disabled) return
+                  onChange(option.value)
+                  setOpenSettingsDropdown('')
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+  const settingsSections = [
+    { id: 'general', label: 'General', description: 'Profile, appearance, and shortcuts', icon: Settings, available: true },
+    { id: 'editor', label: 'Editor', description: 'Writing defaults and note ambience', icon: FileText, available: true },
+    { id: 'study', label: 'Study', description: 'Atoms and set review defaults', icon: Brain, available: true },
+    { id: 'ai', label: 'AI', description: 'Providers, context, and diagnostics', icon: Sparkles, available: true },
+    { id: 'system', label: 'System', description: 'Updates, data, and diagnostics', icon: Info, available: true },
+    { id: 'community', label: 'Community', description: 'Sharing, sync, and social defaults', icon: Users, available: RELEASE_COMMUNITY_ENABLED },
+  ].filter((section) => section.available)
+  const activeSettingsMeta = settingsSections.find((section) => section.id === activeSettingsSection) ?? settingsSections[0]
+  const ActiveSettingsIcon = activeSettingsMeta.icon
+  const themeLabel = userSettings.theme === 'loci'
+    ? 'Loci'
+    : userSettings.theme === 'system'
+      ? 'System'
+      : userSettings.theme === 'dark'
+        ? 'Dark'
+        : 'Light'
 
   return (
     <main className="app-stage">
-      {notice && (
-        <div className="toast-notice" role="status" aria-live="polite">
-          <span className="toast-notice-content">{notice}</span>
-          <button type="button" className="toast-notice-dismiss" aria-label="Dismiss notification" onClick={() => showNotice('')}>
-            <X size={14} aria-hidden />
-          </button>
+      {notifications.length > 0 && (
+        <div className="toast-notice-stack" aria-live="polite" aria-label="Notifications">
+          {notifications.map((notification) => (
+            <div key={notification.id} className={`toast-notice toast-notice--${notification.tone ?? 'info'}`} role="status">
+              <div className="toast-notice-body">
+                <span className="toast-notice-content">{notification.message}</span>
+                {notification.actions?.length ? (
+                  <div className="toast-notice-actions">
+                    {notification.actions.map((action) => (
+                      <button
+                        key={action.label}
+                        type="button"
+                        className={`toast-notice-action toast-notice-action--${action.intent ?? 'neutral'}`}
+                        onClick={() => {
+                          void Promise.resolve(action.onClick()).finally(() => dismissNotification(notification.id))
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button type="button" className="toast-notice-dismiss" aria-label="Dismiss notification" onClick={() => dismissNotification(notification.id)}>
+                <XIcon size={14} aria-hidden />
+              </button>
+            </div>
+          ))}
         </div>
       )}
       <header className="custom-titlebar" onMouseDown={startWindowDrag}>
@@ -5633,14 +7113,13 @@ function App() {
         </div>
       </header>
       <section
-        className={`app-shell ${appFullscreen ? 'is-fullscreen' : ''} ${appImmersiveFullscreen ? 'is-immersive-fullscreen' : ''} ${sidebarRevealAnimating ? 'is-revealing-sidebar' : ''}`}
+        className={`app-shell ${profileLoaded ? '' : 'is-profile-loading'} ${postOnboardingReveal ? 'is-post-onboarding-reveal' : ''} ${appFullscreen ? 'is-fullscreen' : ''} ${appImmersiveFullscreen ? 'is-immersive-fullscreen' : ''} ${fullscreenExitStaging ? 'is-exiting-immersive' : ''} ${sidebarRevealAnimating ? 'is-revealing-sidebar' : ''} ${layoutTransitioning ? 'is-layout-transitioning' : ''} ${userSettings.compactMode ? 'is-compact-mode' : ''} ${userSettings.reduceMotion ? 'is-reduce-motion' : ''}`}
         aria-label="Loci Notes"
         onWheel={handleAppShellWheel}
         ref={appShellRef}
       >
         <Sidebar
           activeView={activeView}
-          activeProject={activeProjectForQuickNav}
           activeNoteId={selectedNote?.id}
           atomSubView={atomSubView}
           draggedNoteIds={draggedNoteIds}
@@ -5649,16 +7128,18 @@ function App() {
           profileDisplayName={profileDisplayName}
           profileHandleLabel={profileHandleLabel}
           profileInitials={profileInitials}
-          projectQuickNotes={projectQuickNotes}
+          projectQuickSections={projectQuickSections}
           onAssignNoteToProjectDrop={assignNoteToProjectDrop}
           onDragEnterProject={setDragOverProjectId}
           onDragLeaveProject={(projectId) => setDragOverProjectId((current) => (current === projectId ? '' : current))}
           onDragOverProject={handleNoteDropTargetDragOver}
+          onHideSidebarNote={hideSidebarNote}
           onNewNote={() => openTemplateChooser()}
           onOpenNote={openProjectQuickNote}
-          onOpenProfile={openProfileModal}
           onOpenAtoms={openAtomsWorkspace}
           onOpenSets={openSetsWorkspace}
+          onOpenProfile={() => setProfileModalOpen(true)}
+          onOpenSettings={() => setSettingsModalOpen(true)}
           onOpenSearch={() => {
             setSearchQuery('')
             setSearchActiveIndex(0)
@@ -5669,7 +7150,7 @@ function App() {
             setActiveView('projects')
           }}
           onRenameNote={(noteId, title) => void persistNote({ title }, noteId)}
-          onSetActiveView={setActiveView}
+          onSetActiveView={switchActiveView}
           fullscreenActive={appFullscreen}
           onToggleFullscreen={toggleAppFullscreen}
         />
@@ -5680,6 +7161,7 @@ function App() {
             aria-label="Exit fullscreen layout"
             onClick={() => {
               endSidebarRevealAnimation()
+              beginLayoutTransition()
               setAppImmersiveFullscreen(false)
               setAppFullscreen(false)
               queueFloatingToolbarRemeasure(220)
@@ -5743,6 +7225,9 @@ function App() {
                       onClick={() => {
                         if (homeTip.cta?.action === 'newNote') openTemplateChooser()
                         if (homeTip.cta?.action === 'openAtoms') openAtomsWorkspace()
+                        if (homeTip.cta?.action === 'openSets') {
+                          openSetsWorkspace()
+                        }
                         if (homeTip.cta?.action === 'openProjects') {
                           setSelectedProjectId('')
                           setActiveView('projects')
@@ -5808,12 +7293,6 @@ function App() {
             )}
             <div className="document-scroll">
               <article className={`document-card ${atomUnderlinesVisible ? '' : 'hide-atom-underlines'} ${editorFocusModeVisual ? 'is-focus-mode' : ''} ${editorAuthenticWriterMode ? 'is-authentic-writer' : ''}`}>
-                {undoNotice && (
-                  <div className="notice notice-with-action">
-                    <span>{undoNotice.message}</span>
-                    <button type="button" onClick={undoNotice.action}>Undo</button>
-                  </div>
-                )}
                 {selectedTemplateData?.kind === 'report' && (
                   <div className="template-editor report-editor">
                     <input
@@ -5839,6 +7318,8 @@ function App() {
                     <LociEditor
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
+                      smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                      smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Appendix / body</span>}
@@ -5891,7 +7372,7 @@ function App() {
                           <label key={task.id} className="planner-task-row">
                             <input type="checkbox" checked={task.done} onChange={(event) => updatePlannerTask(task.id, { done: event.target.checked })} />
                             <input value={task.text} onChange={(event) => updatePlannerTask(task.id, { text: event.target.value })} />
-                            <button className="template-icon-button" type="button" aria-label="Remove task" onClick={() => removePlannerTask(task.id)}><X size={14} /></button>
+                            <button className="template-icon-button" type="button" aria-label="Remove task" onClick={() => removePlannerTask(task.id)}><XIcon size={14} /></button>
                           </label>
                         ))}
                       </div>
@@ -5904,7 +7385,7 @@ function App() {
                           <div key={item.id} className="planner-schedule-row">
                             <input type="time" value={item.time} onChange={(event) => updatePlannerSchedule(item.id, { time: event.target.value })} />
                             <input value={item.text} onChange={(event) => updatePlannerSchedule(item.id, { text: event.target.value })} />
-                            <button className="template-icon-button" type="button" aria-label="Remove schedule block" onClick={() => removePlannerSchedule(item.id)}><X size={14} /></button>
+                            <button className="template-icon-button" type="button" aria-label="Remove schedule block" onClick={() => removePlannerSchedule(item.id)}><XIcon size={14} /></button>
                           </div>
                         ))}
                       </div>
@@ -5913,6 +7394,8 @@ function App() {
                     <LociEditor
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
+                      smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                      smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
                       className="template-rich-section"
                       label={<span>Notes</span>}
@@ -5960,6 +7443,8 @@ function App() {
                           <LociEditor
                             editor={editor}
                             isFocusMode={editorFocusModeVisual}
+                            smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                            smoothCaretScrollContainerRef={documentScrollRef}
                             shellRef={(node) => { blockEditorShellRef.current = node }}
                             draggedBlockId={draggedBlockId}
                             imageCropEditing={imageCropEditing}
@@ -5992,6 +7477,8 @@ function App() {
                   <LociEditor
                     editor={editor}
                     isFocusMode={editorFocusModeVisual}
+                    smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
+                    smoothCaretScrollContainerRef={documentScrollRef}
                     shellRef={(node) => { blockEditorShellRef.current = node }}
                     draggedBlockId={draggedBlockId}
                     imageCropEditing={imageCropEditing}
@@ -6065,12 +7552,12 @@ function App() {
               highlighterColor={userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR}
               highlightPaletteOpen={highlightPaletteOpen}
               highlighterColors={HIGHLIGHTER_COLORS}
-              onToggleAtomUnderlines={() => setAtomUnderlinesVisible((visible) => !visible)}
-              onToggleFocusMode={() => setEditorFocusMode((enabled) => !enabled)}
-              onToggleAuthenticWriterMode={() => setEditorAuthenticWriterMode((enabled) => !enabled)}
+              onToggleAtomUnderlines={toggleEditorAtomUnderlines}
+              onToggleFocusMode={toggleEditorFocusMode}
+              onToggleAuthenticWriterMode={toggleEditorAuthenticWriterMode}
               onOpenNoteHistory={() => void openNoteHistory()}
-              onExportPdf={() => void exportNotePdf(selectedNote, selectedProject)}
-              onExportDocx={() => void exportNoteDocx(selectedNote, selectedProject, atoms)}
+              onExportPdf={() => void exportCurrentNotePdf()}
+              onExportDocx={() => void exportCurrentNoteDocx()}
               onDeleteNote={() => void deleteNote()}
               onAtomise={atomiseSelection}
               onToggleHighlight={() => toggleHighlight()}
@@ -6142,13 +7629,7 @@ function App() {
         )}
 
         {activeView === 'editor' && selectedNote && activeEditorPanel === 'format' && (
-          <div
-            className="modal-backdrop format-modal-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setActiveEditorPanel(null)
-            }}
-          >
+          <ModalBackdrop containerRef={documentScrollRef} className="format-modal-backdrop" onClose={() => setActiveEditorPanel(null)}>
             <section
               className="format-dialog"
               role="dialog"
@@ -6163,12 +7644,11 @@ function App() {
               <div className="format-dialog-search" onMouseDown={(event) => event.stopPropagation()}>
                 <Search size={18} aria-hidden />
                 <input
-                  ref={formatDialogSearchRef}
                   type="text"
                   role="searchbox"
                   value={formatDialogQuery}
                   onChange={(event) => setFormatDialogQuery(event.target.value)}
-                  placeholder="Search formats…"
+                  placeholder="Search formats..."
                   aria-label="Filter format options"
                   autoComplete="off"
                   spellCheck={false}
@@ -6214,11 +7694,11 @@ function App() {
                 <button type="button" onClick={() => setActiveEditorPanel(null)}>Cancel</button>
               </footer>
             </section>
-          </div>
+          </ModalBackdrop>
         )}
 
         {activeView === 'projects' && (
-          <section className="main-pane compact-pane scroll-hover">
+          <section className="main-pane compact-pane scroll-region-stable">
             {openedProject ? (
               <ProjectDetail
                 project={openedProject}
@@ -6243,7 +7723,7 @@ function App() {
               <>
                 <PageHeader
                   title="Projects"
-                  action={<button type="button" onClick={createProject}><Plus size={17} /> Add project</button>}
+                  action={<button type="button" className="project-inline-action" onClick={createProject}><Plus size={17} /> Add project</button>}
                 />
                 <div className="project-hub">
                   {localDatabaseNeedsRepair && (
@@ -6279,6 +7759,7 @@ function App() {
                         const projectDescription = project.description?.trim() || 'No description yet'
                         const openProject = () => {
                           if (Date.now() < suppressProjectNavUntilRef.current) return
+                          setOpenSidebarProjectIds((current) => (current.includes(project.id) ? current : [project.id, ...current]))
                           setSelectedProjectId(project.id)
                         }
                         return (
@@ -6418,9 +7899,10 @@ function App() {
                         const isSelected = selectedNoteIds.includes(note.id)
                         const isDragging = draggedNoteIds.includes(note.id)
                         const noteTitle = note.title || 'Untitled Note'
+                        const isMenuOpen = openLooseNoteMenuId === note.id
                         return (
                           <div
-                            className={`project-loose-note-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''}`}
+                            className={`project-loose-note-row ${isSelected ? 'is-selected' : ''} ${isDragging ? 'is-dragging' : ''} ${isMenuOpen ? 'is-menu-open' : ''}`}
                             key={note.id}
                             role="button"
                             tabIndex={0}
@@ -6448,14 +7930,40 @@ function App() {
                             }}
                           >
                             <span className="project-row-main">
-                              <strong title={noteTitle}>{noteTitle}</strong>
+                              {editingLooseNoteId === note.id ? (
+                                <input
+                                  className="note-title-rename-input project-loose-note-title-input"
+                                  value={editingLooseNoteTitle}
+                                  onBlur={() => commitLooseNoteRename(note)}
+                                  onChange={(event) => setEditingLooseNoteTitle(event.target.value)}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onDoubleClick={(event) => event.stopPropagation()}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      commitLooseNoteRename(note)
+                                    }
+                                    if (event.key === 'Escape') {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      setEditingLooseNoteTitle(note.title || 'Untitled Note')
+                                      setEditingLooseNoteId('')
+                                    }
+                                  }}
+                                  aria-label="Rename note"
+                                  autoFocus
+                                />
+                              ) : (
+                                <strong title={noteTitle}>{noteTitle}</strong>
+                              )}
                             </span>
                             <span className="project-loose-note-menu">
                               <button
                                 type="button"
                                 className="project-loose-note-menu-trigger"
                                 aria-label={`More options for ${noteTitle}`}
-                                aria-expanded={openLooseNoteMenuId === note.id}
+                                aria-expanded={isMenuOpen}
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onMouseDown={(event) => event.stopPropagation()}
                                 onClick={(event) => {
@@ -6466,7 +7974,7 @@ function App() {
                               >
                                 <MoreVertical size={18} aria-hidden />
                               </button>
-                              {openLooseNoteMenuId === note.id && (
+                              {isMenuOpen && (
                                 <span
                                   className="project-loose-note-menu-popover"
                                   role="menu"
@@ -6475,6 +7983,13 @@ function App() {
                                   onMouseDown={(event) => event.stopPropagation()}
                                   onClick={(event) => event.stopPropagation()}
                                 >
+                                  <button
+                                    type="button"
+                                    className="project-card-menu-action"
+                                    onClick={() => startLooseNoteRename(note)}
+                                  >
+                                    Rename note
+                                  </button>
                                   <button
                                     type="button"
                                     className="project-card-menu-action"
@@ -7393,224 +8908,606 @@ function App() {
           </section>
         )}
 
-        {activeView === 'settings' && (
-          <section className="main-pane compact-pane settings-pane scroll-hover">
-            <PageHeader
-              title="Settings"
-              action={<button type="button" onClick={openProfileModal}><Settings size={17} /> Edit profile</button>}
-            />
-            <div className="settings-layout">
-              <section className="settings-profile-strip">
-                <div className="avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>
-                <div>
-                  <strong>{profileDisplayName}</strong>
-                  <span>Local workspace profile · used for new notes</span>
-                </div>
-                <button type="button" onClick={openProfileModal}>Manage</button>
-              </section>
-
-              <section className="settings-card settings-account-card">
-                <div className="settings-card-heading">
-                  <Shield size={18} />
-                  <div>
-                    <h3>Online account</h3>
-                    <p>Prepared for account profiles, profile pictures, and friending while notes stay local.</p>
-                  </div>
-                </div>
-                <div className="settings-data-list">
-                  <span><strong>{authSession.status}</strong> Session</span>
-                  <span><strong>{accountStatusLabel}</strong> Account</span>
-                  <span><strong>{acceptedFriendCount}</strong> Friends</span>
-                  <span><strong>{pendingFriendCount}</strong> Pending requests</span>
-                  <span><strong>{developerNotifications.length}</strong> Dev notifications cached</span>
-                </div>
-                <div className="settings-warning">
-                  <Info size={16} />
-                  <span>These controls use backend-neutral services now. A real provider can be connected later without making notes sync automatically.</span>
-                </div>
-              </section>
-
-              <section className="settings-card settings-ai-card">
-                <div className="settings-card-heading">
-                  <Sparkles size={18} />
-                  <div>
-                    <h3>AI providers</h3>
-                    <p>Bring your own API key. Keys are stored locally in this browser.</p>
-                  </div>
-                </div>
-                <div className="settings-warning">
-                  <Shield size={16} />
-                  <span>Local BYOK is convenient for testing, but browser-stored keys are not as secure as a server gateway. Direct provider calls can also be blocked by CORS.</span>
-                </div>
-                <div className="settings-field-grid">
-                  <label>
-                    <span>Default provider</span>
-                    <select
-                      value={userSettings.defaultAIProvider}
-                      onChange={(event) => updateUserSettings({ defaultAIProvider: event.target.value as AIProviderId })}
+        {settingsModalOpen && (
+          <div className="settings-modal-backdrop" role="presentation" onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSettingsModalOpen(false)
+          }}>
+            <section
+              className="settings-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="settings-modal-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <button className="settings-modal-close" type="button" aria-label="Close settings" onClick={() => setSettingsModalOpen(false)}>
+                <XIcon size={16} aria-hidden />
+              </button>
+            <div className="settings-hub">
+              <aside className="settings-section-rail" aria-label="Settings sections">
+                <h2 id="settings-modal-title">Settings</h2>
+                {settingsSections.map((section) => {
+                  const Icon = section.icon
+                  return (
+                    <button
+                      type="button"
+                      key={section.id}
+                      className={activeSettingsMeta.id === section.id ? 'is-active' : ''}
+                      aria-pressed={activeSettingsMeta.id === section.id}
+                      onClick={() => setActiveSettingsSection(section.id)}
                     >
-                      {aiProviders.map((provider) => (
-                        <option key={provider.id} value={provider.id}>{provider.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Request timeout</span>
-                    <select
-                      value={userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS}
-                      onChange={(event) => updateUserSettings({ aiTimeoutMs: Number(event.target.value) })}
-                    >
-                      <option value={30000}>30 seconds</option>
-                      <option value={60000}>60 seconds</option>
-                      <option value={120000}>120 seconds</option>
-                    </select>
-                  </label>
-                </div>
-                <div className="settings-provider-grid">
-                  {aiProviders.map((provider) => {
-                    const config = userSettings.aiProviders[provider.id]
-                    return (
-                      <article className={`provider-card ${config.enabled ? 'is-enabled' : ''}`} key={provider.id}>
-                        <header>
-                          <div>
-                            <strong>{provider.name}</strong>
-                            <p>{config.model || provider.defaultModel}</p>
-                          </div>
-                          <label className="settings-switch">
-                            <input
-                              type="checkbox"
-                              checked={config.enabled}
-                              onChange={(event) => updateAIProvider(provider.id, { enabled: event.target.checked })}
-                            />
-                            <span>{config.enabled ? 'On' : 'Off'}</span>
-                          </label>
-                        </header>
-                        <details>
-                          <summary>Connection details</summary>
+                      <Icon size={17} aria-hidden />
+                      <span>
+                        <strong>{section.label}</strong>
+                        <small>{section.description}</small>
+                      </span>
+                    </button>
+                  )
+                })}
+              </aside>
+
+              <div className="settings-content-panel">
+                <header className="settings-section-header">
+                  <span className="settings-section-icon"><ActiveSettingsIcon size={18} aria-hidden /></span>
+                  <div>
+                    <h2>{activeSettingsMeta.label}</h2>
+                  </div>
+                </header>
+
+                {activeSettingsMeta.id === 'general' && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card profile-settings-card">
+                      <div className="settings-card-heading">
+                        <Settings size={18} />
+                        <div>
+                          <h3>Profile</h3>
+                          <p>How your local workspace identifies you.</p>
+                        </div>
+                      </div>
+                      <div className="profile-settings-grid">
+                        <div className="profile-settings-preview">
+                          <div className="avatar profile-preview-avatar" style={{ background: profileDraft.avatarColor || DEFAULT_PROFILE_COLOR, color: avatarTextColor(profileDraft.avatarColor || DEFAULT_PROFILE_COLOR) }}>{normalizeInitials(profileDraft.initials || initialsFromName(profileDraft.displayName) || 'LN')}</div>
+                          <strong>{profileDraft.displayName.trim() || 'Your name'}</strong>
+                          <span>{profileDraft.handle ? `@${profileDraft.handle}` : 'Local profile'}</span>
+                        </div>
+                        <div className="profile-settings-fields">
                           <label>
-                            <span>API key</span>
+                            Display name
                             <input
-                              type="password"
-                              value={config.apiKey}
-                              placeholder="Paste API key"
-                              onChange={(event) => updateAIProvider(provider.id, { apiKey: event.target.value })}
+                              value={profileDraft.displayName}
+                              onChange={(event) => {
+                                const displayName = event.target.value
+                                setProfileDraft((current) => ({
+                                  ...current,
+                                  displayName,
+                                  initials: localProfile ? current.initials : initialsFromName(displayName),
+                                  handle: current.handleEdited ? current.handle : createBaseHandleFromDisplayName(displayName),
+                                }))
+                              }}
+                              placeholder="Your name"
                             />
                           </label>
                           <label>
-                            <span>Model</span>
-                            <input
-                              value={config.model}
-                              placeholder={provider.defaultModel}
-                              onChange={(event) => updateAIProvider(provider.id, { model: event.target.value })}
-                            />
-                          </label>
-                          {!provider.baseUrlLocked && (
-                            <label>
-                              <span>Base URL</span>
+                            User tag
+                            <div className="profile-tag-input">
+                              <span>@</span>
                               <input
-                                value={config.baseUrl ?? provider.baseUrl}
-                                onChange={(event) => updateAIProvider(provider.id, { baseUrl: event.target.value })}
+                                value={profileDraft.handle}
+                                onChange={(event) => setProfileDraft((current) => ({
+                                  ...current,
+                                  handle: normalizeUserHandle(event.target.value),
+                                  handleEdited: true,
+                                }))}
+                                placeholder="yourtag"
                               />
+                            </div>
+                          </label>
+                          <label>
+                            Initials
+                            <input
+                              value={profileDraft.initials}
+                              onChange={(event) => setProfileDraft((current) => ({ ...current, initials: normalizeInitials(event.target.value) }))}
+                              maxLength={3}
+                              placeholder="YN"
+                            />
+                          </label>
+                          <div className="profile-color-field">
+                            <span>Avatar color</span>
+                            <div className="profile-color-swatches">
+                              {PROFILE_COLORS.map((color) => (
+                                <button
+                                  type="button"
+                                  className={profileDraft.avatarColor === color ? 'is-active' : ''}
+                                  key={color}
+                                  style={{ background: color }}
+                                  aria-label={`Use profile color ${color}`}
+                                  onClick={() => setProfileDraft((current) => ({ ...current, avatarColor: color }))}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                          <div className="profile-picture-placeholder">
+                            <strong>Profile picture</strong>
+                            <span>Reserved for image avatars once account sync is ready.</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="profile-settings-actions">
+                        <button type="button" onClick={resetProfileDraftFromSaved}>Reset</button>
+                        <button type="button" className="primary" onClick={() => void saveLocalProfile()} disabled={!profileDraft.displayName.trim()}>
+                          Save profile
+                        </button>
+                      </div>
+                    </section>
+
+                    <section className="settings-card settings-account-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Shield size={18} />
+                        <div>
+                          <h3>Online account</h3>
+                          <p>Prepared for account profiles, profile pictures, and friending while notes stay local.</p>
+                        </div>
+                      </div>
+                      <div className="settings-data-list">
+                        <span><strong>{authSession.status}</strong> Session</span>
+                        <span><strong>{accountStatusLabel}</strong> Account</span>
+                        <span><strong>{acceptedFriendCount}</strong> Friends</span>
+                        <span><strong>{pendingFriendCount}</strong> Pending requests</span>
+                        <span><strong>{developerNotifications.length}</strong> Dev notifications cached</span>
+                      </div>
+                      <div className="settings-warning">
+                        <Info size={16} />
+                        <span>These controls use backend-neutral services now. A real provider can be connected later without making notes sync automatically.</span>
+                      </div>
+                    </section>
+
+                    <section className="settings-card settings-section-group survey-settings-card">
+                      <div className="settings-card-heading">
+                        <CheckSquare size={18} />
+                        <div>
+                          <h3>User input</h3>
+                          <p>Short product prompts from the Loci team. Responses are tied to your signed-in account, not your notes.</p>
+                        </div>
+                      </div>
+                      {surveyPromptReady && activeSurveyPrompt ? (
+                        <div className="survey-prompt-panel">
+                          <div className="survey-prompt-copy">
+                            <strong>{activeSurveyPrompt.title}</strong>
+                            {activeSurveyPrompt.body && <p>{activeSurveyPrompt.body}</p>}
+                          </div>
+                          {activeSurveyPrompt.kind === 'single-choice' ? (
+                            <div className="survey-option-list" role="radiogroup" aria-label={activeSurveyPrompt.title}>
+                              {activeSurveyPrompt.options.map((option) => (
+                                <label key={option} className="survey-option">
+                                  <input
+                                    type="radio"
+                                    name={`survey-${activeSurveyPrompt.id}`}
+                                    value={option}
+                                    checked={surveyAnswer === option}
+                                    onChange={(event) => setSurveyAnswer(event.target.value)}
+                                  />
+                                  <span>{option}</span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <label className="survey-text-answer">
+                              <span>Your answer</span>
+                              <textarea value={surveyAnswer} onChange={(event) => setSurveyAnswer(event.target.value)} />
                             </label>
                           )}
-                        </details>
-                        <footer>
-                          <span>{config.apiKey ? 'Key saved locally' : 'No key saved'}</span>
-                          {config.apiKey && <button type="button" onClick={() => updateAIProvider(provider.id, { apiKey: '', enabled: false })}>Clear key</button>}
-                        </footer>
-                      </article>
-                    )
-                  })}
-                </div>
-              </section>
+                          <label className="survey-text-answer">
+                            <span>Optional context</span>
+                            <textarea value={surveyComment} onChange={(event) => setSurveyComment(event.target.value)} />
+                          </label>
+                          <div className="survey-actions">
+                            <button type="button" onClick={() => void dismissSurveyPrompt()} disabled={surveySubmitting}>
+                              Don&apos;t show again
+                            </button>
+                            <button type="button" className="primary" onClick={() => void submitSurveyPrompt()} disabled={surveySubmitting || !surveyAnswer.trim()}>
+                              {surveySubmitting ? 'Sending...' : 'Send response'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="settings-data-list">
+                          <span><strong>{surveyLoading ? 'Checking' : authSession.status === 'signed-in' ? 'None' : 'Signed out'}</strong> Active prompt</span>
+                          <span><strong>Admin only</strong> User counts stay in PocketBase</span>
+                        </div>
+                      )}
+                    </section>
 
-              <section className="settings-card">
-                <div className="settings-card-heading">
-                  <Info size={18} />
-                  <div>
-                    <h3>AI diagnostics</h3>
-                    <p>Provider status and usage details stay here, away from the editor.</p>
-                  </div>
-                </div>
-                <div className="settings-data-list">
-                  <span><strong>{userSettings.aiLastStatus ?? 'idle'}</strong> Last status</span>
-                  <span><strong>{userSettings.aiLastProvider ? aiProviders.find((provider) => provider.id === userSettings.aiLastProvider)?.name ?? userSettings.aiLastProvider : 'None'}</strong> Last provider</span>
-                  <span><strong>{userSettings.aiLastUsage?.inputTokens ?? '—'}</strong> Input tokens</span>
-                  <span><strong>{userSettings.aiLastUsage?.outputTokens ?? '—'}</strong> Output tokens</span>
-                  <span><strong>{userSettings.aiLastUsage?.cachedTokens ?? '—'}</strong> Cached tokens</span>
-                  <span><strong>{userSettings.aiLastError || 'None'}</strong> Last error</span>
-                </div>
-              </section>
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Settings size={18} />
+                        <div>
+                          <h3>Appearance</h3>
+                          <p>Loci keeps the interface warm and quiet. More theme options are prepared for later.</p>
+                        </div>
+                      </div>
+                      <label className="settings-row">
+                        <span>
+                          <strong>Theme</strong>
+                          <small>Current selection: {themeLabel}</small>
+                        </span>
+                        {renderSettingsDropdown({
+                          id: 'theme',
+                          value: userSettings.theme,
+                          options: themeOptions,
+                          ariaLabel: 'Theme',
+                          onChange: (theme) => updateUserSettings({ theme }),
+                        })}
+                      </label>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Compact mode</strong>
+                          <small>Reserved for tighter spacing across dense screens.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.compactMode} onChange={(event) => updateUserSettings({ compactMode: event.target.checked })} />
+                      </label>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Reduce motion</strong>
+                          <small>Keep transitions quieter when motion gets distracting.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.reduceMotion} onChange={(event) => updateUserSettings({ reduceMotion: event.target.checked })} />
+                      </label>
+                    </section>
 
-              <section className="settings-card settings-grid-pair">
-                <div className="settings-card-heading">
-                  <Keyboard size={18} />
-                  <div>
-                    <h3>Shortcuts</h3>
-                    <p>Fast movement without extra chrome.</p>
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Keyboard size={18} />
+                        <div>
+                          <h3>Shortcuts</h3>
+                          <p>Fast movement without extra chrome. Rebinding can be added once shortcut commands are centralized.</p>
+                        </div>
+                      </div>
+                      <div className="settings-shortcuts">
+                        <span><kbd>Ctrl</kbd> + <kbd>K</kbd> Search</span>
+                        <span><kbd>Cmd</kbd> + <kbd>K</kbd> Search</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>Page Up/Down</kbd> Switch project documents</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>W</kbd> Close current note</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>Q</kbd> Close current sidebar project</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>\</kbd> Clear formatting</span>
+                        <span><kbd>X</kbd> Hide a hovered sidebar note</span>
+                      </div>
+                    </section>
                   </div>
-                </div>
-                <div className="settings-shortcuts">
-                  <span><kbd>Ctrl</kbd> + <kbd>K</kbd> Search</span>
-                  <span><kbd>⌘</kbd> + <kbd>K</kbd> Search</span>
-                  <span><kbd>Ctrl</kbd> + <kbd>Page Up/Down</kbd> Switch project documents</span>
-                  <span><kbd>Ctrl</kbd> + <kbd>\</kbd> Clear formatting</span>
-                </div>
-              </section>
+                )}
 
-              <section className="settings-card settings-grid-pair">
-                <div className="settings-card-heading">
-                  <Info size={18} />
-                  <div>
-                    <h3>Data</h3>
-                    <p>Everything in this release is local-first.</p>
-                  </div>
-                </div>
-                <div className="settings-data-list">
-                  <span><strong>{notes.length}</strong> notes</span>
-                  <span><strong>{projects.length}</strong> projects</span>
-                  <span><strong>{atoms.length}</strong> atoms</span>
-                  <span><strong>{dashboardStats.dailyStreak}</strong> day streak</span>
-                </div>
-              </section>
+                {activeSettingsMeta.id === 'editor' && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <FileText size={18} />
+                        <div>
+                          <h3>Writing defaults</h3>
+                          <p>Choose the editor state new sessions should open with.</p>
+                        </div>
+                      </div>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Atom underlines</strong>
+                          <small>Show linked atoms inline while writing.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.editorAtomUnderlinesDefault} onChange={(event) => updateEditorDefault({ editorAtomUnderlinesDefault: event.target.checked })} />
+                      </label>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Focus mode</strong>
+                          <small>Open notes in the quieter focused reading width by default.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.editorFocusModeDefault} onChange={(event) => updateEditorDefault({ editorFocusModeDefault: event.target.checked })} />
+                      </label>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Authentic Writer</strong>
+                          <small>Keep authorship styling visible when reviewing text.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.editorAuthenticWriterDefault} onChange={(event) => updateEditorDefault({ editorAuthenticWriterDefault: event.target.checked })} />
+                      </label>
+                    </section>
 
-              <section className="settings-card settings-grid-pair">
-                <div className="settings-card-heading">
-                  <Download size={18} />
-                  <div>
-                    <h3>App updates</h3>
-                    <p>Signed desktop updates are delivered from GitHub Releases.</p>
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Highlighter size={18} />
+                        <div>
+                          <h3>Editor appearance</h3>
+                          <p>Small visual choices that shape the note surface.</p>
+                        </div>
+                      </div>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Marginalia</strong>
+                          <small>Show the quiet Loci artwork beside editor pages.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.editorShowMarginalia} onChange={(event) => updateEditorDefault({ editorShowMarginalia: event.target.checked })} />
+                      </label>
+                      <div className="settings-row">
+                        <span>
+                          <strong>Default highlighter</strong>
+                          <small>Used by the floating editor highlighter.</small>
+                        </span>
+                        <div className="settings-swatch-row" aria-label="Default highlighter colour">
+                          {HIGHLIGHTER_COLORS.map((color) => (
+                            <button
+                              type="button"
+                              key={color}
+                              className={color === userSettings.highlighterColor ? 'is-active' : ''}
+                              style={{ background: color }}
+                              aria-label={`Use highlighter colour ${color}`}
+                              onClick={() => updateUserSettings({ highlighterColor: color })}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </section>
                   </div>
-                </div>
-                <div className={`settings-update-status is-${updateState.status}`}>
-                  <strong>
-                    {updateState.status === 'available'
-                      ? `Update ${updateState.version}`
-                      : updateState.status === 'checking'
-                        ? 'Checking'
-                        : updateState.status === 'installing'
-                          ? 'Installing'
-                          : updateState.status === 'error'
-                            ? 'Update check failed'
-                            : 'Desktop updater'}
-                  </strong>
-                  <span>{updateState.message}</span>
-                </div>
-                <button
-                  type="button"
-                  className="settings-update-button"
-                  disabled={updateState.status === 'checking' || updateState.status === 'installing'}
-                  onClick={() => void checkForUpdates(true)}
-                >
-                  {updateState.status === 'checking'
-                    ? 'Checking...'
-                    : updateState.status === 'installing'
-                      ? 'Installing...'
-                      : 'Check for updates'}
-                </button>
-              </section>
+                )}
+
+                {activeSettingsMeta.id === 'study' && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Brain size={18} />
+                        <div>
+                          <h3>Atoms and sets</h3>
+                          <p>Keep this light for now while Study grows into a fuller review system.</p>
+                        </div>
+                      </div>
+                      <label className="settings-row">
+                        <span>
+                          <strong>Preferred study workspace</strong>
+                          <small>Where the Atoms screen opens by default.</small>
+                        </span>
+                        {renderSettingsDropdown({
+                          id: 'study-workspace',
+                          value: userSettings.preferredAtomSubView ?? 'atoms',
+                          options: studyWorkspaceOptions,
+                          ariaLabel: 'Preferred study workspace',
+                          onChange: (preferredAtomSubView) => updateUserSettings({ preferredAtomSubView }),
+                        })}
+                      </label>
+                      <label className="settings-row">
+                        <span>
+                          <strong>Review direction</strong>
+                          <small>Default side shown first when starting a set.</small>
+                        </span>
+                        {renderSettingsDropdown({
+                          id: 'study-direction',
+                          value: userSettings.studyDefaultDirection,
+                          options: studyDirectionOptions,
+                          ariaLabel: 'Review direction',
+                          onChange: (studyDefaultDirection) => updateUserSettings({ studyDefaultDirection }),
+                        })}
+                      </label>
+                      <label className="settings-toggle-row">
+                        <span>
+                          <strong>Shuffle sets</strong>
+                          <small>Start study sessions in a mixed order.</small>
+                        </span>
+                        <input type="checkbox" checked={userSettings.studyShuffleDefault} onChange={(event) => updateUserSettings({ studyShuffleDefault: event.target.checked })} />
+                      </label>
+                    </section>
+
+                    <section className="settings-card settings-section-group settings-placeholder-card">
+                      <div className="settings-card-heading">
+                        <Layers3 size={18} />
+                        <div>
+                          <h3>Future study notes</h3>
+                          <p>Reserved for spaced repetition, mastery states, set folders, and richer atom generation controls.</p>
+                        </div>
+                      </div>
+                      <div className="settings-pill-list">
+                        <span>Spaced repetition</span>
+                        <span>Mastery tracking</span>
+                        <span>Set organization</span>
+                        <span>Atom generation rules</span>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {activeSettingsMeta.id === 'ai' && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card settings-section-group settings-ai-card">
+                      <div className="settings-card-heading">
+                        <Sparkles size={18} />
+                        <div>
+                          <h3>AI providers</h3>
+                          <p>Bring your own API key for now. Subscription billing can replace this surface later.</p>
+                        </div>
+                      </div>
+                      <div className="settings-warning">
+                        <Shield size={16} />
+                        <span>Local BYOK is convenient for testing, but browser-stored keys are not as secure as a server gateway. Direct provider calls can also be blocked by CORS.</span>
+                      </div>
+                      <div className="settings-field-grid">
+                        <label>
+                          <span>Default provider</span>
+                          {renderSettingsDropdown({
+                            id: 'ai-provider',
+                            value: userSettings.defaultAIProvider,
+                            options: aiProviders.map((provider) => ({ value: provider.id, label: provider.name })),
+                            ariaLabel: 'Default AI provider',
+                            onChange: (defaultAIProvider) => updateUserSettings({ defaultAIProvider }),
+                          })}
+                        </label>
+                        <label>
+                          <span>Request timeout</span>
+                          {renderSettingsDropdown({
+                            id: 'ai-timeout',
+                            value: userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS,
+                            options: timeoutOptions,
+                            ariaLabel: 'Request timeout',
+                            onChange: (aiTimeoutMs) => updateUserSettings({ aiTimeoutMs }),
+                          })}
+                        </label>
+                      </div>
+                      <div className="settings-check-grid">
+                        <label><input type="checkbox" checked={userSettings.aiIncludeNoteTitle} onChange={(event) => updateUserSettings({ aiIncludeNoteTitle: event.target.checked })} /> Include note title</label>
+                        <label><input type="checkbox" checked={userSettings.aiIncludeSelectedText} onChange={(event) => updateUserSettings({ aiIncludeSelectedText: event.target.checked })} /> Include selected text</label>
+                        <label><input type="checkbox" checked={userSettings.aiIncludeNoteExcerpt} onChange={(event) => updateUserSettings({ aiIncludeNoteExcerpt: event.target.checked })} /> Include note excerpt</label>
+                      </div>
+                      <div className="settings-provider-grid">
+                        {aiProviders.map((provider) => {
+                          const config = userSettings.aiProviders[provider.id]
+                          return (
+                            <article className={`provider-card ${config.enabled ? 'is-enabled' : ''}`} key={provider.id}>
+                              <header>
+                                <div>
+                                  <strong>{provider.name}</strong>
+                                  <p>{config.model || provider.defaultModel}</p>
+                                </div>
+                                <label className="settings-switch">
+                                  <input type="checkbox" checked={config.enabled} onChange={(event) => updateAIProvider(provider.id, { enabled: event.target.checked })} />
+                                </label>
+                              </header>
+                              <details>
+                                <summary>Connection details</summary>
+                                <label>
+                                  <span>API key</span>
+                                  <input type="password" value={config.apiKey} placeholder="Paste API key" onChange={(event) => updateAIProvider(provider.id, { apiKey: event.target.value })} />
+                                </label>
+                                <label>
+                                  <span>Model</span>
+                                  <input value={config.model} placeholder={provider.defaultModel} onChange={(event) => updateAIProvider(provider.id, { model: event.target.value })} />
+                                </label>
+                                {!provider.baseUrlLocked && (
+                                  <label>
+                                    <span>Base URL</span>
+                                    <input value={config.baseUrl ?? provider.baseUrl} onChange={(event) => updateAIProvider(provider.id, { baseUrl: event.target.value })} />
+                                  </label>
+                                )}
+                              </details>
+                              <footer>
+                                <span>{config.apiKey ? 'Key saved locally' : 'No key saved'}</span>
+                                {config.apiKey && <button type="button" onClick={() => updateAIProvider(provider.id, { apiKey: '', enabled: false })}>Clear key</button>}
+                              </footer>
+                            </article>
+                          )
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Info size={18} />
+                        <div>
+                          <h3>AI diagnostics</h3>
+                          <p>Provider status and usage details stay here, away from the editor.</p>
+                        </div>
+                      </div>
+                      <div className="settings-data-list">
+                        <span><strong>{userSettings.aiLastStatus ?? 'idle'}</strong> Last status</span>
+                        <span><strong>{userSettings.aiLastProvider ? aiProviders.find((provider) => provider.id === userSettings.aiLastProvider)?.name ?? userSettings.aiLastProvider : 'None'}</strong> Last provider</span>
+                        <span><strong>{userSettings.aiLastUsage?.inputTokens ?? '—'}</strong> Input tokens</span>
+                        <span><strong>{userSettings.aiLastUsage?.outputTokens ?? '—'}</strong> Output tokens</span>
+                        <span><strong>{userSettings.aiLastUsage?.cachedTokens ?? '—'}</strong> Cached tokens</span>
+                        <span><strong>{userSettings.aiLastError || 'None'}</strong> Last error</span>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {activeSettingsMeta.id === 'system' && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Info size={18} />
+                        <div>
+                          <h3>Data and diagnostics</h3>
+                          <p>Everything in this release is local-first.</p>
+                        </div>
+                      </div>
+                      <div className="settings-data-list">
+                        <span><strong>{notes.length}</strong> notes</span>
+                        <span><strong>{projects.length}</strong> projects</span>
+                        <span><strong>{atoms.length}</strong> atoms</span>
+                        <span><strong>{flashcardSets.length}</strong> sets</span>
+                        <span><strong>{dashboardStats.dailyStreak}</strong> day streak</span>
+                        <span><strong>{localLoadIssues.length}</strong> load issues</span>
+                      </div>
+                      {localLoadIssues.length > 0 && (
+                        <div className="settings-warning">
+                          <Info size={16} />
+                          <span>{localLoadIssues[0]}</span>
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="settings-card settings-section-group">
+                      <div className="settings-card-heading">
+                        <Download size={18} />
+                        <div>
+                          <h3>App updates</h3>
+                          <p>Signed desktop updates are delivered from GitHub Releases.</p>
+                        </div>
+                      </div>
+                      <div className={`settings-update-status is-${updateState.status}`}>
+                        <strong>
+                          {updateState.status === 'available'
+                            ? `Update ${updateState.version}`
+                            : updateState.status === 'checking'
+                              ? 'Checking'
+                              : updateState.status === 'downloading'
+                                ? 'Downloading'
+                                : updateState.status === 'installing'
+                                  ? 'Installing'
+                                  : updateState.status === 'ready'
+                                    ? 'Relaunch required'
+                                    : updateState.status === 'error'
+                                      ? updateState.errorCategory === 'signature'
+                                        ? 'Invalid update signature'
+                                        : updateState.errorCategory === 'manifest'
+                                          ? 'Update manifest failed'
+                                          : updateState.errorCategory === 'network'
+                                            ? 'Update network failed'
+                                            : 'Update failed'
+                                      : 'Desktop updater'}
+                        </strong>
+                        <span>{updateState.message}</span>
+                        {typeof updateState.downloadedBytes === 'number' && (
+                          <span>
+                            {Math.round(updateState.downloadedBytes / 1024 / 1024)} MB downloaded
+                            {updateState.contentLength ? ` of ${Math.round(updateState.contentLength / 1024 / 1024)} MB` : ''}
+                          </span>
+                        )}
+                      </div>
+                      <div className="settings-update-actions">
+                        <button type="button" className="settings-update-button" disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing'} onClick={() => void checkForUpdates(true)}>
+                          {updateState.status === 'checking' ? 'Checking...' : 'Check for updates'}
+                        </button>
+                        {(updateState.canInstall || updateState.status === 'available') && (
+                          <button type="button" className="settings-update-button" disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing'} onClick={() => void installAvailableUpdate()}>
+                            {updateState.status === 'downloading'
+                              ? 'Downloading...'
+                              : updateState.status === 'installing'
+                                ? 'Installing...'
+                                : 'Install update'}
+                          </button>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {activeSettingsMeta.id === 'community' && RELEASE_COMMUNITY_ENABLED && (
+                  <div className="settings-section-stack">
+                    <section className="settings-card settings-section-group settings-placeholder-card">
+                      <div className="settings-card-heading">
+                        <Users size={18} />
+                        <div>
+                          <h3>Community</h3>
+                          <p>Reserved for pinned recipients, privacy, sync preferences, and notification controls.</p>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                )}
+              </div>
             </div>
-          </section>
+            </section>
+          </div>
         )}
       </section>
 
@@ -7619,6 +9516,7 @@ function App() {
           result={aiResult}
           selectedProjectName={selectedProject?.name}
           aiInstructionUpdating={aiInstructionUpdating}
+          containerRef={activeView === 'editor' ? documentScrollRef : undefined}
           onClose={closeAIResult}
           onDraftChange={(patch) => setAiResult((current) => (current ? { ...current, ...patch } : current))}
           onPrimaryAction={() => {
@@ -7632,17 +9530,11 @@ function App() {
               return
             }
             if (aiResult.canReplaceSelection && aiResult.selection) {
-              editor
-                ?.chain()
-                .focus()
-                .setTextSelection(aiResult.selection)
-                .deleteSelection()
-                .insertContent(textToEditorContent(aiResult.draftText).content ?? [])
-                .run()
+              replaceSelectionWithAIResult(aiResult)
               closeAIResult()
               return
             }
-            if (editor) insertDraftText(editor, aiResult.draftText)
+            insertAIResultDraft(aiResult)
             closeAIResult()
           }}
           onDraftProjectInstructions={() => void draftProjectInstructionsFromAIResult()}
@@ -7650,8 +9542,12 @@ function App() {
             if (!selectedProject) return
             void updateProjectDescription(selectedProject.id, draft)
             setAiResult((current) => (current ? { ...current, projectInstructionDraft: undefined } : current))
+            showNotification({ message: 'Project instructions saved.', tone: 'success' })
           }}
-          onCopy={() => void copyToClipboard(aiResult.draftText)}
+          onCopy={() => {
+            void copyToClipboard(aiResult.draftText)
+            showNotification({ message: 'AI draft copied.', tone: 'success' })
+          }}
         />
       )}
 
@@ -7998,10 +9894,16 @@ function App() {
                         >
                           {previewOpen ? 'Hide preview' : 'Preview'}
                         </button>
-                        <button type="button" className="note-history-secondary" onClick={() => void copyToClipboard(snap.title)}>
+                        <button type="button" className="note-history-secondary" onClick={() => {
+                          void copyToClipboard(snap.title)
+                          showNotification({ message: 'Snapshot title copied.', tone: 'success' })
+                        }}>
                           Copy title
                         </button>
-                        <button type="button" className="note-history-secondary" onClick={() => void copyToClipboard(bodyText)}>
+                        <button type="button" className="note-history-secondary" onClick={() => {
+                          void copyToClipboard(bodyText)
+                          showNotification({ message: 'Snapshot body copied.', tone: 'success' })
+                        }}>
                           Copy body
                         </button>
                         <button type="button" className="note-history-restore" onClick={() => void restoreNoteSnapshot(snap)}>
@@ -8021,13 +9923,7 @@ function App() {
       )}
 
       {atomDialog && (
-        <div
-          className="modal-backdrop atom-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setAtomDialog(null)
-          }}
-        >
+        <ModalBackdrop containerRef={documentScrollRef} className="atom-dialog-backdrop" onClose={() => setAtomDialog(null)}>
           <section className="atom-dialog" role="dialog" aria-modal="true" aria-labelledby="atom-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
             <h2 id="atom-dialog-title" className="visually-hidden">
               Add term and meaning
@@ -8061,102 +9957,56 @@ function App() {
               <button type="button" className="primary" onClick={() => void saveAtomDialog()} disabled={!atomDialog.phrase.trim() || !atomDialog.definition.trim()}>Save</button>
             </footer>
           </section>
-        </div>
+        </ModalBackdrop>
       )}
 
-      {profileLoaded && (!localProfile || profileModalOpen) && (
+      {profileLoaded && !localProfile && (
+        <OnboardingScreen
+          profileDraft={profileDraft}
+          onDraftChange={setProfileDraft}
+          onSubmit={() => void saveLocalProfile()}
+        />
+      )}
+
+      {profileLoaded && localProfile && profileModalOpen && (
         <div
           className="modal-backdrop profile-dialog-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && localProfile) setProfileModalOpen(false)
+            if (event.target === event.currentTarget) setProfileModalOpen(false)
           }}
         >
-          <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-            <h2 id="profile-dialog-title">{localProfile ? 'Profile' : 'Set up your profile'}</h2>
-            <p>{localProfile ? 'Tune how your local workspace identifies you.' : 'Choose the name shown in your notes and sidebar.'}</p>
-            <div className="profile-dialog-main">
-              <div className="profile-preview">
-                <div className="avatar profile-preview-avatar" style={{ background: profileDraft.avatarColor || DEFAULT_PROFILE_COLOR, color: avatarTextColor(profileDraft.avatarColor || DEFAULT_PROFILE_COLOR) }}>{normalizeInitials(profileDraft.initials || initialsFromName(profileDraft.displayName) || 'LN')}</div>
-                <strong>{profileDraft.displayName.trim() || 'Your name'}</strong>
-                  <span>{profileDraft.handle ? `@${profileDraft.handle}` : 'Local profile'}</span>
+          <section className="profile-dialog profile-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="profile-dialog-close" type="button" aria-label="Close profile" onClick={() => setProfileModalOpen(false)}>
+              <XIcon size={16} aria-hidden />
+            </button>
+            <header className="profile-progress-hero">
+              <div className="avatar profile-preview-avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>
+              <div>
+                <h2 id="profile-dialog-title">{profileGreeting}</h2>
+                <p>A quick check-in for your Loci trail.</p>
               </div>
-              <div className="profile-fields">
-                <label>
-                  Display name
-                  <input
-                    value={profileDraft.displayName}
-                    onChange={(event) => {
-                      const displayName = event.target.value
-                      setProfileDraft((current) => ({
-                        ...current,
-                        displayName,
-                        initials: localProfile ? current.initials : initialsFromName(displayName),
-                        handle: current.handleEdited ? current.handle : createBaseHandleFromDisplayName(displayName),
-                      }))
-                    }}
-                    placeholder="Your name"
-                    autoFocus
-                  />
-                </label>
-                <label>
-                  Initials
-                  <input
-                    value={profileDraft.initials}
-                    onChange={(event) => setProfileDraft((current) => ({ ...current, initials: normalizeInitials(event.target.value) }))}
-                    maxLength={3}
-                    placeholder="YN"
-                  />
-                </label>
-                <label>
-                  User tag
-                  <div className="profile-tag-input">
-                    <span>@</span>
-                    <input
-                      value={profileDraft.handle}
-                      onChange={(event) => setProfileDraft((current) => ({
-                        ...current,
-                        handle: normalizeUserHandle(event.target.value),
-                        handleEdited: true,
-                      }))}
-                      placeholder="yourtag"
-                    />
-                  </div>
-                </label>
-                <div className="profile-color-field">
-                  <span>Avatar color</span>
-                  <div className="profile-color-swatches">
-                    {PROFILE_COLORS.map((color) => (
-                      <button
-                        type="button"
-                        className={profileDraft.avatarColor === color ? 'is-active' : ''}
-                        key={color}
-                        style={{ background: color }}
-                        aria-label={`Use profile color ${color}`}
-                        onClick={() => setProfileDraft((current) => ({ ...current, avatarColor: color }))}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
+            </header>
+            <section className="profile-encouragement-card" aria-label="Profile encouragement">
+              <span>Today from Loci</span>
+              <p>{profileProgressMessage}</p>
+            </section>
+            <div className="profile-stats-grid profile-progress-stats">
+              <span><strong><AnimatedStatNumber value={profileStats.totalNotes} /></strong>Notes written</span>
+              <span><strong><AnimatedStatNumber value={profileStats.totalAtoms} /></strong>Atoms created</span>
+              <span><strong><AnimatedStatNumber value={profileStats.dailyStreak} /></strong>Day streak</span>
+              <span><strong><AnimatedStatNumber value={focusModeHours} decimals={focusModeHours < 10 ? 1 : 0} /></strong>Hours in focus</span>
+              <span><strong><AnimatedStatNumber value={profileStats.wordsWrittenThisWeek} /></strong>Words this week</span>
+              <span><strong><AnimatedStatNumber value={profileStats.totalProjects} /></strong>Projects made</span>
+              <span className="profile-stat-wide profile-word-count-stat"><strong><AnimatedStatNumber value={profileStats.totalWords} /></strong>Words and counting</span>
             </div>
-            {localProfile && (
-              <div className="profile-stats-grid">
-                <span><strong>{notes.length}</strong>Notes</span>
-                <span><strong>{projects.length}</strong>Projects</span>
-                <span><strong>{atoms.length}</strong>Atoms</span>
-                <span><strong>{dashboardStats.dailyStreak}</strong>Day streak</span>
-                <span><strong>{dashboardStats.notesUpdatedThisWeek}</strong>Updated this week</span>
-                <span><strong>{dashboardStats.recentAtomCount}</strong>Atoms this week</span>
-                <span className="profile-stat-wide"><strong>{dashboardStats.topProjects[0]?.project.name ?? 'None yet'}</strong>Most active project</span>
+            <section className="profile-next-action">
+              <div>
+                <strong>{profileNextAction.label}</strong>
+                <p>{profileNextAction.body}</p>
               </div>
-            )}
-            <footer>
-              {localProfile && <button type="button" onClick={() => setProfileModalOpen(false)}>Cancel</button>}
-              <button type="button" className="primary" onClick={() => void saveLocalProfile()} disabled={!profileDraft.displayName.trim()}>
-                {localProfile ? 'Save profile' : 'Start writing'}
-              </button>
-            </footer>
+              <button type="button" onClick={runProfileNextAction}>{profileNextAction.label}</button>
+            </section>
           </section>
         </div>
       )}

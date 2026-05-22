@@ -1,4 +1,5 @@
 export type AIProviderId = 'openai' | 'gemini' | 'claude' | 'kimi'
+export type AITransportMode = 'directByok' | 'local' | 'gateway'
 
 export type AIProviderSettings = {
   enabled: boolean
@@ -23,12 +24,16 @@ export type ProviderMeta = {
 }
 
 export type AITextRequest = {
+  transportMode?: AITransportMode
   providerId: AIProviderId
   provider: AIProviderSettings
   providerMeta: ProviderMeta
   taskInstruction: string
   userContent: string
   promptCacheKey?: string
+  temperature?: number
+  maxTokens?: number
+  contextManifest?: AIContextManifest
   signal: AbortSignal
 }
 
@@ -45,4 +50,19 @@ export type GatewayAIRequest = {
   taskInstruction: string
   userContent: string
   promptCacheKey?: string
+  contextManifest?: AIContextManifest
+}
+
+export type AIContextItem = {
+  id: string
+  label: string
+  charCount: number
+  sensitivity: 'low' | 'medium' | 'high'
+  enabledByPolicy: boolean
+}
+
+export type AIContextManifest = {
+  transportMode: AITransportMode
+  totalChars: number
+  items: AIContextItem[]
 }

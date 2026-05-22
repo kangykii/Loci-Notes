@@ -1,4 +1,4 @@
-export type HomeTipAction = 'newNote' | 'openAtoms' | 'openProjects' | 'openSearch'
+export type HomeTipAction = 'newNote' | 'openAtoms' | 'openSets' | 'openProjects' | 'openSearch'
 
 export type HomeTip = {
   id: string
@@ -9,57 +9,59 @@ export type HomeTip = {
 export const HOME_TIPS: HomeTip[] = [
   {
     id: 'atoms',
-    body: 'Highlight any phrase in a note and press A to mint an atom — small, reusable thoughts you can drop into any document later.',
+    body: 'Select a phrase in a note, then press Atomise to save it as an atom. Atoms keep definitions and reusable ideas close to the writing they came from.',
     cta: { label: 'Browse atoms', action: 'openAtoms' },
   },
   {
-    id: 'templates',
-    body: 'Start a fresh note from a template — reports, meeting logs, study sheets — instead of staring at a blank page.',
-    cta: { label: 'New from template', action: 'newNote' },
+    id: 'new-note',
+    body: 'When an idea is still rough, start a blank note first and sort it later. Loci keeps unsorted notes visible until you give them a project.',
+    cta: { label: 'New note', action: 'newNote' },
   },
   {
     id: 'projects',
-    body: 'Drag a loose file onto any project in the sidebar to file it. Loci will quietly tidy the inbox for you.',
+    body: 'Drag an unsorted file onto a project card to file it. The note moves out of Unsorted files and into that project without opening a menu.',
     cta: { label: 'Open projects', action: 'openProjects' },
   },
   {
     id: 'search',
-    body: 'Cmd/Ctrl+K jumps straight to search. Type a few letters of any note, atom, or project — Loci weighs your recent work first.',
+    body: 'Cmd/Ctrl+K opens global search. Type a few letters to find a note, project, or atom without leaving your current flow.',
     cta: { label: 'Try search', action: 'openSearch' },
   },
   {
-    id: 'focus',
-    body: 'Toggle focus mode on a note to dim the chrome and write to the page. Everything else fades out of view.',
+    id: 'search-keys',
+    body: 'In search, use ArrowUp and ArrowDown to move through results, then press Enter to open the selected note, project, or atom.',
+    cta: { label: 'Try search', action: 'openSearch' },
   },
   {
-    id: 'shortcuts',
-    body: 'Most of Loci is keyboard-first. / opens the block menu inside a note, and Esc steps you back out — like a good editor should.',
+    id: 'escape',
+    body: 'Esc is the quick way back to the page. It closes search, dialogs, atom creation, image crop mode, and the AI prompt.',
   },
   {
-    id: 'streak',
-    body: 'Loci tracks the days you write, not the words. A single line counts — the habit matters more than the volume.',
+    id: 'clear-formatting',
+    body: 'If pasted text brings messy styling with it, select the text in the editor and press Cmd/Ctrl+\\ to clear formatting.',
   },
   {
     id: 'sets',
-    body: 'Group related atoms into a Set and you can study them like flashcards — useful right before an exam or a meeting.',
-    cta: { label: 'Open atoms', action: 'openAtoms' },
+    body: 'Open Atoms, switch to Sets, and group related atoms into a study deck. It turns the ideas you saved while writing into review cards.',
+    cta: { label: 'Open sets', action: 'openSets' },
   },
   {
-    id: 'community',
-    body: 'Sharing a note to a friend group sends only the snapshot you choose. Your other notes stay private by default.',
+    id: 'study-keys',
+    body: 'Studying a Set works from the keyboard: Space or Enter flips the card, and ArrowLeft or ArrowRight moves between cards.',
+    cta: { label: 'Open sets', action: 'openSets' },
   },
   {
-    id: 'breath',
-    body: 'A blank page is not a problem to solve. Open one, write a single sentence, and let the rest follow.',
-  },
-  {
-    id: 'recall',
-    body: 'Reread a note from a month ago. Old thinking is the easiest way to find the next idea.',
-  },
-  {
-    id: 'archive',
-    body: 'Move stale projects out of the way instead of deleting them. Loci keeps them ready if you ever want to return.',
+    id: 'project-polish',
+    body: 'Pin active projects and give them colours from the project menu. The Projects view becomes easier to scan when busy work piles up.',
     cta: { label: 'Open projects', action: 'openProjects' },
+  },
+  {
+    id: 'continue-writing',
+    body: 'Use Continue writing on Home to reopen your latest note. Recent notes below it are the fastest way back into yesterday\'s work.',
+  },
+  {
+    id: 'toolbar',
+    body: 'The editor toolbar is for actions tied to the current note: Atomise selected text, format blocks, highlight passages, ask AI, or export.',
   },
 ]
 

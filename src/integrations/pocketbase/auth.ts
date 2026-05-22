@@ -17,10 +17,6 @@ export async function signUpWithEmail(email: string, password: string, name: str
   return await signInWithEmail(email, password)
 }
 
-export function signOut() {
-  pb.authStore.clear()
-}
-
 export function getCurrentUser(): AuthModel {
   return pb.authStore.model
 }

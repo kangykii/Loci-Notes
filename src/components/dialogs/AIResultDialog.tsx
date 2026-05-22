@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { X } from 'lucide-react'
+import { ModalBackdrop } from './ModalBackdrop'
 import {
   MARK_WRITING_FEEDBACK_SECTIONS,
   aiDraftLabel,
@@ -28,7 +29,7 @@ function MarkWritingFeedbackFields({
         <div key={key} className="ai-mark-feedback-card">
           <span className="ai-mark-feedback-card-title">{label}</span>
           <textarea
-            className="ai-mark-feedback-card-input scroll-hover"
+            className="ai-mark-feedback-card-input"
             value={sections[key]}
             onChange={(event) => patch(key, event.target.value)}
             aria-label={label}
@@ -93,7 +94,7 @@ function AiDraftFormattedPreview({ text }: { text: string }) {
   if (!nodes.length) {
     return <p className="ai-draft-preview-empty">Nothing to preview yet.</p>
   }
-  return <div className="ai-draft-preview-doc scroll-hover">{nodes}</div>
+  return <div className="ai-draft-preview-doc">{nodes}</div>
 }
 
 function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
@@ -116,6 +117,42 @@ function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
     )
   }
 
+  if (payload.kind === 'list') {
+    const ordered = payload.data.listType === 'numberedList'
+    const checklist = payload.data.listType === 'checklist'
+    const ListTag = ordered ? 'ol' : 'ul'
+    return (
+      <div className="ai-block-preview">
+        <ListTag className="ai-block-preview-list">
+          {payload.data.items.map((item, index) => (
+            <li key={`${item}-${index}`}>
+              {checklist && <span aria-hidden className="ai-block-preview-check" />}
+              {item}
+            </li>
+          ))}
+        </ListTag>
+      </div>
+    )
+  }
+
+  if (payload.kind === 'code') {
+    return (
+      <div className="ai-block-preview">
+        <pre className="ai-block-preview-code"><code>{payload.data.code}</code></pre>
+      </div>
+    )
+  }
+
+  if (payload.kind === 'latex') {
+    return (
+      <div className="ai-block-preview">
+        <figure className="ai-block-preview-latex">
+          <code>{payload.data.latex}</code>
+        </figure>
+      </div>
+    )
+  }
+
   return (
     <div className="ai-block-preview">
       <figure className="ai-block-preview-quote">
@@ -130,6 +167,8 @@ export function AIResultDialog({
   result,
   selectedProjectName,
   aiInstructionUpdating,
+  anchorRef,
+  containerRef,
   onClose,
   onDraftChange,
   onPrimaryAction,
@@ -140,6 +179,8 @@ export function AIResultDialog({
   result: AIResult
   selectedProjectName?: string
   aiInstructionUpdating: boolean
+  anchorRef?: RefObject<HTMLElement | null>
+  containerRef?: RefObject<HTMLElement | null>
   onClose: () => void
   onDraftChange: (patch: Partial<Pick<AIResult, 'draftText' | 'projectInstructionDraft'>>) => void
   onPrimaryAction: () => void
@@ -148,13 +189,7 @@ export function AIResultDialog({
   onCopy: () => void
 }) {
   return (
-    <div
-      className="modal-backdrop ai-result-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
+    <ModalBackdrop anchorRef={anchorRef} containerRef={containerRef} className="ai-result-backdrop" onClose={onClose}>
       <section
         className={`ai-result-dialog${result.canReplaceSelection && result.selectionOriginalText !== undefined ? ' ai-result-dialog--wide' : ''}`}
         role="dialog"
@@ -176,12 +211,11 @@ export function AIResultDialog({
             <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
               <div className="ai-rewrite-compare-pane">
                 <span className="ai-rewrite-compare-heading">Original selection</span>
-                <div className="ai-rewrite-compare-readonly scroll-hover">{result.selectionOriginalText.trim() || '—'}</div>
+                <div className="ai-rewrite-compare-readonly">{result.selectionOriginalText.trim() || '—'}</div>
               </div>
               <div className="ai-rewrite-compare-pane">
                 <label className="ai-draft-editor ai-rewrite-compare-draft">
                   <textarea
-                    className="scroll-hover"
                     value={result.draftText}
                     onChange={(event) => onDraftChange({ draftText: event.target.value })}
                     aria-label={aiDraftLabel(result.taskType)}
@@ -193,7 +227,6 @@ export function AIResultDialog({
           ) : (
             <label className="ai-draft-editor">
               <textarea
-                className="scroll-hover"
                 value={result.draftText}
                 onChange={(event) => onDraftChange({ draftText: event.target.value })}
                 aria-label={aiDraftLabel(result.taskType)}
@@ -218,7 +251,6 @@ export function AIResultDialog({
           {result.projectInstructionDraft !== undefined && (
             <label className="ai-draft-editor ai-project-instruction-draft">
               <textarea
-                className="scroll-hover"
                 value={result.projectInstructionDraft}
                 onChange={(event) => onDraftChange({ projectInstructionDraft: event.target.value })}
                 aria-label="Project instructions update"
@@ -252,6 +284,6 @@ export function AIResultDialog({
           <button type="button" onClick={onCopy}>Copy</button>
         </footer>
       </section>
-    </div>
+    </ModalBackdrop>
   )
 }

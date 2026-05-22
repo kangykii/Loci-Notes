@@ -41,7 +41,7 @@ export function VirtualList<T>({
   }
 
   return (
-    <div ref={containerRef} className={`virtual-list scroll-hover ${className}`.trim()} style={style} onScroll={onScroll} aria-label={ariaLabel} role={role}>
+    <div ref={containerRef} className={`virtual-list scroll-region-stable ${className}`.trim()} style={style} onScroll={onScroll} aria-label={ariaLabel} role={role}>
       <div className="virtual-list-spacer" style={{ height: totalHeight }}>
         {virtualItems.map((virtualItem) => (
           <div
@@ -100,7 +100,7 @@ export function VirtualGrid<T>({
   }
 
   return (
-    <div ref={containerRef} className={`virtual-grid scroll-hover ${className}`.trim()} onScroll={onScroll} aria-label={ariaLabel}>
+    <div ref={containerRef} className={`virtual-grid scroll-region-stable ${className}`.trim()} onScroll={onScroll} aria-label={ariaLabel}>
       <div className="virtual-list-spacer" style={{ height: totalHeight }}>
         {virtualItems.map((virtualRow) => {
           const start = virtualRow.index * columns

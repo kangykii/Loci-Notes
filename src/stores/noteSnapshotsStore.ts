@@ -1,5 +1,3 @@
-import { db } from '../db'
+import { noteSnapshotsRepository } from '../repositories/noteSnapshotsRepository'
 
-export const noteSnapshotsStore = {
-  list: () => db.noteSnapshots.toArray(),
-}
+export const noteSnapshotsStore = noteSnapshotsRepository

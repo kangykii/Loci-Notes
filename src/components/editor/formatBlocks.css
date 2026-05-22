@@ -1,0 +1,334 @@
+.note-editor ul[data-type="taskList"] {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  padding: 0;
+  margin: 0 auto 18px;
+}
+
+.note-editor ul:not([data-type="taskList"]),
+.note-editor ol {
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 0 auto 18px;
+  padding-left: 28px;
+  color: #2E3440;
+}
+
+.note-editor ul:not([data-type="taskList"]) li,
+.note-editor ol li {
+  padding-left: 4px;
+  margin: 6px 0;
+}
+
+.note-editor ul:not([data-type="taskList"]) p,
+.note-editor ol p {
+  margin: 0;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] {
+  display: flex !important;
+  gap: 9px;
+  align-items: center !important;
+  color: #2E3440;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > label {
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.45em;
+  min-height: 0;
+  margin: 0;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #1A1A1A;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > div {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > div > p {
+  margin: 0 !important;
+  line-height: 1.45;
+}
+
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div,
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div p,
+.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div * {
+  color: rgba(46, 52, 64, 0.58);
+  text-decoration-line: line-through !important;
+  text-decoration-thickness: 1.5px;
+}
+
+.note-editor .tableWrapper {
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 4px auto 20px;
+  overflow-x: auto;
+  border-radius: 10px;
+  scrollbar-gutter: stable;
+}
+
+.note-editor table {
+  width: max(100%, 520px);
+  max-width: none;
+  border-collapse: collapse;
+  table-layout: fixed;
+  border: 1px solid rgba(26, 26, 26, 0.24);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #F4F4F2;
+  box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+}
+
+.note-editor th,
+.note-editor td {
+  border: 1px solid rgba(46, 52, 64, 0.16);
+  padding: 9px 11px;
+  vertical-align: top;
+  color: #1A1A1A;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.note-editor th {
+  background: #2E3440;
+  color: #F4F4F2;
+  font-size: 12px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.note-editor th * {
+  color: inherit;
+}
+
+.note-editor th p,
+.note-editor td p {
+  margin: 0;
+}
+
+.note-editor .selectedCell::after {
+  background: rgba(62, 50, 32, 0.16);
+  box-shadow: inset 0 0 0 2px rgba(26, 26, 26, 0.48);
+}
+
+.note-editor .column-resize-handle {
+  background: #1A1A1A;
+  bottom: -1px;
+  pointer-events: none;
+  position: absolute;
+  right: -2px;
+  top: 0;
+  width: 3px;
+}
+
+.note-editor .loci-quote {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 6px auto 22px;
+  padding: 24px 34px 24px 48px;
+  border-left: 4px solid #2E3440;
+  border-radius: 0 12px 12px 0;
+  background: rgba(46, 52, 64, 0.08);
+}
+
+.note-editor .loci-quote::before {
+  content: "\"";
+  position: absolute;
+  top: 18px;
+  left: 17px;
+  color: #2E3440;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.note-editor .loci-quote p {
+  margin: 0;
+  color: #2E3440;
+  font-size: 16px;
+  font-style: italic;
+  line-height: 1.58;
+}
+
+.note-editor .loci-quote p[data-quote-author="true"] {
+  color: #1A1A1A;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.note-editor pre {
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 6px auto 22px;
+  overflow-x: auto;
+  border: 1px solid rgba(26, 26, 26, 0.22);
+  border-radius: 8px;
+  background: #2E3440;
+  color: #F4F4F2;
+  padding: 14px 16px;
+  box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+}
+
+.note-editor pre code {
+  display: block;
+  min-width: max-content;
+  color: inherit;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.62;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.note-editor pre.ProseMirror-selectednode {
+  outline: 2px solid rgba(26, 26, 26, 0.26);
+  outline-offset: 3px;
+}
+
+.note-editor .loci-latex {
+  display: grid;
+  gap: 10px;
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 8px auto 22px;
+  padding: 16px;
+  border: 1px solid rgba(26, 26, 26, 0.22);
+  border-radius: 10px;
+  background: #2E3440;
+  box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+}
+
+.note-editor .loci-latex-source {
+  display: none;
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  border: 1px solid rgba(244, 244, 242, 0.22);
+  border-radius: 8px;
+  outline: 0;
+  background: rgba(26, 26, 26, 0.28);
+  color: #F4F4F2;
+  padding: 10px 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.note-editor .loci-latex.is-editing .loci-latex-source {
+  display: block;
+}
+
+.note-editor .loci-latex-source:focus {
+  border-color: rgba(244, 244, 242, 0.46);
+  box-shadow: 0 0 0 3px rgba(244, 244, 242, 0.08);
+}
+
+.note-editor .loci-latex-preview {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(244, 244, 242, 0.95);
+  color: #1A1A1A;
+  font-family: "Cambria Math", "Times New Roman", serif;
+  font-size: 24px;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.note-editor .loci-latex.ProseMirror-selectednode {
+  outline: 2px solid rgba(26, 26, 26, 0.28);
+  outline-offset: 3px;
+}
+
+.note-editor hr {
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  height: 1px;
+  border: 0;
+  margin: 18px auto 24px;
+  background: linear-gradient(90deg, transparent, rgba(26, 26, 26, 0.44), transparent);
+}
+
+.format-side-controls {
+  position: absolute;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 142px;
+  gap: 3px;
+  border: 1px solid rgba(46, 52, 64, 0.1);
+  border-radius: 999px;
+  background: rgba(244, 244, 242, 0.82);
+  padding: 3px;
+  opacity: 0.96;
+  box-shadow: 0 10px 26px rgba(26, 26, 26, 0.08);
+  backdrop-filter: blur(14px) saturate(1.04);
+  transform: translateY(0);
+  transform-origin: left center;
+  animation: editorSideControlsIn var(--editor-motion-fast, 140ms) var(--editor-motion-ease, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+.format-side-controls button {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #2E3440;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background var(--editor-motion-fast, 140ms) ease,
+    color var(--editor-motion-fast, 140ms) ease,
+    transform var(--editor-motion-fast, 140ms) var(--editor-motion-ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.format-side-controls span {
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.format-side-controls button svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
+.format-side-controls button:hover {
+  background: rgba(46, 52, 64, 0.1);
+  color: #1A1A1A;
+  transform: translateY(-1px);
+}
+
+.format-side-controls .format-side-control-wide {
+  width: auto;
+  min-width: 50px;
+  padding: 0 7px;
+}

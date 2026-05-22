@@ -5,16 +5,40 @@
   --editor-motion-slow: 320ms;
   --editor-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --editor-motion-precise: cubic-bezier(0.2, 0, 0.2, 1);
+  --smooth-caret-color: #2E3440;
+}
+
+.smooth-caret {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 12;
+  width: var(--smooth-caret-width, 2px);
+  height: var(--smooth-caret-height, 20px);
+  border-radius: 999px;
+  background: var(--smooth-caret-color);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(var(--smooth-caret-x, 0), var(--smooth-caret-y, 0), 0);
+  will-change: transform, opacity;
+}
+
+.smooth-caret.is-visible {
+  opacity: 1;
+}
+
+.block-editor-shell.has-smooth-caret .note-editor {
+  caret-color: transparent;
 }
 
 .floating-editor-wrap {
   position: fixed;
-  left: var(--floating-toolbar-center-x, calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2));
+  left: var(--floating-toolbar-center-x, 50%);
   bottom: 28px;
   z-index: 40;
   display: grid;
   justify-items: center;
-  width: min(940px, var(--floating-toolbar-max-width, calc(100vw - var(--sidebar-width) - 48px)));
+  width: min(940px, var(--floating-toolbar-max-width, calc(100vw - 48px)));
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -417,10 +441,13 @@
   width: 220px;
   display: grid;
   pointer-events: auto;
-  border: 0.5px solid rgba(46, 52, 64, 0.14);
+  border: 1px solid var(--surface-glass-border);
   border-radius: 12px;
-  background: #F4F4F2;
-  box-shadow: none;
+  background: var(--surface-glass-strong);
+  box-shadow:
+    var(--shadow-key),
+    0 22px 54px rgba(26, 26, 26, 0.12);
+  backdrop-filter: blur(18px) saturate(1.05);
   padding: 6px;
   transform-origin: bottom right;
   animation: editorPanelIn var(--editor-motion-medium) var(--editor-motion-ease) both;
@@ -442,14 +469,17 @@
   background: transparent;
   padding: 0 10px;
   text-align: left;
+  color: #2E3440;
+  font-family: inherit;
   font-size: 13px;
-  color: #1A1A1A;
-  font: inherit;
-  font-weight: 400;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.more-option-grid button:hover {
-  background: rgba(46, 52, 64, 0.08);
+.more-option-grid button:hover,
+.more-option-grid button[aria-pressed="true"] {
+  background: var(--hover-wash);
+  color: #1A1A1A;
 }
 
 .more-option-grid button svg {
@@ -461,6 +491,11 @@
 }
 
 .more-option-grid .danger {
+  color: #3E3220;
+}
+
+.more-option-grid .danger:hover {
+  background: rgba(62, 50, 32, 0.1);
   color: #3E3220;
 }
 
@@ -537,6 +572,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .smooth-caret {
+    display: none;
+  }
+
+  .block-editor-shell.has-smooth-caret .note-editor {
+    caret-color: auto;
+  }
+
   .floating-editor-bar,
   .toolbar-zone,
   .toolbar-structural-divider,
@@ -596,7 +639,6 @@
 /* Popup colour system for editor overlays */
 .floating-editor-bar,
 .highlight-palette,
-.floating-editor-panel,
 .ai-prompt-hint {
   border-color: rgba(46, 52, 64, 0.16);
   background:
@@ -629,16 +671,20 @@
 }
 
 .floating-editor-bar button,
-.floating-editor-panel button,
 .floating-ai-prompt input {
   color: #1A1A1A;
 }
 
 .floating-editor-bar button:hover,
-.floating-editor-panel button:hover,
 .more-option-grid button:hover,
 .ai-prompt-hint button:hover {
   background: rgba(46, 52, 64, 0.055);
+  color: #1A1A1A;
+}
+
+.floating-editor-panel button:hover,
+.floating-editor-panel button[aria-pressed="true"] {
+  background: var(--hover-wash);
   color: #1A1A1A;
 }
 
@@ -683,15 +729,6 @@
 
 .ai-mode-pill--rewrite span {
   background: #1A1A1A;
-}
-
-.more-option-grid .danger {
-  color: #3E3220;
-}
-
-.more-option-grid .danger:hover {
-  background: rgba(62, 50, 32, 0.12);
-  color: #3E3220;
 }
 
 .ios-switch {

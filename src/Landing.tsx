@@ -1,81 +1,182 @@
 import {
+  ArrowRight,
   ArrowUpRight,
   Brain,
   Check,
   Download,
   FileText,
+  Highlighter,
   Layers3,
   Menu,
-  PenLine,
+  NotebookPen,
   Search,
   Sparkles,
 } from 'lucide-react'
+import cityLandscape from './assets/marginalia/city-snow-avenue.png'
+import readingWoman from './assets/marginalia/reading-woman.svg'
+import walkingWoman from './assets/marginalia/walking-woman.svg'
+import walkmanBoy from './assets/marginalia/walkman-boy.svg'
+import { BrandLogo } from './BrandLogo.tsx'
 import './Landing.css'
+
+const demoSteps = [
+  {
+    title: 'Dynamic typing',
+    body: 'Start with a normal lecture note. Loci keeps the page quiet while your thinking is still moving.',
+  },
+  {
+    title: 'Reusable ideas',
+    body: 'Highlight a phrase and turn it into an atom: a small concept you can find, review, and reuse later.',
+  },
+  {
+    title: 'AI when it helps',
+    body: 'Ask for a rewrite, summary, marking pass, or atom candidates without leaving the editor.',
+  },
+  {
+    title: 'Search the system',
+    body: 'Jump across notes, projects, and atoms when exams or essays need the thread back.',
+  },
+]
 
 const featureCards = [
   {
-    icon: Layers3,
-    title: 'Projects stay clear',
-    body: 'Group notes, files, and atoms around the work they belong to.',
-  },
-  {
     icon: Brain,
-    title: 'Ideas become atoms',
-    body: 'Turn important phrases into compact concepts you can revisit.',
+    title: 'Atoms',
+    body: 'Turn durable phrases into concept cards that stay linked to the note where they started.',
   },
   {
-    icon: Search,
-    title: 'Recall feels fast',
-    body: 'Search across your thinking without losing the larger context.',
+    icon: Layers3,
+    title: 'Project memory',
+    body: 'Keep subjects, assignments, source notes, and instructions separated without scattering them.',
+  },
+  {
+    icon: NotebookPen,
+    title: 'Study sets',
+    body: 'Collect atoms into flashcard-style sets for exam prep and quick review sessions.',
   },
   {
     icon: FileText,
-    title: 'Drafts keep moving',
-    body: 'Move from rough capture to polished notes and exports in one place.',
+    title: 'Exports',
+    body: 'Move finished work out as PDF or Word documents when it needs to become an assignment.',
   },
-]
-
-const stats = [
-  ['42k', 'notes organized'],
-  ['8.7x', 'faster recall'],
-  ['120+', 'project spaces'],
+  {
+    icon: Highlighter,
+    title: 'Focus mode',
+    body: 'A cleaner editor surface for drafting, marking up key phrases, and staying with the sentence.',
+  },
+  {
+    icon: Check,
+    title: 'Local-first desktop',
+    body: 'A Windows app shaped for personal study work, with release downloads served from GitHub.',
+  },
 ]
 
 const useCases = [
-  'Students building study systems',
-  'Researchers connecting source notes',
-  'Writers collecting reusable ideas',
-  'Teams shaping project knowledge',
-]
-
-const downloadOptions = [
   {
-    title: 'Windows Setup EXE',
-    detail: 'Recommended installer and signed updater package for Windows users.',
-    href: 'https://github.com/kangykii/Loci-Notes/releases/latest/download/Loci-Notes-Setup-1.1.0-x64.exe',
-    label: 'Download EXE',
+    title: 'Coursework notes',
+    body: 'Keep weekly readings, lecture fragments, and tutorial ideas in one calm workspace.',
+  },
+  {
+    title: 'Exam revision',
+    body: 'Convert recurring definitions and formulas into atoms, then review them as study sets.',
+  },
+  {
+    title: 'Research projects',
+    body: 'Separate sources by project and recover the exact thread behind a quote or claim.',
+  },
+  {
+    title: 'Essay drafting',
+    body: 'Draft, restructure, ask AI for a marking pass, and export the polished document.',
   },
 ]
+
+const recallResults = [
+  ['Atom', 'Spacing effect', 'Psychology 201'],
+  ['Note', 'Week 07 memory systems', 'Updated today'],
+  ['Project', 'Cognitive science essay', '12 linked atoms'],
+]
+
+const downloadHref =
+  'https://github.com/kangykii/Loci-Notes/releases/download/v1.1.1/Loci%20Notes_1.1.1_x64-setup.exe'
+
+function ProductDemo() {
+  return (
+    <div className="product-demo" aria-label="Animated Loci Notes product demo">
+      <div className="demo-sidebar" aria-hidden>
+        <span className="demo-dot" />
+        <span className="demo-nav-line is-wide" />
+        <span className="demo-nav-line" />
+        <span className="demo-nav-line is-active" />
+        <span className="demo-nav-line" />
+      </div>
+      <div className="demo-editor">
+        <div className="demo-toolbar">
+          <span>Psychology 201</span>
+          <div>
+            <i />
+            <i />
+            <i />
+          </div>
+        </div>
+        <div className="demo-page">
+          <p className="demo-kicker">LECTURE NOTE</p>
+          <h2>Memory improves when study is spaced over time.</h2>
+          <p className="demo-type-line">
+            <span>Spaced repetition works because each review asks the brain to reconstruct the idea.</span>
+          </p>
+          <p>
+            That effort makes recall stronger than rereading the same paragraph in one sitting.
+          </p>
+          <div className="atom-selection">
+            <span>spaced repetition</span>
+            <strong>Atom created</strong>
+          </div>
+          <div className="ai-action-bar" aria-label="AI actions shown in the product demo">
+            <button type="button">
+              <Sparkles size={15} aria-hidden /> Rewrite
+            </button>
+            <button type="button">Summarise</button>
+            <button type="button">Atomise</button>
+            <button type="button">Mark</button>
+          </div>
+        </div>
+      </div>
+      <aside className="demo-recall" aria-label="Search recall demo">
+        <div className="recall-search">
+          <Search size={15} aria-hidden />
+          <span>memory</span>
+        </div>
+        {recallResults.map(([kind, title, meta]) => (
+          <div className="recall-result" key={title}>
+            <span>{kind}</span>
+            <strong>{title}</strong>
+            <small>{meta}</small>
+          </div>
+        ))}
+      </aside>
+    </div>
+  )
+}
 
 function Landing() {
   return (
     <main className="landing-page">
       <div className="landing-shell">
-        <header className="site-header" aria-label="Loci Notes advertising navigation">
+        <header className="site-header" aria-label="Loci Notes navigation">
           <a className="brand-mark" href="#top" aria-label="Loci Notes home">
             <span className="brand-symbol">
-              <img src="/logo.png" alt="" aria-hidden />
+              <BrandLogo />
             </span>
             <span>Loci Notes</span>
           </a>
           <nav className="desktop-nav" aria-label="Primary">
-            <a href="#focus">Focus</a>
+            <a href="#demos">Demos</a>
             <a href="#features">Features</a>
-            <a href="#use-cases">Use cases</a>
-            <a href="#proof">Proof</a>
+            <a href="#students">Students</a>
+            <a href="#download">Download</a>
           </nav>
           <div className="header-actions">
-            <a className="ghost-link" href="#proof">Preview</a>
+            <a className="ghost-link" href="#demos">Watch demo</a>
             <a className="primary-link" href="#download">Download App</a>
             <button className="menu-button" type="button" aria-label="Open menu">
               <Menu size={18} aria-hidden />
@@ -85,67 +186,55 @@ function Landing() {
 
         <section className="hero-section" id="top">
           <div className="hero-copy">
-            <span className="eyebrow">Advertising campaign for focused thinkers</span>
-            <h1>Loci Notes</h1>
+            <h1>A calmer workspace for serious students.</h1>
             <p>
-              A calm way to present the workspace where notes, projects, and atoms become a clearer
-              system for thinking.
+              Loci Notes turns lecture notes, essay fragments, and useful phrases into a connected
+              study system of notes, projects, atoms, and flashcards.
             </p>
             <div className="hero-ctas">
               <a className="hero-primary" href="#download">
                 Download App <ArrowUpRight size={16} aria-hidden />
               </a>
-              <a className="hero-secondary" href="#features">
-                Explore campaign
+              <a className="hero-secondary" href="#demos">
+                See product demos <ArrowRight size={16} aria-hidden />
               </a>
             </div>
           </div>
+          <ProductDemo />
+        </section>
 
-          <div className="hero-preview" aria-label="Blank screenshot placeholder for Loci Notes app">
-            <div className="preview-sidebar" />
-            <div className="preview-canvas">
-              <div className="preview-topline" />
-              <div className="preview-grid">
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="preview-wide" />
-            </div>
+        <section className="demo-section" id="demos">
+          <div className="section-heading">
+            <h2>From rough notes to reusable knowledge.</h2>
+            <p>
+              The landing page should show the loop students actually care about: capture, clarify,
+              atomise, review, and recover.
+            </p>
+          </div>
+          <div className="demo-grid">
+            {demoSteps.map((step, index) => (
+              <article className="demo-step" key={step.title}>
+                <strong>{String(index + 1).padStart(2, '0')}</strong>
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+              </article>
+            ))}
           </div>
         </section>
 
-        <section className="stats-row" aria-label="Campaign highlights">
-          {stats.map(([value, label]) => (
-            <div className="stat-pill" key={label}>
-              <strong>{value}</strong>
-              <span>{label}</span>
-            </div>
-          ))}
-        </section>
-
-        <section className="intro-section" id="focus">
-          <h2>
-            Focusing on clarity, <span>we keep thinking in motion</span>
-          </h2>
-          <p>
-            This advertising page should feel like the product itself: spacious, quiet, and built
-            around the way ideas are gathered, sorted, and returned to later.
-          </p>
-        </section>
-
-        <section className="bento-section" id="features">
-          <div className="section-heading">
-            <span>Features</span>
-            <h2>
-              Notes that feel organized <span>before they feel heavy</span>
-            </h2>
+        <section className="feature-proof" id="features">
+          <div className="proof-copy">
+            <h2>Small tools, chosen for the study loop.</h2>
+            <p>
+              No fake metrics, no filler. Every card points to a capability already present in the
+              app and explains why it matters for coursework.
+            </p>
           </div>
           <div className="feature-grid">
-            {featureCards.map(({ icon: Icon, title, body }, index) => (
-              <article className={`feature-tile tile-${index + 1}`} key={title}>
-                <div className="tile-icon">
-                  <Icon size={20} aria-hidden />
+            {featureCards.map(({ icon: Icon, title, body }) => (
+              <article className="feature-card" key={title}>
+                <div className="feature-icon">
+                  <Icon size={19} aria-hidden />
                 </div>
                 <h3>{title}</h3>
                 <p>{body}</p>
@@ -154,87 +243,56 @@ function Landing() {
           </div>
         </section>
 
-        <section className="use-case-section" id="use-cases">
-          <div className="use-case-copy">
-            <span>Use cases</span>
-            <h2>
-              A familiar shape for <span>scattered ideas</span>
-            </h2>
-            <a className="small-pill" href="#download">
-              View downloads <ArrowUpRight size={14} aria-hidden />
-            </a>
+        <section className="student-section" id="students">
+          <div className="student-art" aria-hidden>
+            <img className="student-art-primary" src={readingWoman} alt="" />
+            <img className="student-art-secondary" src={walkmanBoy} alt="" />
+          </div>
+          <div className="section-heading">
+            <h2>One place for the work before it becomes polished.</h2>
           </div>
           <div className="use-case-grid">
-            {useCases.map((item, index) => (
-              <article key={item}>
-                <span>{String(index + 1).padStart(2, '0')}</span>
-                <strong>{item}</strong>
+            {useCases.map((item) => (
+              <article key={item.title}>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
               </article>
             ))}
           </div>
         </section>
 
-        <section className="proof-section" id="proof">
-          <div className="proof-card">
-            <div>
-              <span>Proof</span>
-              <h2>
-                See how the story lands <span>with real app screenshots later</span>
-              </h2>
-              <p>
-                The campaign can hold product screenshots without needing stock imagery or
-                unrelated visuals. For now, these frames stay deliberately blank.
-              </p>
-            </div>
-            <div className="screenshot-frame" aria-label="Blank screenshot placeholder">
-              <div className="frame-toolbar">
-                <i />
-                <i />
-                <i />
-              </div>
-              <div className="frame-empty">
-                <PenLine size={24} aria-hidden />
-              </div>
-            </div>
+        <section className="landscape-section" aria-label="Loci Notes illustrated workspace">
+          <div className="landscape-copy">
+            <h2>Keep the page calm. Let the system do the remembering.</h2>
+            <p>
+              The illustrations stay as atmosphere, not decoration for its own sake. The product
+              remains the main proof.
+            </p>
           </div>
+          <div className="landscape-frame">
+            <img src={cityLandscape} alt="Ink landscape illustration of a city skyline" />
+          </div>
+          <img className="walking-ink" src={walkingWoman} alt="" aria-hidden />
         </section>
 
-        <section className="closing-section" id="download">
+        <section className="download-section" id="download">
           <div>
-            <span>Download</span>
-            <h2>
-              Download the Windows app, <span>served from GitHub Releases</span>
-            </h2>
+            <h2>Start with the Windows app.</h2>
           </div>
-          <div className="closing-copy">
+          <div className="download-copy">
             <p>
-              Use the setup installer for the simplest Windows install. MSI packages are paused for
-              now and can return later if managed deployments need them.
+              Use the setup installer for the simplest install. The app page stays direct: one
+              primary action, one release asset, no marketing maze.
             </p>
-            <div className="closing-points">
-              <span>
-                <Check size={14} aria-hidden /> Release assets hosted on GitHub
+            <a className="download-card" href={downloadHref}>
+              <span className="download-icon">
+                <Download size={18} aria-hidden />
               </span>
               <span>
-                <Sparkles size={14} aria-hidden /> Version 1.1.0 Windows build
+                <strong>Windows Setup EXE</strong>
+                <small>Version 1.1.1 release asset hosted on GitHub</small>
               </span>
-            </div>
-            <div className="download-grid" aria-label="Download options">
-              {downloadOptions.map((option) => (
-                <a className="download-card" href={option.href} key={option.title}>
-                  <div className="download-icon">
-                    <Download size={18} aria-hidden />
-                  </div>
-                  <div>
-                    <strong>{option.title}</strong>
-                    <p>{option.detail}</p>
-                  </div>
-                  <span>{option.label}</span>
-                </a>
-              ))}
-            </div>
-            <a className="primary-link closing-link" href="#download">
-              Download App <ArrowUpRight size={14} aria-hidden />
+              <b>Download</b>
             </a>
           </div>
         </section>
@@ -242,17 +300,17 @@ function Landing() {
         <footer className="site-footer">
           <a className="brand-mark footer-brand" href="#top">
             <span className="brand-symbol">
-              <img src="/logo.png" alt="" aria-hidden />
+              <BrandLogo />
             </span>
             <span>Loci Notes</span>
           </a>
           <nav aria-label="Footer">
-            <a href="#focus">Focus</a>
+            <a href="#demos">Demos</a>
             <a href="#features">Features</a>
-            <a href="#use-cases">Use cases</a>
-            <a href="#proof">Proof</a>
+            <a href="#students">Students</a>
+            <a href="#download">Download</a>
           </nav>
-          <span>(c) 2026 Loci Notes. Advertising concept.</span>
+          <span>(c) 2026 Loci Notes.</span>
         </footer>
       </div>
     </main>

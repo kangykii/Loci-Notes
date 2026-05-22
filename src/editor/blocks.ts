@@ -2,7 +2,8 @@ import { createId, nowIso } from '../db'
 import type { Atom, JSONContent, LociBlock, LociBlockType } from '../db'
 
 export type ImageAlignPreset = 'left' | 'center' | 'right'
-export type FormatBlockType = 'table' | 'quote' | 'image'
+export type ListBlockType = 'checklist' | 'bulletList' | 'numberedList'
+export type FormatBlockType = 'table' | 'quote' | 'image' | 'checklist' | 'bulletList' | 'numberedList' | 'code' | 'latex'
 
 export const emptyDoc: JSONContent = {
   type: 'doc',
@@ -31,15 +32,14 @@ export function blockTypeForNode(node: JSONContent): LociBlockType {
   if (node.type === 'heading') return 'heading'
   if (node.type === 'taskList') return 'checklist'
   if (node.type === 'table') return 'table'
-  if (node.type === 'lociFlashcard') return 'flashcard'
   if (node.type === 'lociQuote') return 'quote'
   if (node.type === 'bulletList') return 'bulletList'
   if (node.type === 'orderedList') return 'numberedList'
   if (node.type === 'blockquote') return 'quote'
   if (node.type === 'image') return 'image'
   if (node.type === 'codeBlock') return 'code'
+  if (node.type === 'lociLatex') return 'latex'
   if (node.type === 'horizontalRule') return 'divider'
-  if (node.type === 'lociCallout') return 'callout'
   return 'paragraph'
 }
 
@@ -50,8 +50,26 @@ export function blockContentNodes(content?: JSONContent): JSONContent[] {
 
 export function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | null {
   const contentType = blockTypeForNode(block.content)
-  if (contentType === 'table' || contentType === 'quote' || contentType === 'image') return contentType
-  if (block.type === 'table' || block.type === 'quote' || block.type === 'image') return block.type
+  if (
+    contentType === 'table' ||
+    contentType === 'quote' ||
+    contentType === 'image' ||
+    contentType === 'checklist' ||
+    contentType === 'bulletList' ||
+    contentType === 'numberedList' ||
+    contentType === 'code' ||
+    contentType === 'latex'
+  ) return contentType
+  if (
+    block.type === 'table' ||
+    block.type === 'quote' ||
+    block.type === 'image' ||
+    block.type === 'checklist' ||
+    block.type === 'bulletList' ||
+    block.type === 'numberedList' ||
+    block.type === 'code' ||
+    block.type === 'latex'
+  ) return block.type
   return null
 }
 
@@ -70,13 +88,28 @@ export function createLociBlock(content: JSONContent, type = blockTypeForNode(co
   }
 }
 
-function createBlockFromNode(node: JSONContent): LociBlock {
-  return createLociBlock(blockDoc([node]), blockTypeForNode(node))
+export function normalizeLegacyEditorContent(content: JSONContent): JSONContent {
+  const normalizeNode = (node: JSONContent): JSONContent[] => {
+    if (!node || typeof node !== 'object') return []
+    if (node.type === 'lociFlashcard' || node.type === 'lociCallout') {
+      const normalizedChildren = (node.content ?? []).flatMap(normalizeNode)
+      return normalizedChildren.length ? normalizedChildren : [paragraphNode(collectText(node))]
+    }
+    const next: JSONContent = { ...node }
+    if (node.content) next.content = node.content.flatMap(normalizeNode)
+    return [next]
+  }
+
+  if (content.type === 'doc') {
+    const normalized = (content.content ?? []).flatMap(normalizeNode)
+    return { ...content, content: normalized.length ? normalized : [paragraphNode('')] }
+  }
+  const normalized = normalizeNode(content)
+  return normalized.length === 1 ? normalized[0] : blockDoc(normalized)
 }
 
-function sameBlockNode(block: LociBlock, node: JSONContent) {
-  const nodes = blockContentNodes(block.content)
-  return nodes.length === 1 && JSON.stringify(nodes[0]) === JSON.stringify(node)
+function createBlockFromNode(node: JSONContent): LociBlock {
+  return createLociBlock(blockDoc([node]), blockTypeForNode(node))
 }
 
 export function paragraphNode(text: string): JSONContent {
@@ -186,14 +219,10 @@ export function codeBlockDoc(): JSONContent {
   }])
 }
 
-export function flashcardBlockDoc(atomId?: string): JSONContent {
+export function latexBlockDoc(latex = '\\frac{a}{b} = c'): JSONContent {
   return blockDoc([{
-    type: 'lociFlashcard',
-    attrs: { atomId: atomId ?? null },
-    content: [
-      { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'Question' }] },
-      paragraphNode('Answer'),
-    ],
+    type: 'lociLatex',
+    attrs: { latex },
   }])
 }
 
@@ -259,6 +288,54 @@ export function tableDataFromNode(node: JSONContent): { columns: string[]; rows:
   return { columns: cells[0] ?? [], rows: cells.slice(1) }
 }
 
+export function listDataFromNode(node: JSONContent): { listType: ListBlockType; items: string[] } {
+  const listType: ListBlockType =
+    node.type === 'taskList' ? 'checklist' : node.type === 'orderedList' ? 'numberedList' : 'bulletList'
+  const items = (node.content ?? [])
+    .filter((item) => item.type === 'listItem' || item.type === 'taskItem')
+    .map((item) => collectText(item).trim())
+  return { listType, items }
+}
+
+export function listBlockDocFromData(listType: ListBlockType, items: string[]): JSONContent {
+  const safeItems = items.length ? items : ['List item']
+  if (listType === 'checklist') {
+    return blockDoc([{
+      type: 'taskList',
+      content: safeItems.map((item) => ({
+        type: 'taskItem',
+        attrs: { checked: false },
+        content: [paragraphNode(item)],
+      })),
+    }])
+  }
+  const type = listType === 'numberedList' ? 'orderedList' : 'bulletList'
+  return blockDoc([{
+    type,
+    content: safeItems.map((item) => ({
+      type: 'listItem',
+      content: [paragraphNode(item)],
+    })),
+  }])
+}
+
+export function codeDataFromNode(node: JSONContent): string {
+  return (node.content ?? []).map((child) => child.text ?? collectText(child)).join('\n').trim()
+}
+
+export function codeBlockDocFromData(code: string): JSONContent {
+  return blockDoc([{
+    type: 'codeBlock',
+    attrs: { language: null },
+    content: code ? [{ type: 'text', text: code }] : [],
+  }])
+}
+
+export function latexDataFromNode(node: JSONContent): string {
+  const attrLatex = node.attrs?.latex
+  return typeof attrLatex === 'string' ? attrLatex : collectText(node)
+}
+
 export function quoteDataFromNode(node: JSONContent): { quote: string; author?: string } {
   const parts = node.content ?? []
   const authorNode = parts.find((part) => part.attrs?.['data-quote-author'])
@@ -296,7 +373,8 @@ export function flattenLegacyLociBlocks(blocks?: LegacyLociBlock[]): LociBlock[]
 }
 
 function stripLegacyBlockChildren(block: LegacyLociBlock): LociBlock {
-  const { children: _children, ...flatBlock } = block
+  const flatBlock = { ...block }
+  delete flatBlock.children
   return flatBlock
 }
 
@@ -319,41 +397,37 @@ export function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlo
     })
   }
 
-  const usedBlockIndexes = new Set<number>()
-  const takeExactMatch = (node: JSONContent) => {
-    const index = reusableBlocks.findIndex((block, blockIndex) => !usedBlockIndexes.has(blockIndex) && sameBlockNode(block, node))
-    if (index < 0) return null
-    usedBlockIndexes.add(index)
-    return reusableBlocks[index]
+  const isInsertion = sourceNodes.length > reusableBlocks.length
+  const isRemoval = sourceNodes.length < reusableBlocks.length
+  const countDelta = sourceNodes.length - reusableBlocks.length
+  const changedIndex = activeIndex >= 0
+    ? Math.max(0, Math.min(sourceNodes.length - 1, activeIndex))
+    : Math.min(sourceNodes.length - 1, reusableBlocks.length - 1)
+  const insertedBlockStart = isInsertion ? Math.max(0, changedIndex - countDelta + 1) : -1
+  const insertedBlockEnd = isInsertion ? changedIndex : -1
+  if (isInsertion && typeof window !== 'undefined' && (window as typeof window & { __LOCI_EDITOR_DEBUG?: boolean }).__LOCI_EDITOR_DEBUG) {
+    console.debug('[loci-editor] normalize block count changed', {
+      activeIndex,
+      insertedBlockStart,
+      insertedBlockEnd,
+      sourceCount: sourceNodes.length,
+      savedCount: reusableBlocks.length,
+      savedIds: reusableBlocks.map((block) => block.id),
+    })
   }
 
-  const takeReusableBlock = (preferredIndex: number) => {
-    if (preferredIndex >= 0 && preferredIndex < reusableBlocks.length && !usedBlockIndexes.has(preferredIndex)) {
-      usedBlockIndexes.add(preferredIndex)
-      return reusableBlocks[preferredIndex]
-    }
-    const index = reusableBlocks.findIndex((_, blockIndex) => !usedBlockIndexes.has(blockIndex))
-    if (index < 0) return null
-    usedBlockIndexes.add(index)
-    return reusableBlocks[index]
+  const reusableIndexForNode = (index: number) => {
+    if (isInsertion && index > insertedBlockEnd) return index - countDelta
+    if (isInsertion && index >= insertedBlockStart) return -1
+    if (isRemoval && index > changedIndex) return index + (reusableBlocks.length - sourceNodes.length)
+    return index
   }
 
-  const shouldCreateNewBlock = sourceNodes.length > reusableBlocks.length && activeIndex >= 0
   return sourceNodes.map((node, index) => {
     const clonedNode = cloneTemplateValue(node)
-    const exactMatch = takeExactMatch(node)
-    if (exactMatch) {
-      return {
-        ...exactMatch,
-        type: blockTypeForNode(clonedNode),
-        content: blockDoc([clonedNode]),
-        updatedAt: now,
-      }
-    }
+    if (isInsertion && index >= insertedBlockStart && index <= insertedBlockEnd) return createBlockFromNode(clonedNode)
 
-    if (shouldCreateNewBlock && index !== activeIndex) return createBlockFromNode(clonedNode)
-
-    const reusable = takeReusableBlock(index)
+    const reusable = reusableBlocks[reusableIndexForNode(index)]
     if (reusable) {
       return {
         ...reusable,
@@ -376,13 +450,12 @@ export function blankBlockNode(type: LociBlockType): JSONContent {
     }])
   }
   if (type === 'table') return tableBlockDoc()
-  if (type === 'flashcard') return flashcardBlockDoc()
-  if (type === 'bulletList') return blockDoc([{ type: 'bulletList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
-  if (type === 'numberedList') return blockDoc([{ type: 'orderedList', content: [{ type: 'listItem', content: [paragraphNode('List item')] }] }])
+  if (type === 'bulletList') return listBlockDocFromData('bulletList', ['List item'])
+  if (type === 'numberedList') return listBlockDocFromData('numberedList', ['List item'])
   if (type === 'quote') return quoteBlockDoc()
   if (type === 'code') return codeBlockDoc()
+  if (type === 'latex') return latexBlockDoc()
   if (type === 'divider') return blockDoc([{ type: 'horizontalRule' }])
-  if (type === 'callout') return blockDoc([{ type: 'blockquote', content: [paragraphNode('Callout')] }])
   return blockDoc([{ type: 'paragraph', content: [] }])
 }
 
@@ -571,23 +644,6 @@ export function segmentDensePreviewLine(line: string): string[] {
 
   chunks.push(rest)
   return chunks
-}
-
-export function flashcardsFromContent(content: JSONContent): Array<{ atomId: string; phrase: string; definition: string }> {
-  const cards: Array<{ atomId: string; phrase: string; definition: string }> = []
-  const visit = (node: JSONContent) => {
-    if (!node || typeof node !== 'object') return
-    if (node.type === 'lociFlashcard' && typeof node.attrs?.atomId === 'string') {
-      const parts = node.content ?? []
-      const phrase = collectText(parts[0] ?? { type: 'paragraph' }).trim()
-      const definition = collectText({ type: 'doc', content: parts.slice(1) }).trim()
-      if (phrase && definition) cards.push({ atomId: node.attrs.atomId, phrase, definition })
-      return
-    }
-    ;(node.content ?? []).forEach(visit)
-  }
-  visit(content)
-  return cards
 }
 
 export function atomMarkFor(atom: Atom) {

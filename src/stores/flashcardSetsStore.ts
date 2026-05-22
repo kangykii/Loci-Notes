@@ -1,13 +1,10 @@
 import { db } from '../db'
 import type { CachedFlashcardQuiz, FlashcardAIHintCache, FlashcardReviewState, FlashcardSet } from '../db'
 import type { Table } from 'dexie'
+import { flashcardSetsRepository } from '../repositories/flashcardSetsRepository'
 
 export const flashcardSetsStore = {
-  listByUpdated: () => db.flashcardSets.orderBy('updatedAt').reverse().toArray(),
-
-  save: (set: FlashcardSet) => db.flashcardSets.put(set),
-
-  saveMany: (sets: FlashcardSet[]) => db.flashcardSets.bulkPut(sets),
+  ...flashcardSetsRepository,
 
   delete: (setId: string) => {
     const tables = [db.flashcardSets, db.flashcardReviewStates] as unknown as Table<unknown, string>[]

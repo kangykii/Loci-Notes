@@ -40,6 +40,7 @@ export type AIProviderSettings = {
 
 export type UserSettings = {
   id: 'local'
+  theme: 'loci' | 'light' | 'dark' | 'system'
   defaultAIProvider: AIProviderId
   aiProviders: Record<AIProviderId, AIProviderSettings>
   aiTemperature: number
@@ -60,7 +61,16 @@ export type UserSettings = {
   highlighterColor: string
   reduceMotion: boolean
   compactMode: boolean
+  editorAnimatedTyping: boolean
+  editorAtomUnderlinesDefault: boolean
+  editorFocusModeDefault: boolean
+  editorFocusModeTotalMs: number
+  editorAuthenticWriterDefault: boolean
+  editorShowMarginalia: boolean
   preferredAtomSubView?: 'atoms' | 'sets'
+  studyDefaultDirection: 'term' | 'definition'
+  studyShuffleDefault: boolean
+  communityEnabled: boolean
   pinnedCommunityRecipientIds: string[]
   createdAt: string
   updatedAt: string
@@ -138,6 +148,19 @@ export type SharedNoteExport = {
   updatedAt: string
 }
 
+export type SharedNoteSnapshot = {
+  id: string
+  shareId: string
+  localNoteId?: string
+  remoteShareId?: string
+  ownerAccountId?: string
+  title: string
+  content: JSONContent
+  contentHash: string
+  createdAt: string
+  updatedAt: string
+}
+
 export type CollaborationSession = {
   id: string
   localNoteId: string
@@ -164,6 +187,8 @@ export type CollaborationEvent = {
   id: string
   sessionId: string
   clientId: string
+  opId: string
+  serverSequence?: number
   actorAccountId?: string
   kind: 'presence' | 'content-op' | 'comment' | 'system'
   payload: JSONContent
@@ -250,9 +275,18 @@ export type CommunityPresetReply = {
 
 export type CommunitySyncQueueItem = {
   id: string
+  accountId?: string
+  workspaceId?: string
   entityType: 'activity' | 'widget' | 'reaction' | 'presetReply' | 'share' | 'collaborationEvent'
   entityId: string
+  remoteId?: string
   operation: 'create' | 'update' | 'delete'
+  idempotencyKey?: string
+  baseRemoteRevision?: string
+  localRevision?: string
+  payloadHash?: string
+  dependencyIds?: string[]
+  nextAttemptAt?: string
   status: Exclude<CommunitySyncStatus, 'local'>
   attempts: number
   lastError?: string
@@ -273,6 +307,14 @@ export type RemoteContentItem = {
   startsAt?: string
   endsAt?: string
   cachedAt: string
+  updatedAt: string
+}
+
+export type SurveyPromptState = {
+  id: string
+  promptId: string
+  accountId: string
+  status: 'dismissed' | 'submitted'
   updatedAt: string
 }
 
@@ -389,14 +431,13 @@ export type LociBlockType =
   | 'heading'
   | 'checklist'
   | 'table'
-  | 'flashcard'
   | 'bulletList'
   | 'numberedList'
   | 'quote'
   | 'image'
   | 'code'
+  | 'latex'
   | 'divider'
-  | 'callout'
   | 'template'
 
 export type LociBlock = {
@@ -544,6 +585,7 @@ class LociNotesDatabase extends Dexie {
   friendGroups!: Dexie.Table<FriendGroup, string>
   remoteAssets!: Dexie.Table<RemoteAsset, string>
   sharedNoteExports!: Dexie.Table<SharedNoteExport, string>
+  sharedNoteSnapshots!: Dexie.Table<SharedNoteSnapshot, string>
   collaborationSessions!: Dexie.Table<CollaborationSession, string>
   collaborationParticipants!: Dexie.Table<CollaborationParticipant, string>
   collaborationEvents!: Dexie.Table<CollaborationEvent, string>
@@ -553,6 +595,7 @@ class LociNotesDatabase extends Dexie {
   communityPresetReplies!: Dexie.Table<CommunityPresetReply, string>
   communitySyncQueue!: Dexie.Table<CommunitySyncQueueItem, string>
   remoteContentItems!: Dexie.Table<RemoteContentItem, string>
+  surveyPromptStates!: Dexie.Table<SurveyPromptState, string>
   remoteEntityMappings!: Dexie.Table<RemoteEntityMapping, string>
 
   constructor() {
@@ -830,9 +873,10 @@ class LociNotesDatabase extends Dexie {
       friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
       remoteAssets: 'id, ownerAccountId, kind, updatedAt',
       sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
       collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
       collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
-      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
       communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
       communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
       communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
@@ -857,9 +901,10 @@ class LociNotesDatabase extends Dexie {
       friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
       remoteAssets: 'id, ownerAccountId, kind, updatedAt',
       sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
       collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
       collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
-      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
       communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
       communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
       communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
@@ -886,15 +931,46 @@ class LociNotesDatabase extends Dexie {
       friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
       remoteAssets: 'id, ownerAccountId, kind, updatedAt',
       sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
       collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
       collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
-      collaborationEvents: 'id, sessionId, clientId, actorAccountId, kind, syncStatus, createdAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
       communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
       communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
       communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
       communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
       communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
       remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
+    })
+    this.version(18).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      surveyPromptStates: 'id, promptId, accountId, [accountId+promptId], status, updatedAt',
       remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
     })
   }
@@ -912,13 +988,13 @@ function blockTypeForNode(node: JSONContent): LociBlockType {
   if (node.type === 'heading') return 'heading'
   if (node.type === 'taskList') return 'checklist'
   if (node.type === 'table') return 'table'
-  if (node.type === 'lociFlashcard') return 'flashcard'
   if (node.type === 'lociQuote') return 'quote'
   if (node.type === 'bulletList') return 'bulletList'
   if (node.type === 'orderedList') return 'numberedList'
   if (node.type === 'blockquote') return 'quote'
   if (node.type === 'image') return 'image'
   if (node.type === 'codeBlock') return 'code'
+  if (node.type === 'lociLatex') return 'latex'
   if (node.type === 'horizontalRule') return 'divider'
   return 'paragraph'
 }
@@ -1048,6 +1124,10 @@ export const noteBodyStore = {
 }
 
 /** Skip if identical to latest snapshot; drop oldest past cap. */
+export function noteSnapshotContentHash(note: Pick<Note, 'title' | 'content'>) {
+  return snapshotContentHash(note)
+}
+
 export async function appendNoteSnapshot(note: Pick<Note, 'id' | 'title' | 'content'>) {
   const contentHash = snapshotContentHash(note)
   const existing = await db.noteSnapshots.where('noteId').equals(note.id).toArray()
