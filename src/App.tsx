@@ -1212,7 +1212,6 @@ const Sidebar = memo(function Sidebar({
       </div>
 
       <nav className="sidebar-section primary-nav" aria-label="Primary">
-        <span className="sidebar-section-label">Navigation</span>
         <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => {
           onSetActiveView('home')
         }}>

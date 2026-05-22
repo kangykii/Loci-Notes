@@ -1095,6 +1095,7 @@ summary:focus-visible {
 
 .sidebar-actions {
   gap: 7px;
+  padding-bottom: 8px;
 }
 
 .sidebar-bottom {
@@ -1277,6 +1278,8 @@ summary:focus-visible {
   display: grid;
   gap: 6px;
   min-height: 0;
+  border-top: 1px solid rgba(46, 52, 64, 0.06);
+  padding-top: 12px;
 }
 
 .secondary-nav {
