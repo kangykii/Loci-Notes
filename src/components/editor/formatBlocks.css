@@ -1,11 +1,10 @@
 .note-editor ul[data-type="taskList"] {
-  display: grid;
-  gap: 6px;
   list-style: none;
   width: calc(100% - 64px);
   max-width: calc(100% - 64px);
   padding: 0;
-  margin: 0 auto 18px;
+  margin: 0 auto 16px;
+  color: #2E3440;
 }
 
 .note-editor ul:not([data-type="taskList"]),
@@ -28,47 +27,58 @@
   margin: 0;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] {
+.note-editor ul[data-type="taskList"] > li {
   display: flex !important;
-  gap: 9px;
-  align-items: center !important;
+  gap: 8px;
+  align-items: flex-start !important;
   color: #2E3440;
+  margin: 3px 0;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > label {
-  flex: 0 0 18px;
+.note-editor ul[data-type="taskList"] > li > label {
+  flex: 0 0 16px;
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  height: 1.45em;
+  height: 1.35em;
   min-height: 0;
   margin: 0;
+  padding-top: 0.16em;
+  line-height: 1;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
+.note-editor ul[data-type="taskList"] > li > label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
   margin: 0;
   accent-color: #1A1A1A;
+  cursor: pointer;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > div {
+.note-editor ul[data-type="taskList"] > li > div {
   flex: 1 1 auto;
   min-width: 0;
-  align-self: center;
+  align-self: flex-start;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"] > div > p {
+.note-editor ul[data-type="taskList"] > li > div > p {
   margin: 0 !important;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div,
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div p,
-.note-editor ul[data-type="taskList"] > li[data-type="taskItem"][data-checked="true"] > div * {
-  color: rgba(46, 52, 64, 0.58);
+.note-editor ul[data-type="taskList"] > li[data-checked="true"] > div,
+.note-editor ul[data-type="taskList"] > li[data-checked="true"] > div p,
+.note-editor ul[data-type="taskList"] > li[data-checked="true"] > div * {
+  color: rgba(46, 52, 64, 0.62);
   text-decoration-line: line-through !important;
-  text-decoration-thickness: 1.5px;
+  text-decoration-thickness: 1.25px;
+}
+
+.note-editor ul[data-type="taskList"] ul:not([data-type="taskList"]),
+.note-editor ul[data-type="taskList"] ol {
+  width: auto;
+  max-width: none;
+  margin: 3px 0 3px;
 }
 
 .note-editor .tableWrapper {
@@ -119,7 +129,17 @@
   margin: 0;
 }
 
+.note-editor td.selectedCell,
+.note-editor th.selectedCell {
+  position: relative;
+}
+
 .note-editor .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
   background: rgba(62, 50, 32, 0.16);
   box-shadow: inset 0 0 0 2px rgba(26, 26, 26, 0.48);
 }

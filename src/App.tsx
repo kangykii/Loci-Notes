@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject, SyntheticEvent, WheelEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { Editor as TiptapEditor } from '@tiptap/core'
@@ -146,6 +147,7 @@ import {
   aiSelectionHighlightKey,
 } from './editor/extensions'
 import type { EditorRange } from './editor/extensions'
+import { applyAuthorshipToContent } from './editor/authorship'
 import {
   blankBlockNode,
   blankDoc,
@@ -176,7 +178,7 @@ import {
   tableDataFromNode,
   textToEditorContent,
 } from './editor/blocks'
-import type { FormatBlockType, ImageAlignPreset } from './editor/blocks'
+import type { FormatBlockType, ImageAlignPreset, ListBlockType } from './editor/blocks'
 import {
   blockPickerOptions,
   emptyDoc,
@@ -236,6 +238,11 @@ type StudyDirection = 'term' | 'definition'
 const RELEASE_TEMPLATE_CHOOSER_ENABLED = false
 const RELEASE_COMMUNITY_ENABLED = false
 const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
+const LIST_BLOCK_TYPES = ['checklist', 'bulletList', 'numberedList'] as const
+
+function isListBlockType(type: LociBlockType | FormatBlockType): type is ListBlockType {
+  return LIST_BLOCK_TYPES.includes(type as ListBlockType)
+}
 
 type FloatingEditorToolbarLayoutOptions = {
   activeView: View
@@ -489,7 +496,6 @@ type LociWorkerResponse =
 
 const PROJECT_QUICK_NAV_ROW_HEIGHT = 34
 const PROJECT_QUICK_NAV_MAX_HEIGHT = 240
-const APP_FULLSCREEN_STORAGE_KEY = 'loci-notes:app-fullscreen'
 const SIDEBAR_FLICK_THRESHOLD = 72
 const SIDEBAR_FLICK_COOLDOWN_MS = 380
 const IMMERSIVE_TOP_EXIT_WINDOW_MS = 1200
@@ -540,6 +546,16 @@ type AuthorshipMenuState = {
   left: number
 }
 
+function authorshipMenuPosition(clientX: number, clientY: number) {
+  const margin = 12
+  const estimatedWidth = 184
+  const estimatedHeight = 92
+  return {
+    top: Math.max(margin, Math.min(clientY, window.innerHeight - estimatedHeight - margin)),
+    left: Math.max(margin, Math.min(clientX, window.innerWidth - estimatedWidth - margin)),
+  }
+}
+
 type FormatOption = {
   id: string
   label: string
@@ -578,7 +594,15 @@ type AppDialog =
       onConfirm: (value: string, secondaryValue?: string) => void | Promise<void>
     }
 
-const HIGHLIGHTER_COLORS = ['rgba(62, 50, 32, 0.18)', 'rgba(46, 52, 64, 0.14)', 'rgba(26, 26, 26, 0.1)', 'rgba(244, 244, 242, 0.82)'] as const
+const HIGHLIGHTER_PALETTE = [
+  { label: 'Yellow', color: 'rgba(244, 211, 94, 0.48)' },
+  { label: 'Blue', color: 'rgba(133, 176, 218, 0.42)' },
+  { label: 'Red', color: 'rgba(222, 125, 118, 0.36)' },
+  { label: 'Green', color: 'rgba(145, 190, 137, 0.38)' },
+  { label: 'Lavender', color: 'rgba(183, 154, 211, 0.36)' },
+  { label: 'Apricot', color: 'rgba(232, 169, 104, 0.36)' },
+] as const
+const HIGHLIGHTER_COLORS = HIGHLIGHTER_PALETTE.map(({ color }) => color) as readonly string[]
 const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0]
 
 function defaultUserSettings(): UserSettings {
@@ -633,10 +657,14 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
   if (providers.kimi.model === 'kimi-k2-0711-preview') providers.kimi.model = base.aiProviders.kimi.model
   const theme = settings.theme === 'light' || settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'loci'
   const preferredAtomSubView = settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms'
+  const highlighterColor = typeof settings.highlighterColor === 'string' && HIGHLIGHTER_COLORS.includes(settings.highlighterColor)
+    ? settings.highlighterColor
+    : base.highlighterColor
   return {
     ...base,
     ...settings,
     theme,
+    highlighterColor,
     aiProviders: providers,
     editorAnimatedTyping: typeof settings.editorAnimatedTyping === 'boolean' ? settings.editorAnimatedTyping : base.editorAnimatedTyping,
     editorAtomUnderlinesDefault: typeof settings.editorAtomUnderlinesDefault === 'boolean' ? settings.editorAtomUnderlinesDefault : base.editorAtomUnderlinesDefault,
@@ -654,8 +682,16 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
   }
 }
 
+function aiGeneratedContent(content: JSONContent): JSONContent {
+  return applyAuthorshipToContent(content, {
+    kind: 'copied',
+    createdAt: nowIso(),
+    source: 'ai',
+  })
+}
+
 function insertDraftText(editor: NonNullable<ReturnType<typeof useEditor>>, text: string) {
-  editor.chain().focus().insertContent(textToEditorContent(text).content ?? []).run()
+  editor.chain().focus().insertContent(aiGeneratedContent(textToEditorContent(text)).content ?? []).run()
 }
 
 function hitKey(hit: SearchHit): string {
@@ -1127,6 +1163,7 @@ type SidebarProps = {
   activeView: View
   activeNoteId: string | undefined
   atomSubView: AtomSubView
+  collapsedSectionIds: string[]
   draggedNoteIds: string[]
   dragOverProjectId: string
   profileAvatarColor: string
@@ -1139,6 +1176,7 @@ type SidebarProps = {
   onDragLeaveProject: (projectId: string) => void
   onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
   onHideSidebarNote: (sectionId: string, noteId: string) => void
+  onToggleSidebarSection: (sectionId: string) => void
   onNewNote: () => void
   onOpenNote: (noteId: string) => void
   onOpenProfile: () => void
@@ -1155,6 +1193,7 @@ const Sidebar = memo(function Sidebar({
   activeView,
   activeNoteId,
   atomSubView,
+  collapsedSectionIds,
   draggedNoteIds,
   dragOverProjectId,
   profileAvatarColor,
@@ -1167,6 +1206,7 @@ const Sidebar = memo(function Sidebar({
   onDragLeaveProject,
   onDragOverProject,
   onHideSidebarNote,
+  onToggleSidebarSection,
   onNewNote,
   onOpenNote,
   onOpenProfile,
@@ -1241,88 +1281,101 @@ const Sidebar = memo(function Sidebar({
       </nav>
 
       {projectQuickSections.map((section) => {
-        const projectQuickNavHeight = Math.min(section.notes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
+        const isCollapsed = collapsedSectionIds.includes(section.id)
+        const projectQuickNavHeight = isCollapsed
+          ? 0
+          : Math.min(section.notes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
         const projectQuickNavStyle = {
           '--project-quick-nav-height': `${projectQuickNavHeight}px`,
         } as React.CSSProperties
         return (
-          <div className="sidebar-section sidebar-project-section" key={section.id}>
-            <span className="sidebar-section-label">{section.title}</span>
-            <VirtualList
-              className="project-quick-nav"
-              style={projectQuickNavStyle}
-              items={section.notes}
-              rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
-              overscan={6}
-              ariaLabel={`${section.title} documents`}
-              renderItem={(note, index) => {
-                const isEditing = editingNoteId === note.id
-                const isActive = note.id === activeNoteId
-                return (
-                  <div
-                    className={`quick-note-row ${isActive ? 'is-active' : ''} ${isEditing ? 'is-editing' : ''}`}
-                    style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
-                  >
-                    <button className="quick-note-open" type="button" onClick={() => {
-                      onOpenNote(note.id)
-                    }}>
-                      {isEditing ? (
-                        <input
-                          className="note-title-rename-input sidebar-note-title-input"
-                          value={editingNoteTitle}
-                          onBlur={() => commitNoteRename(note)}
-                          onChange={(event) => setEditingNoteTitle(event.target.value)}
-                          onClick={(event) => event.stopPropagation()}
-                          onDoubleClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
+          <div className={`sidebar-section sidebar-project-section ${isCollapsed ? 'is-collapsed' : ''}`} key={section.id}>
+            <button
+              type="button"
+              className="sidebar-section-toggle"
+              aria-expanded={!isCollapsed}
+              onClick={() => onToggleSidebarSection(section.id)}
+            >
+              {isCollapsed ? <ChevronRight size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
+              <span className="sidebar-section-label">{section.title}</span>
+            </button>
+            {!isCollapsed && (
+              <VirtualList
+                className="project-quick-nav"
+                style={projectQuickNavStyle}
+                items={section.notes}
+                rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
+                overscan={6}
+                ariaLabel={`${section.title} documents`}
+                renderItem={(note, index) => {
+                  const isEditing = editingNoteId === note.id
+                  const isActive = note.id === activeNoteId
+                  return (
+                    <div
+                      className={`quick-note-row ${isActive ? 'is-active' : ''} ${isEditing ? 'is-editing' : ''}`}
+                      style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
+                    >
+                      <button className="quick-note-open" type="button" onClick={() => {
+                        onOpenNote(note.id)
+                      }}>
+                        {isEditing ? (
+                          <input
+                            className="note-title-rename-input sidebar-note-title-input"
+                            value={editingNoteTitle}
+                            onBlur={() => commitNoteRename(note)}
+                            onChange={(event) => setEditingNoteTitle(event.target.value)}
+                            onClick={(event) => event.stopPropagation()}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                commitNoteRename(note)
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                setEditingNoteTitle(note.title || 'Untitled Note')
+                                setEditingNoteId('')
+                              }
+                            }}
+                            aria-label="Document name"
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            className="sidebar-note-title"
+                            title={note.title || 'Untitled Note'}
+                            onDoubleClick={(event) => {
                               event.preventDefault()
                               event.stopPropagation()
-                              commitNoteRename(note)
-                            }
-                            if (event.key === 'Escape') {
-                              event.preventDefault()
-                              event.stopPropagation()
-                              setEditingNoteTitle(note.title || 'Untitled Note')
-                              setEditingNoteId('')
-                            }
-                          }}
-                          aria-label="Document name"
-                          autoFocus
-                        />
-                      ) : (
-                        <span
-                          className="sidebar-note-title"
-                          title="Double-click to rename"
-                          onDoubleClick={(event) => {
+                              startNoteRename(note)
+                            }}
+                          >
+                            {note.title || 'Untitled Note'}
+                          </span>
+                        )}
+                      </button>
+                      {!isEditing && (
+                        <button
+                          className="quick-note-hide"
+                          type="button"
+                          aria-label={`Hide ${note.title || 'Untitled Note'} from sidebar`}
+                          title="Hide from sidebar"
+                          onClick={(event) => {
                             event.preventDefault()
                             event.stopPropagation()
-                            startNoteRename(note)
+                            onHideSidebarNote(section.id, note.id)
                           }}
                         >
-                          {note.title || 'Untitled Note'}
-                        </span>
+                          <XIcon size={20} strokeWidth={2.5} aria-hidden />
+                        </button>
                       )}
-                    </button>
-                    {!isEditing && (
-                      <button
-                        className="quick-note-hide"
-                        type="button"
-                        aria-label={`Hide ${note.title || 'Untitled Note'} from sidebar`}
-                        title="Hide from sidebar"
-                        onClick={(event) => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          onHideSidebarNote(section.id, note.id)
-                        }}
-                      >
-                        <XIcon size={20} strokeWidth={2.5} aria-hidden />
-                      </button>
-                    )}
-                  </div>
-                )
-              }}
-            />
+                    </div>
+                  )
+                }}
+              />
+            )}
           </div>
         )
       })}
@@ -1398,10 +1451,7 @@ function App() {
   })
   const [selectedNoteId, setSelectedNoteId] = useState('')
   const [activeView, setActiveView] = useState<View>('home')
-  const [appFullscreen, setAppFullscreen] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(APP_FULLSCREEN_STORAGE_KEY) === 'true'
-  })
+  const [appFullscreen, setAppFullscreen] = useState(true)
   const [appImmersiveFullscreen, setAppImmersiveFullscreen] = useState(false)
   const [fullscreenExitStaging, setFullscreenExitStaging] = useState(false)
   const [sidebarRevealAnimating, setSidebarRevealAnimating] = useState(false)
@@ -1430,6 +1480,7 @@ function App() {
   const [dragOverProjectId, setDragOverProjectId] = useState('')
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([])
   const [openSidebarProjectIds, setOpenSidebarProjectIds] = useState<string[]>([])
+  const [collapsedSidebarProjectIds, setCollapsedSidebarProjectIds] = useState<string[]>([])
   const [hiddenSidebarNoteIdsByProjectId, setHiddenSidebarNoteIdsByProjectId] = useState<Record<string, string[]>>({})
   const [atomSearchQuery, setAtomSearchQuery] = useState('')
   const [atomProjectFilter, setAtomProjectFilter] = useState('all')
@@ -1735,20 +1786,56 @@ function App() {
   }, [notes])
 
   useEffect(() => {
+    const abandonedBlankNoteIds = unassignedNotes
+      .filter((note) => {
+        if (note.id === selectedNoteId || pendingNoteSavesRef.current.has(note.id)) return false
+        if (note.templateId !== 'blank' || note.title !== 'Untitled Note' || note.tags.length) return false
+        if (note.createdAt !== note.updatedAt) return false
+
+        const text = collectText(note.content ?? emptyDoc).trim()
+        if (!text) return true
+        const nodes = note.content?.type === 'doc' ? note.content.content ?? [] : []
+        const onlyDefaultHeading =
+          nodes.length === 1 &&
+          nodes[0]?.type === 'heading' &&
+          nodes[0]?.attrs?.level === 1 &&
+          text === 'Untitled Note'
+        return onlyDefaultHeading
+      })
+      .map((note) => note.id)
+
+    if (!abandonedBlankNoteIds.length) return
+
+    const abandonedIds = new Set(abandonedBlankNoteIds)
+    const remainingNotes = notesRef.current.filter((note) => !abandonedIds.has(note.id))
+    notesRef.current = remainingNotes
+    setNotes(remainingNotes)
+    setSelectedNoteIds((current) => current.filter((id) => !abandonedIds.has(id)))
+    setHiddenSidebarNoteIdsByProjectId((current) => {
+      let changed = false
+      const next: Record<string, string[]> = {}
+      Object.entries(current).forEach(([sectionId, noteIds]) => {
+        const keptIds = noteIds.filter((id) => !abandonedIds.has(id))
+        if (keptIds.length !== noteIds.length) changed = true
+        if (keptIds.length) next[sectionId] = keptIds
+      })
+      return changed ? next : current
+    })
+
+    abandonedBlankNoteIds.forEach((noteId) => {
+      void notesStore.deleteWithSnapshots(noteId).catch(() => {
+        console.warn('Could not delete abandoned blank note', noteId)
+      })
+    })
+  }, [selectedNoteId, unassignedNotes])
+
+  useEffect(() => {
     atomsRef.current = atoms
   }, [atoms])
 
   useEffect(() => {
     selectedNoteIdRef.current = selectedNoteId
   }, [selectedNoteId])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(APP_FULLSCREEN_STORAGE_KEY, String(appFullscreen))
-    } catch {
-      // Ignore storage failures; fullscreen still works for the current session.
-    }
-  }, [appFullscreen])
 
   useEffect(() => {
     if (!appFullscreen) setAppImmersiveFullscreen(false)
@@ -2208,6 +2295,22 @@ function App() {
     }
   }, [])
 
+  useLayoutEffect(() => {
+    if (!blockPicker.open) return
+    const scrollEl = documentScrollRef.current
+    if (!scrollEl) return
+
+    const previousOverflow = scrollEl.style.overflow
+    const previousOverscrollBehavior = scrollEl.style.overscrollBehavior
+    scrollEl.style.overflow = 'hidden'
+    scrollEl.style.overscrollBehavior = 'contain'
+
+    return () => {
+      scrollEl.style.overflow = previousOverflow
+      scrollEl.style.overscrollBehavior = previousOverscrollBehavior
+    }
+  }, [blockPicker.open])
+
   const restoreEditorScroll = useCallback((scrollTop = editorScrollTopRef.current) => {
     const scrollEl = documentScrollRef.current
     if (!scrollEl) return
@@ -2558,26 +2661,22 @@ function App() {
   const isListBlockActive = () =>
     Boolean(editorRef.current?.isActive('taskList') || editorRef.current?.isActive('bulletList') || editorRef.current?.isActive('orderedList'))
 
-  const insertParagraphAfterActiveList = () => {
+  const listBlockContent = (type: ListBlockType) => listBlockDocFromData(type, [''])
+
+  const blankContentForBlockType = (type: LociBlockType) => (
+    isListBlockType(type) ? listBlockContent(type) : blankBlockNode(type)
+  )
+
+  const applyListFormat = (type: ListBlockType) => {
     const currentEditor = editorRef.current
-    if (!currentEditor || !isListBlockActive()) return false
-    const { $from } = currentEditor.state.selection
-    if ($from.depth < 1) return false
-    const topLevelNode = $from.node(1)
-    if (!['taskList', 'bulletList', 'orderedList'].includes(topLevelNode.type.name)) return false
-    const insertAt = $from.before(1) + topLevelNode.nodeSize
-    const nextBlockIndex = activeBlockIndex() + 1
-    currentEditor
-      .chain()
-      .focus()
-      .insertContentAt(insertAt, { type: 'paragraph', content: [] })
-      .setTextSelection(insertAt + 1)
-      .run()
-    pendingEnterBlockIndexRef.current = nextBlockIndex
-    return true
+    if (!currentEditor || currentEditor.isActive('table')) return false
+    const chain = currentEditor.chain().focus()
+    if (type === 'checklist') return chain.toggleTaskList().run()
+    if (type === 'bulletList') return chain.toggleBulletList().run()
+    return chain.toggleOrderedList().run()
   }
 
-  const addListLineFromShortcut = () => {
+  const addRowToActiveList = () => {
     const currentEditor = editorRef.current
     if (!currentEditor || !isListBlockActive()) return false
     const insertListItemAfterSelection = (itemType: 'taskItem' | 'listItem') => {
@@ -2610,6 +2709,25 @@ function App() {
     }
     if (currentEditor.chain().focus().splitListItem('listItem').run()) return true
     return insertListItemAfterSelection('listItem')
+  }
+
+  const exitActiveListToParagraphBlock = () => {
+    const currentEditor = editorRef.current
+    if (!currentEditor || !isListBlockActive()) return false
+    const { $from } = currentEditor.state.selection
+    if ($from.depth < 1) return false
+    const topLevelNode = $from.node(1)
+    if (!['taskList', 'bulletList', 'orderedList'].includes(topLevelNode.type.name)) return false
+    const insertAt = $from.before(1) + topLevelNode.nodeSize
+    const nextBlockIndex = activeBlockIndex() + 1
+    currentEditor
+      .chain()
+      .focus()
+      .insertContentAt(insertAt, { type: 'paragraph', content: [] })
+      .setTextSelection(insertAt + 1)
+      .run()
+    pendingEnterBlockIndexRef.current = nextBlockIndex
+    return true
   }
 
   const handleBackspaceAtBlockBoundary = () => {
@@ -2668,16 +2786,11 @@ function App() {
           event.preventDefault()
           return true
         }
-        if (event.key !== 'Enter') return false
-        if (event.shiftKey) {
-          if (!addListLineFromShortcut()) {
-            event.preventDefault()
-            return true
-          }
+        if (event.key === 'Enter' && event.shiftKey && addRowToActiveList()) {
           event.preventDefault()
           return true
         }
-        if (insertParagraphAfterActiveList()) {
+        if (event.key === 'Enter' && exitActiveListToParagraphBlock()) {
           event.preventDefault()
           return true
         }
@@ -2961,11 +3074,15 @@ function App() {
     const closeOnOutsidePointer = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target.closest('.authorship-popover') : null
       if (target) return
+      if (editor && !editor.isDestroyed && editor.view.dom.contains(event.target as Node)) {
+        const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })
+        if (position && position.pos >= editor.state.selection.from && position.pos <= editor.state.selection.to) return
+      }
       setAuthorshipMenu(null)
     }
     document.addEventListener('mousedown', closeOnOutsidePointer)
     return () => document.removeEventListener('mousedown', closeOnOutsidePointer)
-  }, [authorshipMenu])
+  }, [authorshipMenu, editor])
 
   useEffect(() => {
     if (!editor) return
@@ -3105,8 +3222,10 @@ function App() {
     if (!editor) return
     const clearTransientHighlights = (event: MouseEvent) => {
       const target = event.target as Node
+      const targetElement = event.target instanceof Element ? event.target : null
       const editorEl = editor.view.dom
       const toolbarEl = floatingEditorWrapRef.current
+      if (targetElement?.closest('.highlight-palette')) return
       if (editorEl.contains(target) || toolbarEl?.contains(target)) return
       setHighlighterArmed(false)
       setHighlightPaletteOpen(false)
@@ -4668,7 +4787,7 @@ function App() {
 
   const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
-    const newBlock = createLociBlock(blankBlockNode(type), type)
+    const newBlock = createLociBlock(blankContentForBlockType(type), type)
     const nextBlocks = insertBlockRelative(selectedBlocks, blockId, newBlock, placement)
     persistBlocks(nextBlocks)
     setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
@@ -4695,7 +4814,7 @@ function App() {
   const applyAIBlockPayload = (payload: AIBlockPayload) => {
     if (!selectedBlocksRef.current.length) return
     const previousBlocks = selectedBlocks
-    const content =
+    const content = aiGeneratedContent(
       payload.kind === 'table'
         ? tableBlockDocFromData(payload.data.columns, payload.data.rows)
         : payload.kind === 'quote'
@@ -4704,7 +4823,8 @@ function App() {
             ? listBlockDocFromData(payload.data.listType, payload.data.items)
             : payload.kind === 'code'
               ? codeBlockDocFromData(payload.data.code)
-              : latexBlockDoc(payload.data.latex)
+              : latexBlockDoc(payload.data.latex),
+    )
     const type: LociBlockType =
       payload.kind === 'table'
         ? 'table'
@@ -4776,8 +4896,8 @@ function App() {
     requestAnimationFrame(syncFormatSideControls)
   }
 
-  const addLineToActiveList = () => {
-    if (!addListLineFromShortcut()) showNotice('Click inside a list first.')
+  const addLineToActiveListFromControls = () => {
+    if (!addRowToActiveList()) showNotice('Click inside a list first.')
     requestAnimationFrame(syncFormatSideControls)
   }
 
@@ -4967,7 +5087,7 @@ function App() {
         left={formatSideControls.left}
         imageCropEditing={imageCropEditing}
         onTableCommand={runTableCommand}
-        onAddListLine={addLineToActiveList}
+        onAddListLine={addLineToActiveListFromControls}
         onCopyCode={copyActiveCodeBlock}
         onEditLatex={toggleActiveLatexEditor}
         onCopyLatex={copyActiveLatex}
@@ -5128,11 +5248,11 @@ function App() {
 
     event.preventDefault()
     event.stopPropagation()
+    const positionStyle = authorshipMenuPosition(event.clientX, event.clientY)
     setAuthorshipMenu({
       from,
       to,
-      top: event.clientY,
-      left: event.clientX,
+      ...positionStyle,
     })
     return true
   }
@@ -5931,7 +6051,7 @@ function App() {
       .focus()
       .setTextSelection(selection)
       .deleteSelection()
-      .insertContent(textToEditorContent(result.draftText).content ?? [])
+      .insertContent(aiGeneratedContent(textToEditorContent(result.draftText)).content ?? [])
       .run()
     showNotification({
       message: 'AI rewrite inserted.',
@@ -5964,29 +6084,46 @@ function App() {
     })
   }
 
+  const applyHighlightToSelection = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
+    if (!editor || editor.state.selection.empty) return false
+    editor.chain().focus().setHighlight({ color }).run()
+    setHighlighterArmed(false)
+    setHighlightPaletteOpen(false)
+    lastPaintedHighlightRangeRef.current = ''
+    return true
+  }
+
+  const toggleHighlighterMode = () => {
+    if (!editor) return
+    setHighlightPaletteOpen(false)
+    if (applyHighlightToSelection()) return
+    setHighlighterArmed((armed) => !armed)
+    lastPaintedHighlightRangeRef.current = ''
+    editor.chain().focus().run()
+  }
+
+  const openHighlightPalette = () => {
+    setHighlightPaletteOpen(true)
+  }
+
   const toggleHighlight = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
     if (!editor) return
-    if (editor.state.selection.empty) {
-      setHighlighterArmed((armed) => !armed)
-      lastPaintedHighlightRangeRef.current = ''
-      editor.chain().focus().run()
-      return
-    }
-    editor.chain().focus().toggleHighlight({ color }).run()
-    setHighlighterArmed(false)
+    if (applyHighlightToSelection(color)) return
+    setHighlighterArmed((armed) => !armed)
+    setHighlightPaletteOpen(false)
+    lastPaintedHighlightRangeRef.current = ''
+    editor.chain().focus().run()
   }
 
   const selectHighlighterColor = (color: string) => {
     updateUserSettings({ highlighterColor: color })
     setHighlightPaletteOpen(false)
-    if (editor && !editor.state.selection.empty) {
-      editor.chain().focus().toggleHighlight({ color }).run()
-      setHighlighterArmed(false)
+    setHighlighterArmed(false)
+    lastPaintedHighlightRangeRef.current = ''
+    if (editor) {
+      editor.chain().focus().run()
       return
     }
-    setHighlighterArmed(true)
-    lastPaintedHighlightRangeRef.current = ''
-    editor?.chain().focus().run()
   }
 
   const exportCurrentNotePdf = async () => {
@@ -6064,7 +6201,7 @@ function App() {
       description: 'Turn lines into tappable tasks.',
       group: 'Structure',
       enabled: true,
-      action: () => editor?.chain().focus().toggleTaskList().run(),
+      action: () => applyListFormat('checklist'),
     },
     {
       id: 'bullet-list',
@@ -6073,7 +6210,7 @@ function App() {
       description: 'Turn lines into dot points.',
       group: 'Structure',
       enabled: true,
-      action: () => editor?.chain().focus().toggleBulletList().run(),
+      action: () => applyListFormat('bulletList'),
     },
     {
       id: 'numbered-list',
@@ -6468,6 +6605,25 @@ function App() {
       : userSettings.theme === 'dark'
         ? 'Dark'
         : 'Light'
+  const authorshipPopover = authorshipMenu
+    ? createPortal(
+        <div
+          className="authorship-popover"
+          style={{ top: authorshipMenu.top, left: authorshipMenu.left }}
+          role="menu"
+          aria-label="Mark selected text"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={markSelectionAsCopied}>
+            Mark as Copied
+          </button>
+          <button type="button" role="menuitem" onClick={clearCopiedMark}>
+            Clear Copied Mark
+          </button>
+        </div>,
+        document.body,
+      )
+    : null
 
   return (
     <main className="app-stage">
@@ -6521,6 +6677,7 @@ function App() {
           activeView={activeView}
           activeNoteId={selectedNote?.id}
           atomSubView={atomSubView}
+          collapsedSectionIds={collapsedSidebarProjectIds}
           draggedNoteIds={draggedNoteIds}
           dragOverProjectId={dragOverProjectId}
           profileAvatarColor={profileAvatarColor}
@@ -6533,6 +6690,13 @@ function App() {
           onDragLeaveProject={(projectId) => setDragOverProjectId((current) => (current === projectId ? '' : current))}
           onDragOverProject={handleNoteDropTargetDragOver}
           onHideSidebarNote={hideSidebarNote}
+          onToggleSidebarSection={(sectionId) => {
+            setCollapsedSidebarProjectIds((current) =>
+              current.includes(sectionId)
+                ? current.filter((id) => id !== sectionId)
+                : [...current, sectionId],
+            )
+          }}
           onNewNote={() => openTemplateChooser()}
           onOpenNote={openProjectQuickNote}
           onOpenProfile={() => setProfileModalOpen(true)}
@@ -6722,7 +6886,7 @@ function App() {
                       smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                       smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
-                      className="template-rich-section"
+                      className={`template-rich-section ${highlighterArmed ? 'is-highlighter-armed' : ''}`}
                       label={<span>Appendix / body</span>}
                       draggedBlockId={draggedBlockId}
                       imageCropEditing={imageCropEditing}
@@ -6798,7 +6962,7 @@ function App() {
                       smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                       smoothCaretScrollContainerRef={documentScrollRef}
                       shellRef={(node) => { blockEditorShellRef.current = node }}
-                      className="template-rich-section"
+                      className={`template-rich-section ${highlighterArmed ? 'is-highlighter-armed' : ''}`}
                       label={<span>Notes</span>}
                       draggedBlockId={draggedBlockId}
                       imageCropEditing={imageCropEditing}
@@ -6847,6 +7011,7 @@ function App() {
                             smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                             smoothCaretScrollContainerRef={documentScrollRef}
                             shellRef={(node) => { blockEditorShellRef.current = node }}
+                            className={highlighterArmed ? 'is-highlighter-armed' : ''}
                             draggedBlockId={draggedBlockId}
                             imageCropEditing={imageCropEditing}
                             imageCropDragging={imageCropDragging}
@@ -6881,6 +7046,7 @@ function App() {
                     smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                     smoothCaretScrollContainerRef={documentScrollRef}
                     shellRef={(node) => { blockEditorShellRef.current = node }}
+                    className={highlighterArmed ? 'is-highlighter-armed' : ''}
                     draggedBlockId={draggedBlockId}
                     imageCropEditing={imageCropEditing}
                     imageCropDragging={imageCropDragging}
@@ -6901,7 +7067,7 @@ function App() {
                 )}
               </article>
               {blockPicker.open && (
-                <div className="block-picker-backdrop" role="presentation" onMouseDown={() => setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })}>
+                <ModalBackdrop containerRef={documentScrollRef} onClose={() => setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })}>
                   <div className="block-picker-dialog" role="dialog" aria-label="Insert block" onMouseDown={(event) => event.stopPropagation()}>
                     <label className="block-picker-search">
                       <Search size={15} aria-hidden />
@@ -6932,7 +7098,7 @@ function App() {
                       {!visibleBlockPickerOptions.length && <p>No blocks found.</p>}
                     </div>
                   </div>
-                </div>
+                </ModalBackdrop>
               )}
             </div>
             <EditorBottomToolbar
@@ -6952,7 +7118,7 @@ function App() {
               highlighterArmed={highlighterArmed}
               highlighterColor={userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR}
               highlightPaletteOpen={highlightPaletteOpen}
-              highlighterColors={HIGHLIGHTER_COLORS}
+              highlighterColors={HIGHLIGHTER_PALETTE}
               onToggleAtomUnderlines={toggleEditorAtomUnderlines}
               onToggleFocusMode={toggleEditorFocusMode}
               onToggleAuthenticWriterMode={toggleEditorAuthenticWriterMode}
@@ -6961,8 +7127,8 @@ function App() {
               onExportDocx={() => void exportCurrentNoteDocx()}
               onDeleteNote={() => void deleteNote()}
               onAtomise={atomiseSelection}
-              onToggleHighlight={() => toggleHighlight()}
-              onToggleHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
+              onToggleHighlight={toggleHighlighterMode}
+              onOpenHighlightPalette={openHighlightPalette}
               onSelectHighlightColor={selectHighlighterColor}
               onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
               onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
@@ -7010,22 +7176,7 @@ function App() {
                 setAiPromptHintDismissedFor(aiPrompt.trim().toLowerCase())
               }}
             />
-            {authorshipMenu && (
-              <div
-                className="authorship-popover"
-                style={{ top: authorshipMenu.top, left: authorshipMenu.left }}
-                role="menu"
-                aria-label="Mark selected text"
-                onMouseDown={(event) => event.stopPropagation()}
-              >
-                <button type="button" role="menuitem" onClick={markSelectionAsCopied}>
-                  Mark as Copied
-                </button>
-                <button type="button" role="menuitem" onClick={clearCopiedMark}>
-                  Clear Copied Mark
-                </button>
-              </div>
-            )}
+            {authorshipPopover}
           </section>
         )}
 
@@ -7091,9 +7242,6 @@ function App() {
                   )}
                 </div>
               </div>
-              <footer>
-                <button type="button" onClick={() => setActiveEditorPanel(null)}>Cancel</button>
-              </footer>
             </section>
           </ModalBackdrop>
         )}
@@ -7300,6 +7448,8 @@ function App() {
                         const isSelected = selectedNoteIds.includes(note.id)
                         const isDragging = draggedNoteIds.includes(note.id)
                         const noteTitle = note.title || 'Untitled Note'
+                        const NoteTypeIcon = noteTemplateIcons[note.templateId ?? 'blank']
+                        const notePreview = noteIndexes.notePreviewLinesById.get(note.id)?.find(Boolean) ?? ''
                         const isMenuOpen = openLooseNoteMenuId === note.id
                         return (
                           <div
@@ -7330,34 +7480,45 @@ function App() {
                               openNote(note.id)
                             }}
                           >
-                            <span className="project-row-main">
-                              {editingLooseNoteId === note.id ? (
-                                <input
-                                  className="note-title-rename-input project-loose-note-title-input"
-                                  value={editingLooseNoteTitle}
-                                  onBlur={() => commitLooseNoteRename(note)}
-                                  onChange={(event) => setEditingLooseNoteTitle(event.target.value)}
-                                  onClick={(event) => event.stopPropagation()}
-                                  onDoubleClick={(event) => event.stopPropagation()}
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') {
-                                      event.preventDefault()
-                                      event.stopPropagation()
-                                      commitLooseNoteRename(note)
-                                    }
-                                    if (event.key === 'Escape') {
-                                      event.preventDefault()
-                                      event.stopPropagation()
-                                      setEditingLooseNoteTitle(note.title || 'Untitled Note')
-                                      setEditingLooseNoteId('')
-                                    }
-                                  }}
-                                  aria-label="Rename note"
-                                  autoFocus
-                                />
-                              ) : (
-                                <strong title={noteTitle}>{noteTitle}</strong>
-                              )}
+                            <span className="project-loose-note-body">
+                              <span className="project-loose-note-icon" aria-hidden>
+                                <NoteTypeIcon size={16} />
+                              </span>
+                              <span className="project-row-main">
+                                <span className="project-loose-note-titleline">
+                                  {editingLooseNoteId === note.id ? (
+                                    <input
+                                      className="note-title-rename-input project-loose-note-title-input"
+                                      value={editingLooseNoteTitle}
+                                      onBlur={() => commitLooseNoteRename(note)}
+                                      onChange={(event) => setEditingLooseNoteTitle(event.target.value)}
+                                      onClick={(event) => event.stopPropagation()}
+                                      onDoubleClick={(event) => event.stopPropagation()}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                          event.preventDefault()
+                                          event.stopPropagation()
+                                          commitLooseNoteRename(note)
+                                        }
+                                        if (event.key === 'Escape') {
+                                          event.preventDefault()
+                                          event.stopPropagation()
+                                          setEditingLooseNoteTitle(note.title || 'Untitled Note')
+                                          setEditingLooseNoteId('')
+                                        }
+                                      }}
+                                      aria-label="Rename note"
+                                      autoFocus
+                                    />
+                                  ) : (
+                                    <strong title={noteTitle}>{noteTitle}</strong>
+                                  )}
+                                  <small>{formatDay(note.updatedAt)}</small>
+                                </span>
+                                <span className="project-loose-note-preview" title={notePreview}>
+                                  {notePreview || 'No preview yet'}
+                                </span>
+                              </span>
                             </span>
                             <span className="project-loose-note-menu">
                               <button
@@ -8254,13 +8415,14 @@ function App() {
                           <small>Used by the floating editor highlighter.</small>
                         </span>
                         <div className="settings-swatch-row" aria-label="Default highlighter colour">
-                          {HIGHLIGHTER_COLORS.map((color) => (
+                          {HIGHLIGHTER_PALETTE.map(({ color, label }) => (
                             <button
                               type="button"
                               key={color}
                               className={color === userSettings.highlighterColor ? 'is-active' : ''}
                               style={{ background: color }}
-                              aria-label={`Use highlighter colour ${color}`}
+                              aria-label={`Use ${label.toLowerCase()} highlighter colour`}
+                              title={label}
                               onClick={() => updateUserSettings({ highlighterColor: color })}
                             />
                           ))}

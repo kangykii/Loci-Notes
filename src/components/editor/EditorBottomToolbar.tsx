@@ -1,10 +1,16 @@
-import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { ChangeEvent, CSSProperties, KeyboardEvent, MouseEvent, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, FileText, Highlighter, History, MoreHorizontal, Sparkles, X } from 'lucide-react'
 import type { AICommandId } from '../../ai/aiTasks'
 
 type AICommandMeta = {
   label: string
+}
+
+type HighlighterColorOption = {
+  label: string
+  color: string
 }
 
 type EditorBottomToolbarProps = {
@@ -24,7 +30,7 @@ type EditorBottomToolbarProps = {
   highlighterArmed: boolean
   highlighterColor: string
   highlightPaletteOpen: boolean
-  highlighterColors: readonly string[]
+  highlighterColors: readonly HighlighterColorOption[]
   onToggleAtomUnderlines: () => void
   onToggleFocusMode: () => void
   onToggleAuthenticWriterMode: () => void
@@ -34,7 +40,7 @@ type EditorBottomToolbarProps = {
   onDeleteNote: () => void
   onAtomise: () => void
   onToggleHighlight: () => void
-  onToggleHighlightPalette: () => void
+  onOpenHighlightPalette: () => void
   onSelectHighlightColor: (color: string) => void
   onToggleFormat: () => void
   onToggleMore: () => void
@@ -73,7 +79,7 @@ export function EditorBottomToolbar({
   onDeleteNote,
   onAtomise,
   onToggleHighlight,
-  onToggleHighlightPalette,
+  onOpenHighlightPalette,
   onSelectHighlightColor,
   onToggleFormat,
   onToggleMore,
@@ -84,6 +90,80 @@ export function EditorBottomToolbar({
   onPromptKeyDown,
   onDismissPromptHint,
 }: EditorBottomToolbarProps) {
+  const highlightButtonRef = useRef<HTMLButtonElement | null>(null)
+  const singleClickTimerRef = useRef<number | null>(null)
+  const [paletteStyle, setPaletteStyle] = useState<CSSProperties | null>(null)
+
+  const clearSingleClickTimer = () => {
+    if (!singleClickTimerRef.current) return
+    window.clearTimeout(singleClickTimerRef.current)
+    singleClickTimerRef.current = null
+  }
+
+  const updatePalettePosition = () => {
+    const button = highlightButtonRef.current
+    if (!button) return
+    const rect = button.getBoundingClientRect()
+    const paletteWidth = Math.min(highlighterColors.length * 28 + 14, window.innerWidth - 24)
+    const left = Math.min(window.innerWidth - paletteWidth - 12, Math.max(12, rect.right - paletteWidth))
+    const bottom = Math.max(12, window.innerHeight - rect.top + 8)
+    setPaletteStyle({
+      left,
+      bottom,
+      width: paletteWidth,
+    })
+  }
+
+  const openHighlightPalette = () => {
+    clearSingleClickTimer()
+    updatePalettePosition()
+    onOpenHighlightPalette()
+  }
+
+  useLayoutEffect(() => {
+    if (!highlightPaletteOpen) return
+    updatePalettePosition()
+  }, [highlightPaletteOpen])
+
+  useEffect(() => {
+    if (!highlightPaletteOpen) return
+    const handleViewportChange = () => updatePalettePosition()
+    window.addEventListener('resize', handleViewportChange)
+    window.visualViewport?.addEventListener('resize', handleViewportChange)
+    window.visualViewport?.addEventListener('scroll', handleViewportChange)
+    return () => {
+      window.removeEventListener('resize', handleViewportChange)
+      window.visualViewport?.removeEventListener('resize', handleViewportChange)
+      window.visualViewport?.removeEventListener('scroll', handleViewportChange)
+    }
+  }, [highlightPaletteOpen])
+
+  useEffect(() => () => clearSingleClickTimer(), [])
+
+  const highlightPalette = highlightPaletteOpen
+    ? createPortal(
+        <div
+          className="highlight-palette"
+          style={paletteStyle ?? undefined}
+          aria-label="Highlight colours"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {highlighterColors.map(({ color, label }) => (
+            <button
+              type="button"
+              key={color}
+              className={color === highlighterColor ? 'is-active' : ''}
+              style={{ background: color }}
+              aria-label={`Use ${label.toLowerCase()} highlight colour`}
+              title={label}
+              onClick={() => onSelectHighlightColor(color)}
+            />
+          ))}
+        </div>,
+        document.body,
+      )
+    : null
+
   const toolbar = (
     <div className="floating-editor-wrap" ref={wrapRef}>
       {activePanel === 'more' && (
@@ -165,6 +245,7 @@ export function EditorBottomToolbar({
         <div className="toolbar-zone toolbar-zone-right">
           <div className="highlight-tool">
             <button
+              ref={highlightButtonRef}
               type="button"
               className={`highlight-button ${highlighterArmed ? 'is-armed' : ''}`}
               aria-label="Highlight"
@@ -173,33 +254,27 @@ export function EditorBottomToolbar({
               aria-expanded={highlightPaletteOpen}
               onMouseDown={(event) => {
                 event.preventDefault()
-                onToggleHighlight()
+              }}
+              onClick={(event) => {
+                event.preventDefault()
+                if (event.detail > 1) {
+                  openHighlightPalette()
+                  return
+                }
+                clearSingleClickTimer()
+                singleClickTimerRef.current = window.setTimeout(() => {
+                  singleClickTimerRef.current = null
+                  onToggleHighlight()
+                }, 220)
               }}
               onDoubleClick={(event) => {
                 event.preventDefault()
-                onToggleHighlightPalette()
+                openHighlightPalette()
               }}
             >
               <Highlighter size={15} aria-hidden />
               <span className="highlight-swatch" style={{ background: highlighterColor }} aria-hidden />
             </button>
-            {highlightPaletteOpen && (
-              <div className="highlight-palette" aria-label="Highlight colours">
-                {highlighterColors.map((color) => (
-                  <button
-                    type="button"
-                    key={color}
-                    className={color === highlighterColor ? 'is-active' : ''}
-                    style={{ background: color }}
-                    aria-label={`Use highlight colour ${color}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault()
-                      onSelectHighlightColor(color)
-                    }}
-                  />
-                ))}
-              </div>
-            )}
           </div>
           <button
             type="button"
@@ -212,6 +287,7 @@ export function EditorBottomToolbar({
           </button>
         </div>
       </div>
+      {highlightPalette}
     </div>
   )
 

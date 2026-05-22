@@ -1,13 +1,10 @@
 import { Mark, mergeAttributes } from '@tiptap/core'
-import { Fragment, Slice } from '@tiptap/pm/model'
-import type { MarkType } from '@tiptap/pm/model'
+import { Slice } from '@tiptap/pm/model'
 import { Plugin } from '@tiptap/pm/state'
+import { applyAuthorshipToFragment } from './editor/authorship'
+import type { AuthorshipAttrs } from './editor/authorship'
 
-export type AuthorshipMarkAttrs = {
-  kind: 'copied'
-  createdAt?: string | null
-  source?: 'manual-mark' | null
-}
+export type AuthorshipMarkAttrs = AuthorshipAttrs
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -76,20 +73,18 @@ export const AuthorshipMark = Mark.create({
           transformPasted: (slice) => {
             const authorshipMark = this.editor.schema.marks.authorship
             if (!authorshipMark) return slice
-            return new Slice(stripAuthorshipMarks(slice.content, authorshipMark), slice.openStart, slice.openEnd)
+            return new Slice(
+              applyAuthorshipToFragment(slice.content, authorshipMark, {
+                kind: 'copied',
+                createdAt: new Date().toISOString(),
+                source: 'paste',
+              }),
+              slice.openStart,
+              slice.openEnd,
+            )
           },
         },
       }),
     ]
   },
 })
-
-function stripAuthorshipMarks(fragment: Fragment, authorshipMark: MarkType): Fragment {
-  const children: Array<Parameters<typeof Fragment.fromArray>[0][number]> = []
-  fragment.forEach((child) => {
-    const content = child.content.size ? stripAuthorshipMarks(child.content, authorshipMark) : child.content
-    const marks = child.marks.filter((mark) => mark.type !== authorshipMark)
-    children.push(child.copy(content).mark(marks))
-  })
-  return Fragment.fromArray(children)
-}

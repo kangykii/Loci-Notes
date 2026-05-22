@@ -94,9 +94,9 @@ a {
 
 .brand-symbol {
   display: grid;
-  width: 64px;
-  height: 64px;
-  flex: 0 0 64px;
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
   place-items: center;
 }
 
@@ -715,9 +715,9 @@ a {
 }
 
 .footer-brand .brand-symbol {
-  width: 52px;
-  height: 52px;
-  flex-basis: 52px;
+  width: 60px;
+  height: 60px;
+  flex-basis: 60px;
 }
 
 @keyframes typingUnderline {
