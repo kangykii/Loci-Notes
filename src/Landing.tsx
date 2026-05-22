@@ -97,7 +97,7 @@ const recallResults = [
 ]
 
 const downloadHref =
-  'https://github.com/kangykii/Loci-Notes/releases/download/v1.1.1/Loci%20Notes_1.1.1_x64-setup.exe'
+  'https://github.com/kangykii/Loci-Notes/releases/download/v1.3.0/Loci.Notes_1.3.0_x64-setup.exe'
 
 function ProductDemo() {
   return (
@@ -290,7 +290,7 @@ function Landing() {
               </span>
               <span>
                 <strong>Windows Setup EXE</strong>
-                <small>Version 1.1.1 release asset hosted on GitHub</small>
+                <small>Version 1.3.0 release asset hosted on GitHub</small>
               </span>
               <b>Download</b>
             </a>

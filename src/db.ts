@@ -571,6 +571,7 @@ class LociNotesDatabase extends Dexie {
   notes!: Dexie.Table<Note, string>
   atoms!: Dexie.Table<Atom, string>
   flashcardSets!: Dexie.Table<FlashcardSet, string>
+  flashcardReviewStates!: Dexie.Table<FlashcardReviewState, string>
   projects!: Dexie.Table<Project, string>
   noteMetas!: Dexie.Table<NoteMeta, string>
   noteBodies!: Dexie.Table<NoteBody, string>
@@ -578,7 +579,6 @@ class LociNotesDatabase extends Dexie {
   noteSnapshots!: Dexie.Table<NoteSnapshot, string>
   userProfiles!: Dexie.Table<UserProfile, string>
   userSettings!: Dexie.Table<UserSettings, string>
-  flashcardReviewStates!: Dexie.Table<FlashcardReviewState, string>
   authSessions!: Dexie.Table<AuthSession, string>
   accountProfiles!: Dexie.Table<AccountProfile, string>
   friendships!: Dexie.Table<Friendship, string>
@@ -950,6 +950,37 @@ class LociNotesDatabase extends Dexie {
       mediaAssets: 'id, noteId, kind, updatedAt',
       atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
       flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      projects: 'id, name',
+      noteSnapshots: 'id, noteId, savedAt',
+      userProfiles: 'id',
+      userSettings: 'id',
+      authSessions: 'id, status, accountId, updatedAt',
+      accountProfiles: 'accountId, handle, tag, updatedAt',
+      friendships: 'id, accountId, friendAccountId, status, updatedAt',
+      friendGroups: 'id, ownerAccountId, name, updatedAt, *memberAccountIds',
+      remoteAssets: 'id, ownerAccountId, kind, updatedAt',
+      sharedNoteExports: 'id, localNoteId, remoteShareId, ownerAccountId, status, collaborationSessionId, updatedAt, *recipientAccountIds',
+      sharedNoteSnapshots: 'id, shareId, localNoteId, remoteShareId, ownerAccountId, updatedAt',
+      collaborationSessions: 'id, localNoteId, shareId, ownerAccountId, status, updatedAt',
+      collaborationParticipants: 'id, sessionId, accountId, role, lastSeenAt',
+      collaborationEvents: 'id, sessionId, clientId, opId, [clientId+opId], actorAccountId, kind, syncStatus, serverSequence, createdAt',
+      communityActivities: 'id, recipientKind, recipientId, [recipientKind+recipientId], actorAccountId, kind, objectType, objectId, syncStatus, createdAt, updatedAt',
+      communityWidgets: 'id, kind, recipientKind, recipientId, [recipientKind+recipientId], ownerAccountId, status, syncStatus, createdAt, updatedAt',
+      communityReactions: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communityPresetReplies: 'id, activityId, actorAccountId, kind, syncStatus, createdAt',
+      communitySyncQueue: 'id, entityType, entityId, operation, status, updatedAt',
+      remoteContentItems: 'id, placement, campaignId, startsAt, endsAt, updatedAt',
+      surveyPromptStates: 'id, promptId, accountId, [accountId+promptId], status, updatedAt',
+      remoteEntityMappings: 'id, [entityType+localId], [ownerAccountId+localId], remoteId, ownerAccountId, lastSyncedAt',
+    })
+    this.version(19).stores({
+      notes: 'id, title, projectId, templateId, updatedAt, *tags',
+      noteMetas: 'id, title, projectId, templateId, updatedAt, *tags, hasMedia',
+      noteBodies: 'noteId, updatedAt',
+      mediaAssets: 'id, noteId, kind, updatedAt',
+      atoms: 'id, projectId, phrase, [projectId+phrase], updatedAt, *tags',
+      flashcardSets: 'id, name, updatedAt, lastStudiedAt, *atomIds',
+      flashcardReviewStates: 'id, setId, atomId, [setId+atomId], dueAt, updatedAt',
       projects: 'id, name',
       noteSnapshots: 'id, noteId, savedAt',
       userProfiles: 'id',

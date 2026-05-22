@@ -645,8 +645,13 @@ type AppDialog =
       onConfirm: (value: string, secondaryValue?: string) => void | Promise<void>
     }
 
-const HIGHLIGHTER_COLORS = ['rgba(62, 50, 32, 0.18)', 'rgba(46, 52, 64, 0.14)', 'rgba(26, 26, 26, 0.1)', 'rgba(244, 244, 242, 0.82)'] as const
-const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0]
+const HIGHLIGHTER_COLORS = [
+  { label: 'Ink', color: 'rgba(62, 50, 32, 0.18)' },
+  { label: 'Slate', color: 'rgba(46, 52, 64, 0.14)' },
+  { label: 'Charcoal', color: 'rgba(26, 26, 26, 0.1)' },
+  { label: 'Paper', color: 'rgba(244, 244, 242, 0.82)' },
+] as const
+const DEFAULT_HIGHLIGHTER_COLOR = HIGHLIGHTER_COLORS[0].color
 
 function defaultUserSettings(): UserSettings {
   const now = nowIso()
@@ -7561,7 +7566,7 @@ function App() {
               onDeleteNote={() => void deleteNote()}
               onAtomise={atomiseSelection}
               onToggleHighlight={() => toggleHighlight()}
-              onToggleHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
+              onOpenHighlightPalette={() => setHighlightPaletteOpen((open) => !open)}
               onSelectHighlightColor={selectHighlighterColor}
               onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
               onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
@@ -8046,6 +8051,8 @@ function App() {
             onRemoveFriend={(friendshipId) => void removeCommunityFriend(friendshipId)}
             onSendNote={(permission, noteId) => void createTargetedShareForSelectedNote(permission, noteId)}
             onCreateCollaboration={(noteId) => void createCollaborationForSelectedNote(noteId)}
+            reduceMotion={userSettings.reduceMotion}
+            layoutTransitioning={layoutTransitioning}
             formatDay={formatDay}
           />
         )}
@@ -9228,13 +9235,13 @@ function App() {
                           <small>Used by the floating editor highlighter.</small>
                         </span>
                         <div className="settings-swatch-row" aria-label="Default highlighter colour">
-                          {HIGHLIGHTER_COLORS.map((color) => (
+                          {HIGHLIGHTER_COLORS.map(({ color, label }) => (
                             <button
                               type="button"
                               key={color}
                               className={color === userSettings.highlighterColor ? 'is-active' : ''}
                               style={{ background: color }}
-                              aria-label={`Use highlighter colour ${color}`}
+                              aria-label={`Use ${label.toLowerCase()} highlighter colour`}
                               onClick={() => updateUserSettings({ highlighterColor: color })}
                             />
                           ))}

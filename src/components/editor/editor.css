@@ -239,9 +239,10 @@
 }
 
 .highlight-palette {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
+  position: fixed;
+  right: auto;
+  bottom: 0;
+  z-index: 60;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -252,6 +253,12 @@
   padding: 7px;
   transform-origin: bottom right;
   animation: editorOverlayIn var(--editor-motion-medium) var(--editor-motion-ease) both;
+}
+
+.is-highlighter-armed .note-editor ::selection {
+  background: transparent;
+  color: inherit;
+  text-shadow: none;
 }
 
 .highlight-palette button {
