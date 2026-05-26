@@ -61,7 +61,7 @@ export const HOME_TIPS: HomeTip[] = [
   },
   {
     id: 'toolbar',
-    body: 'The editor toolbar is for actions tied to the current note: Atomise selected text, format blocks, highlight passages, ask AI, or export.',
+    body: 'The editor toolbar covers Atomise, highlight, and AI. Use the gutter + control to insert headings and blocks; right-click selected text for links and formatting.',
   },
 ]
 

@@ -1,3 +1,4 @@
+import { isRecord } from '../utils/isRecord'
 import type {
   AccountProfile,
   CollaborationEvent,
@@ -57,10 +58,6 @@ const WIDGET_STATUSES = new Set(['draft', 'active', 'paused', 'completed', 'arch
 const REACTION_KINDS = new Set(['seen', 'helpful', 'done', 'question'])
 const PRESET_REPLY_KINDS = new Set(['reviewing', 'looks-good', 'send-again', 'done'])
 const REMOTE_CONTENT_PLACEMENTS = new Set(['landing', 'app-banner', 'settings', 'dev-notification'])
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isString(value: unknown): value is string {
   return typeof value === 'string'

@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject, SyntheticEvent, WheelEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject, SyntheticEvent, WheelEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useEditor } from '@tiptap/react'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
@@ -21,35 +21,20 @@ import {
   ChevronDown,
   ChevronRight,
   CheckSquare,
-  Code2,
   Download,
   FileText,
-  Heading1,
-  Heading2,
-  Heading3,
   Highlighter,
-  Home,
-  ImageIcon,
   Info,
   Keyboard,
-  List,
-  ListOrdered,
   Layers3,
-  LinkIcon,
-  Maximize2,
-  Minimize2,
-  Minus,
   MoreVertical,
   Pin,
   Plus,
-  Radical,
-  RemoveFormatting,
   Search,
   Settings,
   Shield,
   Shuffle as ShuffleIcon,
   Sparkles,
-  Table2,
   Trash2,
   Users,
   X as XIcon,
@@ -57,18 +42,8 @@ import {
 import { AtomMark } from './AtomMark'
 import { AuthorshipMark } from './AuthorshipMark'
 import {
-  appendNoteSnapshot,
   createId,
-  db,
-  deprecatedStarterAtomIds,
-  deprecatedStarterNoteIds,
-  deprecatedStarterProjectIds,
-  loadNoteSnapshots,
   nowIso,
-  starterWorkspaceAtomIds,
-  starterWorkspaceNoteIds,
-  starterWorkspaceProjectIds,
-  upsertStarterWorkspace,
 } from './db'
 import type {
   Atom,
@@ -91,7 +66,6 @@ import type {
   Friendship,
   RemoteContentItem,
   SharedNoteExport,
-  StarterWorkspaceUpsertResult,
   StudyRating,
   UserProfile,
   UserSettings,
@@ -100,31 +74,37 @@ import { exportNoteDocx, exportNotePdf } from './exports'
 import { requestAIText } from './ai/aiClient'
 import { buildAIContextFromPolicy } from './ai/aiOrchestrator'
 import type { AIContextDraftItem } from './ai/aiOrchestrator'
-import type { AIProviderId } from './ai/aiTypes'
-import { aiProviders, DEFAULT_AI_TIMEOUT_MS } from './ai/providers'
+import type { AIProviderId, AITextResponse } from './ai/aiTypes'
+import { aiProviders, DEFAULT_AI_TIMEOUT_MS, migrateProviderDefaultModel, providerDefaultModel } from './ai/providers'
 import {
   AI_SYSTEM_INSTRUCTION,
   AI_TASK_CONTRACTS,
-  DEFAULT_MARKING_CRITERIA,
-  aiActionConfig,
+  DEFAULT_CRITIQUE_CRITERIA,
+  aiDocumentActionFlags,
   canResultUpdateProjectInstructions,
   cleanAIDraftFormatting,
   defaultPromptForCommand,
   parseAICodePayload,
+  parseAIDocumentPatch,
   parseAILatexPayload,
+  parseAIJson,
   parseAIListPayload,
   parseAIQuotePayload,
   parseAITablePayload,
   parseAtomCandidates,
   parseFlashcardQuizPayload,
   parseFlashcardShortAnswerMark,
+  normalizeAICommandId,
   routeAITask,
   sanitizeAIInsertText,
+  taskResponseFormat,
   taskUsesWritingStyle,
 } from './ai/aiTasks'
+import { structuredOutputForTask, validateStructuredTaskValue } from './ai/structuredSchemas'
 import type {
   AIBlockPayload,
   AICommandId,
+  AIDocumentPatch,
   AIResult,
   AITaskType,
 } from './ai/aiTasks'
@@ -135,31 +115,57 @@ import { PageHeader } from './components/layout/PageHeader'
 import { CommunityView } from './components/views/CommunityView'
 import type { CommunityTarget } from './components/views/CommunityView'
 import { ProjectDetail } from './components/views/ProjectDetail'
-import { LociEditor } from './components/editor/LociEditor'
+import { EditorWorkspace } from './components/editor/EditorWorkspace'
 import { FormatSideControls } from './components/editor/FormatSideControls'
 import { EditorBottomToolbar } from './components/editor/EditorBottomToolbar'
+import { EditorSessionBoundary, EditorSessionProvider } from './editor/EditorSession'
+import { useEditorMarginalia } from './editor/useEditorMarginalia'
+import { OnboardingScreen } from './components/onboarding/OnboardingScreen'
+import { Sidebar, type SidebarQuickSection } from './components/sidebar/Sidebar'
 import { mountedEditorDom, useFocusModePlugin } from './components/editor/focusModePlugin'
+import {
+  applyBlockDrop,
+  applyBlockGroupDrop,
+  blockClipboardPayload,
+  blockSelectionRange,
+  cloneBlocksForPaste,
+  deleteSelectedBlocks,
+  insertBlockRelative,
+  insertBlocksRelative,
+  parseBlockClipboardPayload,
+  replaceSelectedBlocks,
+  selectedBlocksInDocumentOrder,
+  toggleBlockSelection,
+  updateBlockById,
+} from './components/editor/blockOperations'
 import { sameBlockControls, useBlockGutter } from './components/editor/useBlockGutter'
 import type { BlockControlRect, BlockDropTarget } from './components/editor/useBlockGutter'
 import { VirtualGrid, VirtualList } from './components/virtual/VirtualList'
 import {
-  ActiveBlockHighlight,
   AISelectionHighlight,
+  BlockSelectionHighlight,
+  LociAIBlock,
+  LociBlockId,
   LociImage,
-  LociLatex,
+  LociMathInline,
+  LociMathPaste,
   LociQuote,
   TabIndent,
   aiSelectionHighlightKey,
+  blockSelectionHighlightKey,
 } from './editor/extensions'
 import type { EditorRange } from './editor/extensions'
 import { applyAuthorshipToContent } from './editor/authorship'
+import { blocksFromAIDocumentPatch } from './editor/aiDocumentPatches'
 import {
   blankBlockNode,
   blankDoc,
   blockContentNodes,
   clampImageNumber,
+  ensureDocumentBlockIds,
   collectAtomIds,
   collectNotePreviewLines,
+  atomMarkFor,
   collectText,
   contentFromBlocks,
   createLociBlock,
@@ -167,11 +173,10 @@ import {
   ensureDocumentHeading,
   flattenLegacyLociBlocks,
   formatBlockTypeForBlock,
-  imageBlockDoc,
   codeBlockDocFromData,
   codeDataFromNode,
-  latexBlockDoc,
-  latexDataFromNode,
+  displayMathLatexInBlock,
+  displayMathParagraphDoc,
   listBlockDocFromData,
   listDataFromNode,
   normalizeBlocksForContent,
@@ -182,10 +187,12 @@ import {
   tableBlockDocFromData,
   tableDataFromNode,
   textToEditorContent,
+  headingBlockDoc,
 } from './editor/blocks'
 import type { FormatBlockType, ImageAlignPreset, ListBlockType } from './editor/blocks'
 import {
   blockPickerOptions,
+  type BlockPickerOption,
   emptyDoc,
   getNoteTemplate,
   normalizeTemplateData,
@@ -204,6 +211,18 @@ import { buildProfileStats } from './profile/profileStats'
 import { atomsStore } from './stores/atomsStore'
 import { flashcardSetsStore } from './stores/flashcardSetsStore'
 import { loadLocalAppData } from './stores/appDataStore'
+import { searchNotes } from './tauri/dbClient'
+import { isTauriDesktop } from './tauri/env'
+import {
+  sortByUpdated,
+  UNASSIGNED_PROJECT_ID,
+  useWorkspaceActions,
+  useWorkspaceIndexes,
+  useWorkspaceNotes,
+  workspaceStore,
+  WorkspaceProvider,
+  type NoteIndexes,
+} from './workspace'
 import { noteSnapshotsStore } from './stores/noteSnapshotsStore'
 import { notesStore } from './stores/notesStore'
 import { mediaStore } from './stores/mediaStore'
@@ -214,6 +233,18 @@ import { authService, signedOutSession } from './services/authService'
 import { collaborationService } from './services/collaborationService'
 import { communityActivityService } from './services/communityActivityService'
 import { communityRecipientId } from './services/communityRecipientService'
+import { RELEASE_COMMUNITY_ENABLED } from './config/releaseFlags'
+import { isSetWorkspace } from './lib/atomNav'
+import {
+  avatarTextColor,
+  createBaseHandleFromDisplayName,
+  initialsFromName,
+  normalizeInitials,
+} from './lib/profileHelpers'
+import type { AtomSubView, View } from './types/navigation'
+import type { ProfileDraft } from './types/profileDraft'
+import { appendNoteSnapshotForNote, bulkRestoreNoteSnapshots, loadNoteSnapshotsForNote } from './services/noteSnapshotService'
+import { communitySyncService } from './services/communitySyncService'
 import { friendService, normalizeUserHandle } from './services/friendService'
 import type { FriendSearchResult } from './services/friendService'
 import { friendGroupService } from './services/friendGroupService'
@@ -225,21 +256,17 @@ import type { SurveyPrompt } from './services/surveyService'
 import { initialUpdateState, updateService } from './services/updateService'
 import type { UpdateState } from './services/updateService'
 import { applyStudyRating, reviewStateForCard, sortDueAtomIds } from './study/spacedRepetition'
-import { isAllowedLinkUrl, sanitizeImageUrl, sanitizeLinkUrl } from './utils/urlValidation'
+import { isAllowedLinkUrl, sanitizeLinkUrl } from './utils/urlValidation'
 import { INK_READING_WOMAN, INK_WALKING_WOMAN, INK_WALKMAN_BOY } from './assets/marginalia/parts.generated'
 import type { InkCharacter as InkCharacterAsset } from './assets/marginalia/parts.generated'
 import { EDITOR_CITY_MARGINALIA } from './assets/marginalia/city.generated'
-import { cityMarginaliaIndexForNote, editorMarginaliaOpacityFromText } from './marginalia/editorMarginalia'
+import { cityMarginaliaIndexForNote } from './marginalia/editorMarginalia'
 import { useImageLoadCoordinator } from './marginalia/useImageLoadCoordinator'
 import { getGreeting, getSubtagline, getTipByIndex } from './home/tips'
 import './App.css'
 import './components/editor/formatBlocks.css'
 import './styles/marginalia.css'
 
-type IconComponent = React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
-
-type View = 'home' | 'editor' | 'projects' | 'community' | 'atoms' | 'settings'
-type AtomSubView = 'atoms' | 'sets' | 'set-edit' | 'set-open' | 'study' | 'match' | 'quiz-setup' | 'quiz'
 type StudyDirection = 'term' | 'definition'
 type StudyMode = 'flashcards' | 'match' | 'quiz'
 type QuizAnswerWith = 'term' | 'definition' | 'both'
@@ -252,7 +279,6 @@ type QuizSetupOptions = {
   includeWritten: boolean
 }
 const RELEASE_TEMPLATE_CHOOSER_ENABLED = false
-const RELEASE_COMMUNITY_ENABLED = false
 const EDITOR_CITY_MARGINALIA_COUNT = EDITOR_CITY_MARGINALIA.length
 const LIST_BLOCK_TYPES = ['checklist', 'bulletList', 'numberedList'] as const
 
@@ -310,9 +336,10 @@ function useFloatingEditorToolbarLayout({
     const clampedCenterX = Math.min(viewportWidth - viewportPadding, Math.max(viewportPadding, centerX))
     const availableViewportWidth = Math.max(0, viewportWidth - viewportPadding * 2)
     const availableEditorWidth = Math.max(0, rect.width - viewportPadding * 2)
+    const documentCardWidth = Math.min(840, availableEditorWidth)
     const maxWidth = Math.max(
       Math.min(260, availableViewportWidth),
-      Math.min(940, availableEditorWidth, availableViewportWidth),
+      Math.min(documentCardWidth, availableEditorWidth, availableViewportWidth),
     )
 
     wrap.style.setProperty('--floating-toolbar-center-x', `${clampedCenterX}px`)
@@ -454,38 +481,8 @@ type SearchRow =
   | { kind: 'section'; id: string; label: string }
   | { kind: 'hit'; id: string; hit: SearchHit; hitIndex: number }
 
-type NoteIndexes = {
-  noteTextById: Map<string, string>
-  notePreviewLinesById: Map<string, string[]>
-  notesByProjectId: Map<string, Note[]>
-  noteIdsByAtomId: Map<string, Set<string>>
-  atomIdsByProjectId: Map<string, Set<string>>
-  projectIdsByAtomId: Map<string, Set<string>>
-}
-
-type NoteIndexCacheEntry = {
-  content: JSONContent
-  text: string
-  previewLines: string[]
-  atomIds: string[]
-}
-
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`
-}
-
-function starterWorkspaceResultMessage(result: StarterWorkspaceUpsertResult) {
-  const added = [
-    result.projects ? pluralize(result.projects, 'project') : '',
-    result.notes ? pluralize(result.notes, 'note') : '',
-    result.atoms ? pluralize(result.atoms, 'atom') : '',
-  ].filter(Boolean)
-  const removedTotal = result.removedProjects + result.removedNotes + result.removedAtoms
-  const pieces = []
-  if (added.length) pieces.push(`Added ${added.join(', ')}`)
-  if (result.repairedNotes) pieces.push(`repaired ${pluralize(result.repairedNotes, 'note')}`)
-  if (removedTotal) pieces.push(`removed ${pluralize(removedTotal, 'old starter record')}`)
-  return pieces.length ? `Onboarding files updated: ${pieces.join('; ')}.` : 'Onboarding files already exist.'
 }
 
 type AtomCard = {
@@ -547,8 +544,6 @@ function formatQuizAnswerWith(value: QuizAnswerWith) {
   return 'Both'
 }
 
-const isSetWorkspace = (view: AtomSubView) => view !== 'atoms'
-
 type LociWorkerRequest =
   | { id: string; type: 'index-notes'; notes: Array<{ id: string; title: string; updatedAt: string; content: JSONContent }> }
   | { id: string; type: 'search'; query: string }
@@ -564,8 +559,6 @@ type LociWorkerResponse =
   | { id: string; type: 'search-results'; noteIds: string[]; indexVersion: number }
   | { id: string; type: 'preview-ready'; noteId: string; preview: string }
 
-const PROJECT_QUICK_NAV_ROW_HEIGHT = 34
-const PROJECT_QUICK_NAV_MAX_HEIGHT = 240
 const SIDEBAR_FLICK_THRESHOLD = 72
 const SIDEBAR_FLICK_COOLDOWN_MS = 380
 const IMMERSIVE_TOP_EXIT_WINDOW_MS = 1200
@@ -574,7 +567,7 @@ const TRUE_FULLSCREEN_EXIT_STAGE_MS = 260
 const SIDEBAR_REVEAL_STAGE_MS = 280
 const LAYOUT_TRANSITION_MS = 360
 
-type EditorPanel = 'format' | 'more'
+type EditorPanel = 'more'
 
 type ImageCropMode = 'contain' | 'cover'
 type ImageAspectPreset = 'auto' | 'square' | 'wide' | 'portrait'
@@ -626,19 +619,6 @@ function authorshipMenuPosition(clientX: number, clientY: number) {
   }
 }
 
-type FormatOption = {
-  id: string
-  label: string
-  icon: IconComponent
-  description: string
-  ariaLabel?: string
-  group: 'Structure' | 'Text' | 'Insert'
-  enabled: boolean
-  action?: () => void
-}
-
-const FORMAT_DIALOG_GROUP_ORDER: FormatOption['group'][] = ['Structure', 'Text', 'Insert']
-
 type AppDialog =
   | {
       kind: 'confirm'
@@ -682,10 +662,10 @@ function defaultUserSettings(): UserSettings {
     theme: 'loci',
     defaultAIProvider: 'openai',
     aiProviders: {
-      openai: { enabled: false, apiKey: '', model: 'gpt-5.2', baseUrl: 'https://api.openai.com/v1' },
-      gemini: { enabled: false, apiKey: '', model: 'gemini-2.5-flash', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
-      claude: { enabled: false, apiKey: '', model: 'claude-sonnet-4-20250514', baseUrl: 'https://api.anthropic.com/v1' },
-      kimi: { enabled: false, apiKey: '', model: 'kimi-k2.6', baseUrl: 'https://api.moonshot.ai/v1' },
+      openai: { enabled: false, apiKey: '', model: providerDefaultModel('openai'), baseUrl: 'https://api.openai.com/v1' },
+      gemini: { enabled: false, apiKey: '', model: providerDefaultModel('gemini'), baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+      claude: { enabled: false, apiKey: '', model: providerDefaultModel('claude'), baseUrl: 'https://api.anthropic.com/v1' },
+      kimi: { enabled: false, apiKey: '', model: providerDefaultModel('kimi'), baseUrl: 'https://api.moonshot.ai/v1' },
     },
     aiTemperature: 0.4,
     aiMaxTokens: 800,
@@ -721,12 +701,15 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
     claude: { ...base.aiProviders.claude, ...settings.aiProviders?.claude },
     kimi: { ...base.aiProviders.kimi, ...settings.aiProviders?.kimi },
   }
-  if (providers.openai.model === 'gpt-4o-mini') providers.openai.model = base.aiProviders.openai.model
-  if (providers.gemini.model === 'gemini-1.5-flash') providers.gemini.model = base.aiProviders.gemini.model
-  if (providers.claude.model === 'claude-3-5-haiku-latest') providers.claude.model = base.aiProviders.claude.model
-  if (providers.kimi.model === 'kimi-k2-0711-preview') providers.kimi.model = base.aiProviders.kimi.model
+  providers.openai.model = migrateProviderDefaultModel('openai', providers.openai.model)
+  providers.gemini.model = migrateProviderDefaultModel('gemini', providers.gemini.model)
+  providers.claude.model = migrateProviderDefaultModel('claude', providers.claude.model)
+  providers.kimi.model = migrateProviderDefaultModel('kimi', providers.kimi.model)
   const theme = settings.theme === 'light' || settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'loci'
   const preferredAtomSubView = settings.preferredAtomSubView === 'sets' ? 'sets' : 'atoms'
+  const defaultAIProvider = settings.defaultAIProvider
+    ?? (settings as Partial<UserSettings> & { defaultAiProvider?: UserSettings['defaultAIProvider'] }).defaultAiProvider
+    ?? base.defaultAIProvider
   const highlighterColor = typeof settings.highlighterColor === 'string' && HIGHLIGHTER_COLORS.includes(settings.highlighterColor)
     ? settings.highlighterColor
     : base.highlighterColor
@@ -734,6 +717,7 @@ function normalizeUserSettings(settings?: Partial<UserSettings> | null): UserSet
     ...base,
     ...settings,
     theme,
+    defaultAIProvider,
     highlighterColor,
     aiProviders: providers,
     editorAnimatedTyping: typeof settings.editorAnimatedTyping === 'boolean' ? settings.editorAnimatedTyping : base.editorAnimatedTyping,
@@ -777,55 +761,6 @@ function hitKey(hit: SearchHit): string {
 
 function normalizeSearch(query: string) {
   return query.trim().toLowerCase()
-}
-
-function createNoteIndexes(notes: Note[], cache = new Map<string, NoteIndexCacheEntry>(), maxPreviewLines = 6): NoteIndexes {
-  const noteTextById = new Map<string, string>()
-  const notePreviewLinesById = new Map<string, string[]>()
-  const notesByProjectId = new Map<string, Note[]>()
-  const noteIdsByAtomId = new Map<string, Set<string>>()
-  const atomIdsByProjectId = new Map<string, Set<string>>()
-  const projectIdsByAtomId = new Map<string, Set<string>>()
-  const liveNoteIds = new Set(notes.map((note) => note.id))
-
-  notes.forEach((note) => {
-    const cached = cache.get(note.id)
-    const entry = cached?.content === note.content
-      ? cached
-      : {
-          content: note.content,
-          text: collectText(note.content ?? emptyDoc),
-          previewLines: collectNotePreviewLines(note.content, maxPreviewLines),
-          atomIds: collectAtomIds(note.content),
-        }
-    cache.set(note.id, entry)
-    noteTextById.set(note.id, entry.text)
-    notePreviewLinesById.set(note.id, entry.previewLines)
-
-    const projectNotes = notesByProjectId.get(note.projectId) ?? []
-    projectNotes.push(note)
-    notesByProjectId.set(note.projectId, projectNotes)
-
-    entry.atomIds.forEach((atomId) => {
-      const atomNoteIds = noteIdsByAtomId.get(atomId) ?? new Set<string>()
-      atomNoteIds.add(note.id)
-      noteIdsByAtomId.set(atomId, atomNoteIds)
-
-      const projectAtomIds = atomIdsByProjectId.get(note.projectId) ?? new Set<string>()
-      projectAtomIds.add(atomId)
-      atomIdsByProjectId.set(note.projectId, projectAtomIds)
-
-      const atomProjectIds = projectIdsByAtomId.get(atomId) ?? new Set<string>()
-      atomProjectIds.add(note.projectId)
-      projectIdsByAtomId.set(atomId, atomProjectIds)
-    })
-  })
-
-  cache.forEach((_, noteId) => {
-    if (!liveNoteIds.has(noteId)) cache.delete(noteId)
-  })
-  notesByProjectId.forEach((projectNotes) => projectNotes.sort(sortByCreated))
-  return { noteTextById, notePreviewLinesById, notesByProjectId, noteIdsByAtomId, atomIdsByProjectId, projectIdsByAtomId }
 }
 
 function normalizeAtomPhrase(phrase: string) {
@@ -897,13 +832,6 @@ function mergeAdjacentTextNodes(nodes: JSONContent[]) {
     merged.push(node)
     return merged
   }, [])
-}
-
-function atomMarkFor(atom: Atom) {
-  return {
-    type: 'atom',
-    attrs: { atomId: atom.id, phrase: atom.phrase, definition: atom.definition },
-  }
 }
 
 function applyAtomToTextNode(node: JSONContent, atom: Atom) {
@@ -1006,11 +934,11 @@ function selectionContainsAtom(editor: NonNullable<ReturnType<typeof useEditor>>
 }
 
 /** Notes that are not tied to a real project bucket (not a DB project row). */
-const UNASSIGNED_PROJECT_ID = '__unassigned__'
 
 const NOTE_DRAG_MIME = 'application/x-loci-note-id'
 const NOTE_MULTI_DRAG_MIME = 'application/x-loci-note-ids'
 const NOTE_SAVE_DEBOUNCE_MS = 150
+const BLOCK_CONTROLS_MEASURE_DEBOUNCE_MS = 120
 const NOTICE_TOAST_MS = 4000
 const OPTIMISTIC_UNDO_MS = 6000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -1079,18 +1007,6 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`
 }
 
-function avatarTextColor(backgroundColor: string) {
-  return backgroundColor.toLowerCase() === '#f4f4f2' ? '#1A1A1A' : '#F4F4F2'
-}
-
-type ProfileDraft = {
-  displayName: string
-  initials: string
-  handle: string
-  handleEdited: boolean
-  avatarColor: string
-}
-
 function formatAnimatedCount(value: number, decimals = 0) {
   const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0
   return safeValue.toLocaleString(undefined, {
@@ -1132,369 +1048,10 @@ function AnimatedStatNumber({ value, decimals = 0 }: { value: number; decimals?:
   return <span className="animated-stat-number" onMouseEnter={() => setHoverRun((run) => run + 1)}>{formatAnimatedCount(displayValue, decimals)}</span>
 }
 
-type OnboardingScreenProps = {
-  profileDraft: ProfileDraft
-  onDraftChange: React.Dispatch<React.SetStateAction<ProfileDraft>>
-  onSubmit: () => void
-}
-
-function OnboardingScreen({ profileDraft, onDraftChange, onSubmit }: OnboardingScreenProps) {
-  const welcomeMessages = useMemo(() => [
-    'Welcome.',
-    'Thank you for using Loci Notes.',
-    'What is your name?',
-  ], [])
-  const [welcomeIndex, setWelcomeIndex] = useState(0)
-  const [typedLength, setTypedLength] = useState(0)
-  const [nameEntryVisible, setNameEntryVisible] = useState(false)
-  const displayName = profileDraft.displayName
-  const canSubmit = displayName.trim().length > 0
-  const activeWelcomeMessage = welcomeMessages[welcomeIndex] ?? ''
-  const typedWelcomeMessage = activeWelcomeMessage.slice(0, typedLength)
-
-  useEffect(() => {
-    if (nameEntryVisible) return
-    if (typedLength < activeWelcomeMessage.length) {
-      const timer = window.setTimeout(() => {
-        setTypedLength((length) => length + 1)
-      }, 72)
-      return () => window.clearTimeout(timer)
-    }
-
-    if (welcomeIndex < welcomeMessages.length - 1) {
-      const timer = window.setTimeout(() => {
-        setWelcomeIndex((index) => index + 1)
-        setTypedLength(0)
-      }, 1500)
-      return () => window.clearTimeout(timer)
-    }
-
-    const timer = window.setTimeout(() => setNameEntryVisible(true), 1000)
-    return () => window.clearTimeout(timer)
-  }, [activeWelcomeMessage.length, nameEntryVisible, typedLength, welcomeIndex, welcomeMessages.length])
-
-  const updateDisplayName = (nextDisplayName: string) => {
-    onDraftChange((current) => ({
-      ...current,
-      displayName: nextDisplayName,
-      initials: initialsFromName(nextDisplayName),
-      handle: current.handleEdited ? current.handle : createBaseHandleFromDisplayName(nextDisplayName),
-    }))
-  }
-
-  return (
-    <section className="onboarding-screen" aria-labelledby="onboarding-title">
-      <div className="onboarding-canvas">
-        <form
-          className="onboarding-card"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (canSubmit) onSubmit()
-          }}
-        >
-          {!nameEntryVisible ? (
-            <h1 id="onboarding-title" className="onboarding-typewriter" aria-live="polite">
-              <span>{typedWelcomeMessage}</span>
-              <span className="onboarding-caret" aria-hidden />
-            </h1>
-          ) : (
-            <>
-              <h1 id="onboarding-title">What is your name?</h1>
-              <label className="onboarding-name-row">
-                <input
-                  className="onboarding-name-input"
-                  value={displayName}
-                  onChange={(event) => updateDisplayName(event.target.value)}
-                  placeholder="Type enter to proceed"
-                  aria-label="Your name"
-                  autoComplete="name"
-                  autoFocus
-                />
-              </label>
-            </>
-          )}
-        </form>
-      </div>
-    </section>
-  )
-}
-
 type GroupDialogDraft = {
   name: string
   memberAccountIds: string[]
 }
-
-type SidebarQuickSection = {
-  id: string
-  title: string
-  notes: Note[]
-}
-
-type SidebarProps = {
-  activeView: View
-  activeNoteId: string | undefined
-  atomSubView: AtomSubView
-  collapsedSectionIds: string[]
-  draggedNoteIds: string[]
-  dragOverProjectId: string
-  profileAvatarColor: string
-  profileDisplayName: string
-  profileHandleLabel: string
-  profileInitials: string
-  projectQuickSections: SidebarQuickSection[]
-  onAssignNoteToProjectDrop: (event: React.DragEvent<HTMLElement>, targetProjectId: string) => void
-  onDragEnterProject: (projectId: string) => void
-  onDragLeaveProject: (projectId: string) => void
-  onDragOverProject: (event: React.DragEvent<HTMLElement>) => void
-  onHideSidebarNote: (sectionId: string, noteId: string) => void
-  onToggleSidebarSection: (sectionId: string) => void
-  onNewNote: () => void
-  onOpenNote: (noteId: string) => void
-  onOpenProfile: () => void
-  onOpenSettings: () => void
-  onOpenSearch: () => void
-  onOpenAtomNav: () => void
-  onOpenProjectsRoot: () => void
-  onRenameNote: (noteId: string, title: string) => void
-  onSetActiveView: (view: View) => void
-  fullscreenActive: boolean
-  onToggleFullscreen: () => void
-}
-
-const Sidebar = memo(function Sidebar({
-  activeView,
-  activeNoteId,
-  atomSubView,
-  collapsedSectionIds,
-  draggedNoteIds,
-  dragOverProjectId,
-  profileAvatarColor,
-  profileDisplayName,
-  profileHandleLabel,
-  profileInitials,
-  projectQuickSections,
-  onAssignNoteToProjectDrop,
-  onDragEnterProject,
-  onDragLeaveProject,
-  onDragOverProject,
-  onHideSidebarNote,
-  onToggleSidebarSection,
-  onNewNote,
-  onOpenNote,
-  onOpenProfile,
-  onOpenSettings,
-  onOpenSearch,
-  onOpenAtomNav,
-  onOpenProjectsRoot,
-  onRenameNote,
-  onSetActiveView,
-  fullscreenActive,
-  onToggleFullscreen,
-}: SidebarProps) {
-  const [editingNoteId, setEditingNoteId] = useState('')
-  const [editingNoteTitle, setEditingNoteTitle] = useState('')
-
-  const startNoteRename = (note: Note) => {
-    setEditingNoteId(note.id)
-    setEditingNoteTitle(note.title || 'Untitled Note')
-  }
-
-  const commitNoteRename = (note: Note) => {
-    const nextTitle = editingNoteTitle.replace(/\s*\r?\n\s*/g, ' ').trim() || 'Untitled Note'
-    setEditingNoteTitle(nextTitle)
-    setEditingNoteId('')
-    if (nextTitle !== note.title) onRenameNote(note.id, nextTitle)
-  }
-
-  return (
-    <aside className="sidebar">
-      <div className="sidebar-section sidebar-actions">
-        <button className="nav-action" type="button" onClick={() => {
-          onOpenSearch()
-        }}>
-          <Search size={18} />
-          <span className="nav-label">Search</span>
-        </button>
-
-        <button className="nav-action" type="button" onClick={() => {
-          onNewNote()
-        }}>
-          <Plus size={18} />
-          <span className="nav-label">New Note</span>
-        </button>
-      </div>
-
-      <nav className="sidebar-section primary-nav" aria-label="Primary">
-        <button className={activeView === 'home' ? 'active' : ''} type="button" onClick={() => {
-          onSetActiveView('home')
-        }}>
-          <Home size={18} />
-          <span className="nav-label">Home</span>
-        </button>
-        <button className={activeView === 'atoms' ? 'active' : ''} type="button" onClick={onOpenAtomNav}>
-          <AtomIcon size={18} />
-          <span className="nav-label">{isSetWorkspace(atomSubView) ? 'Sets' : 'Atoms'}</span>
-        </button>
-        <button
-          className={`project-nav-trigger ${activeView === 'projects' ? 'active' : ''} ${draggedNoteIds.length ? 'is-drop-target' : ''} ${dragOverProjectId === UNASSIGNED_PROJECT_ID ? 'is-drop-active' : ''}`}
-          type="button"
-          onDragOver={onDragOverProject}
-          onDragEnter={() => onDragEnterProject(UNASSIGNED_PROJECT_ID)}
-          onDragLeave={() => onDragLeaveProject(UNASSIGNED_PROJECT_ID)}
-          onDrop={(event) => onAssignNoteToProjectDrop(event, UNASSIGNED_PROJECT_ID)}
-          onClick={() => {
-            onOpenProjectsRoot()
-          }}
-        >
-          <Layers3 size={18} />
-          <span className="nav-label">Projects</span>
-        </button>
-      </nav>
-
-      {projectQuickSections.map((section) => {
-        const isCollapsed = collapsedSectionIds.includes(section.id)
-        const projectQuickNavHeight = isCollapsed
-          ? 0
-          : Math.min(section.notes.length * PROJECT_QUICK_NAV_ROW_HEIGHT, PROJECT_QUICK_NAV_MAX_HEIGHT)
-        const projectQuickNavStyle = {
-          '--project-quick-nav-height': `${projectQuickNavHeight}px`,
-        } as React.CSSProperties
-        return (
-          <div className={`sidebar-section sidebar-project-section ${isCollapsed ? 'is-collapsed' : ''}`} key={section.id}>
-            <button
-              type="button"
-              className="sidebar-section-toggle"
-              aria-expanded={!isCollapsed}
-              onClick={() => onToggleSidebarSection(section.id)}
-            >
-              {isCollapsed ? <ChevronRight size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
-              <span className="sidebar-section-label">{section.title}</span>
-            </button>
-            {!isCollapsed && (
-              <VirtualList
-                className="project-quick-nav"
-                style={projectQuickNavStyle}
-                items={section.notes}
-                rowHeight={PROJECT_QUICK_NAV_ROW_HEIGHT}
-                overscan={6}
-                ariaLabel={`${section.title} documents`}
-                renderItem={(note, index) => {
-                  const isEditing = editingNoteId === note.id
-                  const isActive = note.id === activeNoteId
-                  return (
-                    <div
-                      className={`quick-note-row ${isActive ? 'is-active' : ''} ${isEditing ? 'is-editing' : ''}`}
-                      style={{ '--quick-note-stagger': `${Math.min(index, 10) * 42}ms` } as React.CSSProperties}
-                    >
-                      <button className="quick-note-open" type="button" onClick={() => {
-                        onOpenNote(note.id)
-                      }}>
-                        {isEditing ? (
-                          <input
-                            className="note-title-rename-input sidebar-note-title-input"
-                            value={editingNoteTitle}
-                            onBlur={() => commitNoteRename(note)}
-                            onChange={(event) => setEditingNoteTitle(event.target.value)}
-                            onClick={(event) => event.stopPropagation()}
-                            onDoubleClick={(event) => event.stopPropagation()}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                commitNoteRename(note)
-                              }
-                              if (event.key === 'Escape') {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                setEditingNoteTitle(note.title || 'Untitled Note')
-                                setEditingNoteId('')
-                              }
-                            }}
-                            aria-label="Document name"
-                            autoFocus
-                          />
-                        ) : (
-                          <span
-                            className="sidebar-note-title"
-                            title={note.title || 'Untitled Note'}
-                            onDoubleClick={(event) => {
-                              event.preventDefault()
-                              event.stopPropagation()
-                              startNoteRename(note)
-                            }}
-                          >
-                            {note.title || 'Untitled Note'}
-                          </span>
-                        )}
-                      </button>
-                      {!isEditing && (
-                        <button
-                          className="quick-note-hide"
-                          type="button"
-                          aria-label={`Hide ${note.title || 'Untitled Note'} from sidebar`}
-                          title="Hide from sidebar"
-                          onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            onHideSidebarNote(section.id, note.id)
-                          }}
-                        >
-                          <XIcon size={20} strokeWidth={2.5} aria-hidden />
-                        </button>
-                      )}
-                    </div>
-                  )
-                }}
-              />
-            )}
-          </div>
-        )
-      })}
-
-      <div className="sidebar-bottom">
-        {RELEASE_COMMUNITY_ENABLED && (
-          <nav className="sidebar-section secondary-nav" aria-label="Community">
-            <button className={activeView === 'community' ? 'active' : ''} type="button" onClick={() => onSetActiveView('community')}>
-              <Users size={18} />
-              <span className="nav-label">Community</span>
-            </button>
-          </nav>
-        )}
-
-        <div className="sidebar-section sidebar-profile-section">
-          <button className="profile-row" type="button" onClick={onOpenProfile} aria-label="Open profile">
-            <div className="avatar" style={{ background: profileAvatarColor, color: avatarTextColor(profileAvatarColor) }}>{profileInitials}</div>
-            <div className="profile-text">
-              <strong>{profileDisplayName}</strong>
-              <span>{profileHandleLabel}</span>
-            </div>
-          </button>
-
-          <div className="sidebar-bottom-controls">
-            <button
-              className="sidebar-fullscreen"
-              type="button"
-              aria-label={fullscreenActive ? 'Exit fullscreen layout' : 'Enter fullscreen layout'}
-              aria-pressed={fullscreenActive}
-              onClick={onToggleFullscreen}
-            >
-              {fullscreenActive ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            </button>
-            <button
-              className="sidebar-settings"
-              type="button"
-              aria-label="Settings"
-              onClick={onOpenSettings}
-            >
-              <Settings size={18} />
-              <span className="nav-label">Settings</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </aside>
-  )
-})
 
 function createNoteDragPreview(title: string) {
   const preview = document.createElement('div')
@@ -1504,8 +1061,29 @@ function createNoteDragPreview(title: string) {
   return preview
 }
 
+const FORMAT_SIDE_CONTROLS_WIDTH = 142
+
+function resolveFormatSideControlsLeft(shellRect: DOMRect, paneRect: DOMRect | null | undefined): number {
+  const gutter = 8
+  const preferredLeft = shellRect.width + gutter
+  if (!paneRect) return Math.max(0, preferredLeft)
+  const spaceRightOfShell = paneRect.right - shellRect.right
+  if (spaceRightOfShell >= FORMAT_SIDE_CONTROLS_WIDTH + gutter) {
+    return preferredLeft
+  }
+  return Math.max(gutter, shellRect.width - FORMAT_SIDE_CONTROLS_WIDTH - gutter)
+}
+
 function App() {
-  const [notes, setNotes] = useState<Note[]>([])
+  const notes = useWorkspaceNotes()
+  const noteIndexes = useWorkspaceIndexes()
+  const {
+    setNotes: setWorkspaceNotes,
+    replaceNotesFromRef,
+    patchNote: patchWorkspaceNote,
+    patchNotes: patchWorkspaceNotes,
+    upsertNote: upsertWorkspaceNote,
+  } = useWorkspaceActions()
   const [atoms, setAtoms] = useState<Atom[]>([])
   const [flashcardSets, setFlashcardSets] = useState<FlashcardSet[]>([])
   const [projects, setProjects] = useState<Project[]>([])
@@ -1579,7 +1157,6 @@ function App() {
   const [editorFocusMode, setEditorFocusMode] = useState(false)
   const [editorFocusModeVisual, setEditorFocusModeVisual] = useState(false)
   const [editorAuthenticWriterMode, setEditorAuthenticWriterMode] = useState(false)
-  const [editorCityMarginaliaOpacity, setEditorCityMarginaliaOpacity] = useState(1)
   const { imageLoadStates, ensureImageLoaded } = useImageLoadCoordinator()
   const [, setSaving] = useState(false)
   const [atomDialog, setAtomDialog] = useState<AtomDialog | null>(null)
@@ -1593,9 +1170,9 @@ function App() {
   const [appDialog, setAppDialog] = useState<AppDialog | null>(null)
   const [templateProjectId, setTemplateProjectId] = useState<string | null>(null)
   const [activeEditorPanel, setActiveEditorPanel] = useState<EditorPanel | null>(null)
-  const [formatDialogQuery, setFormatDialogQuery] = useState('')
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiPromptFocused, setAiPromptFocused] = useState(false)
+  const [aiRequestStatus, setAiRequestStatus] = useState<'idle' | 'running' | 'succeeded' | 'failed'>('idle')
   const [highlightPaletteOpen, setHighlightPaletteOpen] = useState(false)
   const [highlighterArmed, setHighlighterArmed] = useState(false)
   const [activeAICommand, setActiveAICommand] = useState<AICommandId>('custom')
@@ -1609,9 +1186,15 @@ function App() {
   const [authorshipMenu, setAuthorshipMenu] = useState<AuthorshipMenuState | null>(null)
   const [blockControls, setBlockControls] = useState<BlockControlRect[]>([])
   const [hoveredBlockControlId, setHoveredBlockControlId] = useState('')
+  const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([])
+  const selectedBlockIdSet = useMemo(() => new Set(selectedBlockIds), [selectedBlockIds])
+  const assignBlockEditorShell = useCallback((node: HTMLElement | null) => {
+    blockEditorShellRef.current = node
+  }, [])
+  const [blockSelectionAnchorId, setBlockSelectionAnchorId] = useState('')
   const [imageCropEditing, setImageCropEditing] = useState(false)
   const [imageCropDragging, setImageCropDragging] = useState(false)
-  const [aiMarkingCriteria] = useState(DEFAULT_MARKING_CRITERIA)
+  const [aiCritiqueCriteria] = useState(DEFAULT_CRITIQUE_CRITERIA)
   const [aiContextRange, setAiContextRange] = useState<EditorRange | null>(null)
   const [aiRunning, setAiRunning] = useState(false)
   const [aiInstructionUpdating, setAiInstructionUpdating] = useState(false)
@@ -1640,9 +1223,8 @@ function App() {
   const [dashboardNow, setDashboardNow] = useState(() => new Date())
   const [homeVisitCount, setHomeVisitCount] = useState(0)
   const [postOnboardingReveal, setPostOnboardingReveal] = useState(false)
-  const notesRef = useRef<Note[]>([])
+  const notesRef = workspaceStore.notesRef
   const atomsRef = useRef<Atom[]>([])
-  const noteIndexCacheRef = useRef<Map<string, NoteIndexCacheEntry>>(new Map())
   const selectedNoteIdRef = useRef('')
   const noteOpenHistoryRef = useRef<string[]>([])
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -1671,10 +1253,19 @@ function App() {
   const editorScrollTopRef = useRef(0)
   const blockEditorShellRef = useRef<HTMLDivElement | HTMLElement | null>(null)
   const floatingEditorWrapRef = useRef<HTMLDivElement | null>(null)
-  const formatDialogRef = useRef<HTMLElement | null>(null)
   const snapshotDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveStateDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noteSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const notesReactSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const typingDirtyNoteIdRef = useRef<string | null>(null)
+  const blockControlsMeasureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const formatSideControlsFrameRef = useRef<number | null>(null)
+  const flushTypingPersistRef = useRef<() => void>(() => {})
+  const editorChromeFrameRef = useRef<number | null>(null)
+  const editorChromeSyncForceRef = useRef(true)
+  const lastChromeSyncRef = useRef({ blockIndex: -1, childCount: -1 })
+  const blockPosRangesRef = useRef<Array<{ blockId: string; index: number; from: number; to: number }>>([])
+  const blockPosCacheKeyRef = useRef('')
   const atomSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiPromptHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editorFocusModeVisualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1685,14 +1276,22 @@ function App() {
   const optimisticDeleteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const studySessionStartedAtRef = useRef<number | null>(null)
   const studySessionPersistedRef = useRef(false)
-  const formatSideFrameRef = useRef<number | null>(null)
-  const formatBlockFrameRef = useRef<number | null>(null)
   const editorResizeFrameRef = useRef<number | null>(null)
   const suppressEditorPersistRef = useRef(false)
   const lastLocalEditorContentRef = useRef<{ noteId: string; contentKey: string } | null>(null)
   const editorRef = useRef<TiptapEditor | null>(null)
   const blockUndoStackRef = useRef<Array<{ noteId: string; blocks: LociBlock[] }>>([])
   const selectedBlocksRef = useRef<LociBlock[]>([])
+  const selectedBlockIdsRef = useRef<string[]>([])
+  const blockSelectionAnchorIdRef = useRef('')
+  const blockSelectionDragRef = useRef<{
+    anchorId: string
+    initialIds: string[]
+    moved: boolean
+    pointerId: number
+    startX: number
+    startY: number
+  } | null>(null)
   const draggedBlockIdRef = useRef('')
   const blockDropTargetsRef = useRef<BlockDropTarget[]>([])
   const blockDropIntentRef = useRef<BlockDropIntent | null>(null)
@@ -1717,14 +1316,17 @@ function App() {
   const selectedEditorCityMarginalia = selectedNote && EDITOR_CITY_MARGINALIA_COUNT > 0
     ? EDITOR_CITY_MARGINALIA[cityMarginaliaIndexForNote(selectedNote.id, EDITOR_CITY_MARGINALIA_COUNT)]
     : null
+  const editorMarginalia = useEditorMarginalia({
+    enabled: activeView === 'editor' && Boolean(selectedEditorCityMarginalia) && (userSettings.editorShowMarginalia ?? true),
+  })
+  const editorCityMarginaliaOpacity = editorMarginalia.opacity
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const atomById = useMemo(() => new Map(atoms.map((atom) => [atom.id, atom])), [atoms])
-  const noteIndexes = useMemo(() => createNoteIndexes(notes, noteIndexCacheRef.current), [notes])
   const projectSectionIdForNote = useCallback(
     (note: Note) => (note.projectId !== UNASSIGNED_PROJECT_ID && projectById.has(note.projectId) ? note.projectId : UNASSIGNED_PROJECT_ID),
     [projectById],
   )
-  const hasExplicitAIContext = Boolean(aiContextRange)
+  const hasExplicitAIContext = Boolean(aiContextRange || selectedBlockIds.length)
   const profileDisplayName = localProfile?.displayName ?? 'Loci Notes'
   const profileInitials = localProfile?.initials ?? 'LN'
   const profileAvatarColor = localProfile?.avatarColor ?? DEFAULT_PROFILE_COLOR
@@ -1753,14 +1355,6 @@ function App() {
   const localDatabaseNeedsRepair = localLoadIssues.some((issue) =>
     /notes|noteBodies|noteMetas|database|dexie|starter workspace/i.test(issue),
   )
-  const starterWorkspaceVisible =
-    starterWorkspaceProjectIds.every((projectId) => projects.some((project) => project.id === projectId)) &&
-    starterWorkspaceNoteIds.every((noteId) => notes.some((note) => note.id === noteId)) &&
-    starterWorkspaceAtomIds.every((atomId) => atoms.some((atom) => atom.id === atomId)) &&
-    deprecatedStarterProjectIds.every((projectId) => !projects.some((project) => project.id === projectId)) &&
-    deprecatedStarterNoteIds.every((noteId) => !notes.some((note) => note.id === noteId)) &&
-    deprecatedStarterAtomIds.every((atomId) => !atoms.some((atom) => atom.id === atomId))
-
   const dismissNotification = useCallback((id: string) => {
     const timer = notificationTimersRef.current.get(id)
     if (timer) clearTimeout(timer)
@@ -1898,7 +1492,7 @@ function App() {
     const abandonedIds = new Set(abandonedBlankNoteIds)
     const remainingNotes = notesRef.current.filter((note) => !abandonedIds.has(note.id))
     notesRef.current = remainingNotes
-    setNotes(remainingNotes)
+    setWorkspaceNotes(remainingNotes)
     setSelectedNoteIds((current) => current.filter((id) => !abandonedIds.has(id)))
     setHiddenSidebarNoteIdsByProjectId((current) => {
       let changed = false
@@ -2057,7 +1651,7 @@ function App() {
         }),
       )
 
-      setNotes(normalized)
+      setWorkspaceNotes(normalized)
       setAtoms(storedAtoms.map((atom) => ({ ...atom, projectId: projectIdForAtom(atom), tags: atom.tags ?? [] })))
       setFlashcardSets(storedFlashcardSets.map((set) => ({ ...set, atomIds: set.atomIds ?? [] })))
       if (storedProfile && isBadProfileDisplayName(storedProfile.displayName)) {
@@ -2075,7 +1669,6 @@ function App() {
       setEditorFocusMode(normalizedSettings.editorFocusModeDefault)
       setEditorFocusModeVisual(normalizedSettings.editorFocusModeDefault)
       setEditorAuthenticWriterMode(normalizedSettings.editorAuthenticWriterDefault)
-      setEditorCityMarginaliaOpacity(normalizedSettings.editorShowMarginalia ? 1 : 0)
       setStudyDirection(normalizedSettings.studyDefaultDirection)
       setStudyShuffle(normalizedSettings.studyShuffleDefault)
       setProfileLoaded(true)
@@ -2111,19 +1704,6 @@ function App() {
     }
   }
 
-  const seedStarterWorkspace = async () => {
-    try {
-      const result = await upsertStarterWorkspace({ force: true })
-      const loaded = await loadData()
-      if (!loaded) return
-      const total = result.projects + result.atoms + result.notes + result.repairedNotes + result.removedProjects + result.removedNotes + result.removedAtoms
-      showNotice(total ? starterWorkspaceResultMessage(result) : 'Onboarding files already exist.')
-    } catch (error) {
-      console.error('Could not add starter workspace', error)
-      showNotice('Could not add starter workspace.')
-    }
-  }
-
   useEffect(() => {
     void loadData()
   }, [loadData])
@@ -2139,6 +1719,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (isTauriDesktop()) {
+      setWorkerReady(true)
+      return
+    }
     const job = runWorkerJob<{ id: string; type: 'index-ready'; indexVersion: number; noteCount: number }>({
       type: 'index-notes',
       notes: notes.map((note) => ({ id: note.id, title: note.title, updatedAt: note.updatedAt, content: note.content })),
@@ -2241,10 +1825,7 @@ function App() {
   useEffect(() => {
     if (!RELEASE_COMMUNITY_ENABLED) return
     let cancelled = false
-    void db.communitySyncQueue
-      .where('status')
-      .equals('failed')
-      .toArray()
+    void communitySyncService.listFailed()
       .then((failedItems) => {
         if (cancelled || !failedItems.length) return
         showNotification({
@@ -2271,7 +1852,7 @@ function App() {
     if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
     snapshotDebounceRef.current = setTimeout(() => {
       snapshotDebounceRef.current = null
-      void appendNoteSnapshot({
+      void appendNoteSnapshotForNote({
         id: latestContentNote.id,
         title: latestContentNote.title,
         content: latestContentNote.content,
@@ -2295,14 +1876,31 @@ function App() {
     }, 1200)
   }
 
+  const flushNotesReactState = useCallback(() => {
+    if (notesReactSyncDebounceRef.current) {
+      clearTimeout(notesReactSyncDebounceRef.current)
+      notesReactSyncDebounceRef.current = null
+    }
+    replaceNotesFromRef()
+  }, [replaceNotesFromRef])
+
   async function flushPendingNoteSaves() {
     if (noteSaveDebounceRef.current) {
       clearTimeout(noteSaveDebounceRef.current)
       noteSaveDebounceRef.current = null
     }
+    flushTypingPersistRef.current()
+    flushNotesReactState()
     const pending = Array.from(pendingNoteSavesRef.current.values())
     pendingNoteSavesRef.current.clear()
     if (!pending.length) return
+
+    setSaving(true)
+    setShowSaveState(false)
+    if (saveStateDelayRef.current) {
+      clearTimeout(saveStateDelayRef.current)
+      saveStateDelayRef.current = null
+    }
 
     try {
       const notesToSave = pending.map((item) => item.note)
@@ -2334,12 +1932,6 @@ function App() {
       note,
       maintainContent: maintainContent || existing?.maintainContent || false,
     })
-    setShowSaveState(false)
-    if (saveStateDelayRef.current) {
-      clearTimeout(saveStateDelayRef.current)
-      saveStateDelayRef.current = null
-    }
-    setSaving(true)
     if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
     noteSaveDebounceRef.current = setTimeout(() => {
       void flushPendingNoteSaves()
@@ -2372,33 +1964,19 @@ function App() {
       if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
       if (saveStateDelayRef.current) clearTimeout(saveStateDelayRef.current)
       if (noteSaveDebounceRef.current) clearTimeout(noteSaveDebounceRef.current)
+      if (notesReactSyncDebounceRef.current) clearTimeout(notesReactSyncDebounceRef.current)
+      if (blockControlsMeasureTimerRef.current) clearTimeout(blockControlsMeasureTimerRef.current)
+      if (formatSideControlsFrameRef.current) cancelAnimationFrame(formatSideControlsFrameRef.current)
       if (atomSyncDebounceRef.current) clearTimeout(atomSyncDebounceRef.current)
       if (aiPromptHintTimerRef.current) clearTimeout(aiPromptHintTimerRef.current)
       notificationTimersRef.current.forEach((timer) => clearTimeout(timer))
       notificationTimersRef.current.clear()
       optimisticDeleteTimersRef.current.forEach((timer) => clearTimeout(timer))
-      if (formatSideFrameRef.current) cancelAnimationFrame(formatSideFrameRef.current)
-      if (formatBlockFrameRef.current) cancelAnimationFrame(formatBlockFrameRef.current)
+      if (editorChromeFrameRef.current) cancelAnimationFrame(editorChromeFrameRef.current)
       if (blockDropFrameRef.current) cancelAnimationFrame(blockDropFrameRef.current)
       void flushPendingNoteSaves()
     }
   }, [])
-
-  useLayoutEffect(() => {
-    if (!blockPicker.open) return
-    const scrollEl = documentScrollRef.current
-    if (!scrollEl) return
-
-    const previousOverflow = scrollEl.style.overflow
-    const previousOverscrollBehavior = scrollEl.style.overscrollBehavior
-    scrollEl.style.overflow = 'hidden'
-    scrollEl.style.overscrollBehavior = 'contain'
-
-    return () => {
-      scrollEl.style.overflow = previousOverflow
-      scrollEl.style.overscrollBehavior = previousOverscrollBehavior
-    }
-  }, [blockPicker.open])
 
   const restoreEditorScroll = useCallback((scrollTop = editorScrollTopRef.current) => {
     const scrollEl = documentScrollRef.current
@@ -2448,6 +2026,7 @@ function App() {
   function setEditorContentFromSync(content: JSONContent, reason = 'sync') {
     const currentEditor = editorRef.current
     if (!currentEditor) return
+    const seeded = ensureDocumentBlockIds(content, selectedBlocksRef.current)
     const before = debugEditorState(currentEditor)
     const selection = currentEditor.state.selection
     const restoreSelection = selection instanceof TextSelection
@@ -2455,7 +2034,7 @@ function App() {
       : null
     preserveEditorScroll(() => {
       suppressEditorPersistRef.current = true
-      currentEditor.commands.setContent(content, { emitUpdate: false })
+      currentEditor.commands.setContent(seeded, { emitUpdate: false })
       if (restoreSelection) {
         const nextSize = currentEditor.state.doc.content.size
         const from = Math.min(restoreSelection.from, nextSize)
@@ -2502,7 +2081,7 @@ function App() {
     const updatedById = new Map(updatedNotes.map((note) => [note.id, note]))
     const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
     notesRef.current = nextNotes
-    setNotes(nextNotes)
+    setWorkspaceNotes(nextNotes)
     await notesStore.saveMany(updatedNotes)
     const openNote = updatedById.get(selectedNoteIdRef.current)
     if (openNote) {
@@ -2546,7 +2125,18 @@ function App() {
       return isLocalTypingPatch ? mapped : mapped.sort(sortByUpdated)
     }
     notesRef.current = applyNotePatch(notesRef.current)
-    setNotes((current) => applyNotePatch(current))
+    if ('blocks' in nextPatch && Array.isArray(nextPatch.blocks) && noteId === selectedNoteIdRef.current) {
+      selectedBlocksRef.current = flattenLegacyLociBlocks(nextPatch.blocks as LociBlock[])
+    }
+    if (isLocalTypingPatch) {
+      // Keep notes in ref only while typing; React state syncs on blur / note switch.
+    } else {
+      if (notesReactSyncDebounceRef.current) {
+        clearTimeout(notesReactSyncDebounceRef.current)
+        notesReactSyncDebounceRef.current = null
+      }
+      patchWorkspaceNote(updated, target)
+    }
     debugEditorLog('persistNote', {
       noteId,
       isLocalTypingPatch,
@@ -2555,6 +2145,50 @@ function App() {
     })
     scheduleNoteSave(updated, 'title' in patch || 'content' in patch || 'templateData' in patch)
   }, [])
+
+  const flushTypingPersist = useCallback(() => {
+    typingDirtyNoteIdRef.current = null
+    if (suppressEditorPersistRef.current) return
+    const updatedEditor = editorRef.current
+    if (!updatedEditor || updatedEditor.isDestroyed) return
+    const id = selectedNoteIdRef.current
+    const note = notesRef.current.find((item) => item.id === id)
+    if (!note) return
+
+    const startedAt = performance.now()
+    const activeIndex = prosemirrorBlockIndex(updatedEditor)
+    const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
+    const content = templateDataToContent(templateData)
+    const normalizedActiveIndex = pendingEnterBlockIndexRef.current ?? activeIndex
+    pendingEnterBlockIndexRef.current = null
+    const blocks = normalizeBlocksForContent(content, note.blocks, normalizedActiveIndex)
+    const contentKey = editorContentKey(content)
+    lastLocalEditorContentRef.current = { noteId: id, contentKey }
+    blockPosCacheKeyRef.current = ''
+    const durationMs = Number((performance.now() - startedAt).toFixed(2))
+    debugEditorLog('flushTypingPersist', {
+      noteId: id,
+      activeIndex,
+      normalizedActiveIndex,
+      selection: debugEditorState(updatedEditor),
+      sourceBlockCount: content.content?.length ?? 0,
+      savedBlockCount: note.blocks?.length ?? 0,
+      normalizedBlockIds: blocks.map((block) => block.id),
+      durationMs,
+    })
+    void persistNote({ templateData, content, blocks }, id)
+  }, [persistNote])
+
+  flushTypingPersistRef.current = flushTypingPersist
+
+  const scheduleTypingDirtyRef = useRef<() => void>(() => {})
+  scheduleTypingDirtyRef.current = () => {
+    const id = selectedNoteIdRef.current
+    const note = notesRef.current.find((item) => item.id === id)
+    if (!note) return
+    typingDirtyNoteIdRef.current = id
+    scheduleNoteSave(note, true)
+  }
 
   const startLooseNoteRename = useCallback((note: Note) => {
     setOpenLooseNoteMenuId('')
@@ -2599,6 +2233,8 @@ function App() {
   }, [])
 
   const openNote = useCallback((noteId: string, options: { trackHistory?: boolean } = {}) => {
+    flushTypingPersist()
+    flushNotesReactState()
     beginLayoutTransition(240)
     if (options.trackHistory !== false) {
       noteOpenHistoryRef.current = [noteId, ...noteOpenHistoryRef.current.filter((id) => id !== noteId)]
@@ -2606,24 +2242,26 @@ function App() {
     const currentNote = notesRef.current.find((note) => note.id === noteId)
     if (currentNote) {
       openSidebarSectionForNote(currentNote)
-      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(currentNote.content ?? emptyDoc)))
+      editorMarginalia.setFromContent(currentNote.content)
     } else {
-      setEditorCityMarginaliaOpacity(1)
+      editorMarginalia.setFromText('')
     }
     setSelectedNoteId(noteId)
     setActiveView('editor')
     void notesStore.getBody(noteId).then((body) => {
       if (!body) return
-      setNotes((current) =>
-        current.map((note) =>
-          note.id === noteId && note.updatedAt <= body.updatedAt
-            ? { ...note, content: body.content, templateData: body.templateData, blocks: body.blocks, updatedAt: body.updatedAt }
-            : note,
-        ),
-      )
+      const current = notesRef.current.find((item) => item.id === noteId)
+      if (!current || current.updatedAt > body.updatedAt) return
+      patchWorkspaceNote({
+        ...current,
+        content: body.content,
+        templateData: body.templateData,
+        blocks: body.blocks,
+        updatedAt: body.updatedAt,
+      }, current)
     })
     void mediaStore.preloadForNote(noteId, { priority: 'visible' })
-  }, [openSidebarSectionForNote])
+  }, [flushNotesReactState, flushTypingPersist, openSidebarSectionForNote])
 
   const nextVisibleSidebarNote = useCallback((excludingNoteIds: string[] = []) => {
     const excluded = new Set(excludingNoteIds)
@@ -2707,7 +2345,7 @@ function App() {
     const updatedById = new Map(updatedNotes.map((note) => [note.id, note]))
     const nextNotes = notesRef.current.map((note) => updatedById.get(note.id) ?? note).sort(sortByUpdated)
     notesRef.current = nextNotes
-    setNotes(nextNotes)
+    setWorkspaceNotes(nextNotes)
     await notesStore.saveMany(updatedNotes)
   }, [])
 
@@ -2752,17 +2390,9 @@ function App() {
 
   const listBlockContent = (type: ListBlockType) => listBlockDocFromData(type, [''])
 
-  const blankContentForBlockType = (type: LociBlockType) => (
-    isListBlockType(type) ? listBlockContent(type) : blankBlockNode(type)
-  )
-
-  const applyListFormat = (type: ListBlockType) => {
-    const currentEditor = editorRef.current
-    if (!currentEditor || currentEditor.isActive('table')) return false
-    const chain = currentEditor.chain().focus()
-    if (type === 'checklist') return chain.toggleTaskList().run()
-    if (type === 'bulletList') return chain.toggleBulletList().run()
-    return chain.toggleOrderedList().run()
+  const contentForBlockPickerOption = (option: BlockPickerOption) => {
+    if (option.type === 'heading' && option.headingLevel) return headingBlockDoc(option.headingLevel)
+    return isListBlockType(option.type) ? listBlockContent(option.type) : blankBlockNode(option.type)
   }
 
   const addRowToActiveList = () => {
@@ -2846,6 +2476,7 @@ function App() {
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ link: false, dropcursor: false }),
+      LociBlockId,
       TextStyle,
       Highlight.configure({ multicolor: true }),
       Link.configure({
@@ -2860,14 +2491,18 @@ function App() {
       TableHeader,
       TableCell,
       LociQuote,
-      LociLatex,
+      LociMathInline,
+      LociMathPaste,
+      LociAIBlock,
       AtomMark,
       AuthorshipMark,
-      ActiveBlockHighlight,
       AISelectionHighlight,
+      BlockSelectionHighlight,
       TabIndent,
     ],
-    content: primaryTemplateContent(selectedNote),
+    content: selectedNote
+      ? ensureDocumentBlockIds(primaryTemplateContent(selectedNote), flattenLegacyLociBlocks(selectedNote.blocks))
+      : emptyDoc,
     editorProps: {
       attributes: { class: 'note-editor' },
       handleKeyDown: (_view, event) => {
@@ -2887,29 +2522,10 @@ function App() {
       },
     },
     onUpdate: ({ editor: updatedEditor }) => {
-      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(updatedEditor.getText()))
+      editorMarginalia.scheduleFromEditor(updatedEditor)
       if (suppressEditorPersistRef.current) return
-      const activeIndex = activeBlockIndex(updatedEditor)
-      const id = selectedNoteIdRef.current
-      const note = notesRef.current.find((item) => item.id === id)
-      if (!note) return
-      const templateData = updatePrimaryTemplateContent(note, updatedEditor.getJSON())
-      const content = templateDataToContent(templateData)
-      const normalizedActiveIndex = pendingEnterBlockIndexRef.current ?? activeIndex
-      pendingEnterBlockIndexRef.current = null
-      const blocks = normalizeBlocksForContent(content, note.blocks, normalizedActiveIndex)
-      const contentKey = editorContentKey(content)
-      lastLocalEditorContentRef.current = { noteId: id, contentKey }
-      debugEditorLog('onUpdate', {
-        noteId: id,
-        activeIndex,
-        normalizedActiveIndex,
-        selection: debugEditorState(updatedEditor),
-        sourceBlockCount: content.content?.length ?? 0,
-        savedBlockCount: note.blocks?.length ?? 0,
-        normalizedBlockIds: blocks.map((block) => block.id),
-      })
-      void persistNote({ templateData, content, blocks }, id)
+      debugEditorLog('onUpdate', { noteId: selectedNoteIdRef.current, selection: debugEditorState(updatedEditor) })
+      scheduleTypingDirtyRef.current()
     },
   }, [selectedNoteId])
 
@@ -2920,15 +2536,13 @@ function App() {
   useEffect(() => {
     if (activeView !== 'editor') return
     if (editor) {
-      setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(editor.getText()))
+      editorMarginalia.setFromText(editor.getText())
       return
     }
-    if (!selectedNote) {
-      setEditorCityMarginaliaOpacity(1)
-      return
+    if (selectedNote) {
+      editorMarginalia.setFromContent(selectedNote.content)
     }
-    setEditorCityMarginaliaOpacity(editorMarginaliaOpacityFromText(collectText(selectedNote.content ?? emptyDoc)))
-  }, [activeView, editor, selectedNote])
+  }, [activeView, editor, editorMarginalia, selectedNote])
 
   useEffect(() => {
     const scrollEl = documentScrollRef.current
@@ -2986,7 +2600,11 @@ function App() {
   useEffect(() => {
     if (!editor || !selectedNote) return
     const latestLocalContent = lastLocalEditorContentRef.current
-    const nextContent = primaryTemplateContent(selectedNote)
+    if (editor.isFocused && latestLocalContent?.noteId === selectedNote.id) return
+    const nextContent = ensureDocumentBlockIds(
+      primaryTemplateContent(selectedNote),
+      flattenLegacyLociBlocks(selectedNote.blocks),
+    )
     const nextContentKey = editorContentKey(nextContent)
     if (latestLocalContent?.noteId === selectedNote.id && latestLocalContent.contentKey === nextContentKey) {
       debugEditorLog('skip setContent', { reason: 'local-content-key-match', noteId: selectedNote.id })
@@ -3011,21 +2629,55 @@ function App() {
     setEditorContentFromSync(nextContent, 'selected-note-sync')
   }, [editor, selectedNote])
 
+  const rebuildBlockPosCache = useCallback((currentEditor = editorRef.current) => {
+    if (!currentEditor || currentEditor.isDestroyed) {
+      blockPosRangesRef.current = []
+      blockPosCacheKeyRef.current = ''
+      return
+    }
+    const { doc } = currentEditor.state
+    const keyParts: string[] = []
+    doc.forEach((node, offset, index) => {
+      const nodeBlockId = typeof node.attrs.lociBlockId === 'string' ? node.attrs.lociBlockId.trim() : ''
+      keyParts.push(`${index}:${nodeBlockId}:${node.nodeSize}:${offset}`)
+    })
+    const key = keyParts.join('|')
+    if (key === blockPosCacheKeyRef.current) return
+    blockPosCacheKeyRef.current = key
+    const fallbackBlocks = selectedBlocksRef.current
+    const ranges: Array<{ blockId: string; index: number; from: number; to: number }> = []
+    doc.forEach((node, offset, index) => {
+      const nodeBlockId = typeof node.attrs.lociBlockId === 'string' ? node.attrs.lociBlockId.trim() : ''
+      const blockId = nodeBlockId || fallbackBlocks[index]?.id || ''
+      if (!blockId) return
+      ranges.push({ blockId, index, from: offset, to: offset + node.nodeSize })
+    })
+    blockPosRangesRef.current = ranges
+  }, [])
+
   function activeFormatBlock(): { block: LociBlock; index: number; from: number; to: number } | null {
     if (!editor) return null
+    rebuildBlockPosCache(editor)
     const selectionFrom = editor.state.selection.from
-    let runningPos = 1
-    const blocks = selectedBlocksRef.current
-    for (let index = 0; index < blocks.length; index += 1) {
-      const block = blocks[index]
-      const blockSize = blockContentNodes(block.content).reduce((total, node) => total + editor.schema.nodeFromJSON(node).nodeSize, 0)
-      const from = runningPos
-      const to = runningPos + blockSize
-      runningPos = to
-      if (!formatBlockTypeForBlock(block)) continue
-      if (selectionFrom >= from && selectionFrom <= to) return { block, index, from, to }
+    const blocksById = new Map(selectedBlocksRef.current.map((block) => [block.id, block]))
+    for (const range of blockPosRangesRef.current) {
+      const block = blocksById.get(range.blockId)
+      if (!block || !formatBlockTypeForBlock(block)) continue
+      if (selectionFrom >= range.from && selectionFrom <= range.to) {
+        return { block, index: range.index, from: range.from, to: range.to }
+      }
     }
     return null
+  }
+
+  function activeMathLatexSource(currentEditor = editor) {
+    if (!currentEditor) return ''
+    const markType = currentEditor.state.schema.marks.lociMathInline
+    if (!markType) return ''
+    const { $from } = currentEditor.state.selection
+    const mark = markType.isInSet($from.marks())
+    if (mark) return String(mark.attrs.latex ?? $from.parent.textBetween($from.start(), $from.end(), ''))
+    return ''
   }
 
   const syncFormatSideControls = useCallback(() => {
@@ -3042,6 +2694,25 @@ function App() {
     if (!isInsideEditor) {
       setFormatSideControls((current) => (current ? null : current))
       setActiveFormatBlockId('')
+      return
+    }
+
+    const mathLatex = activeMathLatexSource()
+    if (mathLatex) {
+      const { from } = editor.state.selection
+      const coords = editor.view.coordsAtPos(from)
+      const shellRect = shell.getBoundingClientRect()
+      const paneRect = documentScrollRef.current?.getBoundingClientRect()
+      const next = {
+        blockId: activeFormatBlock()?.block.id ?? '',
+        type: 'math' as const,
+        top: coords.top - shellRect.top,
+        left: resolveFormatSideControlsLeft(shellRect, paneRect),
+      }
+      setActiveFormatBlockId(next.blockId)
+      setFormatSideControls((current) =>
+        current && current.type === next.type && current.top === next.top && current.left === next.left ? current : next,
+      )
       return
     }
 
@@ -3064,12 +2735,13 @@ function App() {
       return
     }
     const shellRect = shell.getBoundingClientRect()
+    const paneRect = documentScrollRef.current?.getBoundingClientRect()
     const targetRect = target.getBoundingClientRect()
     const next = {
       blockId: active.block.id,
       type: activeType,
       top: targetRect.top - shellRect.top,
-      left: Math.max(0, shellRect.width + 8),
+      left: resolveFormatSideControlsLeft(shellRect, paneRect),
     }
     setActiveFormatBlockId(active.block.id)
     setFormatSideControls((current) =>
@@ -3130,25 +2802,21 @@ function App() {
         }
       }
     }
-    syncSelectionState()
     editor.on('selectionUpdate', syncSelectionState)
-    editor.on('transaction', syncSelectionState)
     return () => {
       editor.off('selectionUpdate', syncSelectionState)
-      editor.off('transaction', syncSelectionState)
     }
   }, [editor])
 
   useEffect(() => {
     if (!editor) return
-    const range = aiPromptFocused ? aiContextRange : aiResult?.selection ?? null
+    const range = (aiPromptFocused || aiRunning) ? aiContextRange : aiResult?.selection ?? null
     editor.view.dispatch(editor.state.tr.setMeta(aiSelectionHighlightKey, { range }))
-  }, [aiContextRange, aiPromptFocused, aiResult?.selection, editor])
+  }, [aiContextRange, aiPromptFocused, aiResult?.selection, aiRunning, editor])
 
   useEffect(() => {
     if (!activeEditorPanel) return
     const closeOnOutsidePointer = (event: MouseEvent) => {
-      if (activeEditorPanel === 'format' && formatDialogRef.current?.contains(event.target as Node)) return
       const wrap = floatingEditorWrapRef.current
       if (!wrap || wrap.contains(event.target as Node)) return
       setActiveEditorPanel(null)
@@ -3170,7 +2838,11 @@ function App() {
       setAuthorshipMenu(null)
     }
     document.addEventListener('mousedown', closeOnOutsidePointer)
-    return () => document.removeEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('contextmenu', closeOnOutsidePointer)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('contextmenu', closeOnOutsidePointer)
+    }
   }, [authorshipMenu, editor])
 
   useEffect(() => {
@@ -3179,38 +2851,37 @@ function App() {
       if (editor.state.selection.empty) setAuthorshipMenu(null)
     }
     editor.on('selectionUpdate', closeWhenSelectionClears)
-    editor.on('transaction', closeWhenSelectionClears)
     return () => {
       editor.off('selectionUpdate', closeWhenSelectionClears)
-      editor.off('transaction', closeWhenSelectionClears)
     }
   }, [editor])
 
-  useEffect(() => {
-    if (activeEditorPanel !== 'format') return
-    setFormatDialogQuery('')
-  }, [activeEditorPanel])
-
   const editorModalOverlayOpen =
     activeView === 'editor' &&
-    (activeEditorPanel === 'format' || Boolean(atomDialog) || Boolean(aiResult))
+    (Boolean(atomDialog) || Boolean(aiResult))
 
-  useEffect(() => {
-    if (!editorModalOverlayOpen) return
+  const editorScrollLocked = blockPicker.open || editorModalOverlayOpen
+
+  useLayoutEffect(() => {
+    if (!editorScrollLocked) return
     const scrollEl = documentScrollRef.current
     if (!scrollEl) return
 
     const previousOverflow = scrollEl.style.overflow
+    const previousOverscrollBehavior = scrollEl.style.overscrollBehavior
     const previousPaddingRight = scrollEl.style.paddingRight
     const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth
+
     scrollEl.style.overflow = 'hidden'
+    scrollEl.style.overscrollBehavior = 'contain'
     if (scrollbarWidth > 0) scrollEl.style.paddingRight = `${scrollbarWidth}px`
 
     return () => {
       scrollEl.style.overflow = previousOverflow
+      scrollEl.style.overscrollBehavior = previousOverscrollBehavior
       scrollEl.style.paddingRight = previousPaddingRight
     }
-  }, [editorModalOverlayOpen])
+  }, [editorScrollLocked])
 
   useEffect(() => {
     if (!atomHeadingMenuOpen) return
@@ -3310,6 +2981,7 @@ function App() {
   useEffect(() => {
     if (!editor) return
     const clearTransientHighlights = (event: MouseEvent) => {
+      if (aiRunning) return
       const target = event.target as Node
       const targetElement = event.target instanceof Element ? event.target : null
       const editorEl = editor.view.dom
@@ -3323,7 +2995,7 @@ function App() {
 
     document.addEventListener('mousedown', clearTransientHighlights)
     return () => document.removeEventListener('mousedown', clearTransientHighlights)
-  }, [clearAIContextRange, editor])
+  }, [aiRunning, clearAIContextRange, editor])
 
   const atomCards = useMemo(() => buildAtomCards(atoms, noteIndexes, projectById), [atoms, noteIndexes, projectById])
   const filteredAtomCards = useMemo(() => {
@@ -3475,18 +3147,18 @@ function App() {
     () => {
       const base: Array<{ id: AICommandId; label: string; description: string; contextual?: boolean }> = hasExplicitAIContext
         ? [
-        { id: 'custom', label: 'Custom', description: 'Run a custom instruction' },
-        { id: 'rewrite', label: 'Rewrite', description: 'Improve the selected text', contextual: true },
-        { id: 'atomise', label: 'Atomise', description: 'Find durable concepts', contextual: true },
-        { id: 'mark', label: 'Mark writing', description: 'Assess against criteria', contextual: true },
-        { id: 'summarise', label: 'Summarise', description: 'Condense the selection' },
+        { id: 'custom', label: 'Custom', description: 'Send your own instruction; routing picks the best task' },
+        { id: 'rewrite', label: 'Rewrite', description: 'Improve clarity and tone in the selection', contextual: true },
+        { id: 'atomise', label: 'Atomise', description: 'Extract phrase–definition atom candidates from the selection', contextual: true },
+        { id: 'critique', label: 'Critique', description: 'Constructive feedback on the writing using project criteria', contextual: true },
+        { id: 'summarise', label: 'Summarise', description: 'Short summary of the selection or note' },
       ]
     : [
-        { id: 'custom', label: 'Custom', description: 'Run a custom instruction' },
-        { id: 'continue', label: 'Continue', description: 'Keep writing in context', contextual: true },
-        { id: 'summarise', label: 'Summarise', description: 'Condense this note' },
-        { id: 'atomise', label: 'Atomise', description: 'Find note concepts' },
-        { id: 'mark', label: 'Mark writing', description: 'Assess against criteria' },
+        { id: 'custom', label: 'Custom', description: 'Send your own instruction; routing picks the best task' },
+        { id: 'continue', label: 'Continue', description: 'Continue writing from the cursor in the same style', contextual: true },
+        { id: 'summarise', label: 'Summarise', description: 'Short summary of this note' },
+        { id: 'atomise', label: 'Atomise', description: 'Extract phrase–definition atom candidates from the note', contextual: true },
+        { id: 'critique', label: 'Critique', description: 'Constructive feedback on the writing using project criteria', contextual: true },
       ]
       return base
     },
@@ -3494,6 +3166,11 @@ function App() {
   )
 
   useEffect(() => {
+    const normalized = normalizeAICommandId(activeAICommand)
+    if (normalized !== activeAICommand) {
+      setActiveAICommand(normalized)
+      return
+    }
     if (aiCommands.some((command) => command.id === activeAICommand)) return
     const nextCommand = aiCommands[0]?.id ?? 'custom'
     setActiveAICommand(nextCommand)
@@ -3513,8 +3190,8 @@ function App() {
   const aiPromptHint =
     /\batomi[sz]e\b/i.test(aiPrompt)
       ? 'Press Shift+Tab to switch to Atomise'
-      : /\bmark\b/i.test(aiPrompt)
-        ? 'Press Shift+Tab to switch to Mark'
+      : /\b(critique|mark(?:\s+writing)?)\b/i.test(aiPrompt)
+        ? 'Press Shift+Tab to switch to Critique'
         : /\bsummari[sz]e|summarise|summarize\b/i.test(aiPrompt)
           ? 'Press Shift+Tab to switch to Summarise'
           : /\brewrite\b/i.test(aiPrompt)
@@ -3677,7 +3354,20 @@ function App() {
   const searchNormalized = useMemo(() => normalizeSearch(searchQuery), [searchQuery])
 
   useEffect(() => {
-    if (!searchNormalized || !workerReady) {
+    if (!searchNormalized) {
+      setWorkerSearchNoteIds(null)
+      return
+    }
+    if (isTauriDesktop()) {
+      let cancelled = false
+      void searchNotes(searchNormalized).then((result) => {
+        if (!cancelled) setWorkerSearchNoteIds(result.noteIds)
+      })
+      return () => {
+        cancelled = true
+      }
+    }
+    if (!workerReady) {
       setWorkerSearchNoteIds(null)
       return
     }
@@ -3926,7 +3616,6 @@ function App() {
       setEditorFocusModeVisual(patch.editorFocusModeDefault)
     }
     if (typeof patch.editorAuthenticWriterDefault === 'boolean') setEditorAuthenticWriterMode(patch.editorAuthenticWriterDefault)
-    if (typeof patch.editorShowMarginalia === 'boolean') setEditorCityMarginaliaOpacity(patch.editorShowMarginalia ? 1 : 0)
   }
 
   const searchCommunityUsers = async () => {
@@ -4288,9 +3977,9 @@ function App() {
     if (taskUsesWritingStyle(taskType) && projectMemory.writingStyle.trim()) {
       items.push({ id: 'project-writing-style', label: 'Project writing style', sensitivity: 'medium', enabledByPolicy: true, content: `Project writing style:\n${projectMemory.writingStyle.trim()}` })
     }
-    if (taskType === 'mark_writing') {
-      const criteria = projectMemory.markingCriteria.trim() || aiMarkingCriteria.trim() || DEFAULT_MARKING_CRITERIA
-      items.push({ id: 'marking-criteria', label: 'Marking criteria', sensitivity: 'medium', enabledByPolicy: true, content: `${projectMemory.markingCriteria.trim() ? 'Project marking criteria' : 'Default marking criteria'}:\n${criteria}` })
+    if (taskType === 'critique_writing') {
+      const criteria = projectMemory.markingCriteria.trim() || aiCritiqueCriteria.trim() || DEFAULT_CRITIQUE_CRITERIA
+      items.push({ id: 'critique-criteria', label: 'Critique criteria', sensitivity: 'medium', enabledByPolicy: true, content: `${projectMemory.markingCriteria.trim() ? 'Project critique criteria' : 'Default critique criteria'}:\n${criteria}` })
     }
     if (selectedProject) {
       const styleSamples = notes
@@ -4302,6 +3991,17 @@ function App() {
       if (styleSamples.length) {
         items.push({ id: 'style-samples', label: 'Writing style samples', sensitivity: 'high', enabledByPolicy: taskUsesWritingStyle(taskType), content: `Writing style signals from this project:\n${styleSamples.join('\n')}` })
       }
+    }
+    const selectedContextBlocks = selectedBlocksInDocumentOrder(selectedBlocksRef.current, selectedBlockIdsRef.current)
+    const selectedBlockText = selectedContextBlocks.length ? collectText(contentFromBlocks(selectedContextBlocks)).trim() : ''
+    if (selectedBlockText) {
+      items.push({
+        id: 'selected-blocks',
+        label: 'Selected blocks',
+        sensitivity: 'high',
+        enabledByPolicy: userSettings.aiIncludeSelectedText,
+        content: `Selected blocks:\n${selectedBlockText}`,
+      })
     }
     if (editor) {
       const { from, to } = selection ?? editor.state.selection
@@ -4315,7 +4015,7 @@ function App() {
     if (selectedNote) {
       const outline = collectNotePreviewLines(selectedNote.content, 8).join('\n')
       if (outline) items.push({ id: 'note-outline', label: 'Compact note outline', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `Compact note outline:\n${outline}` })
-      const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'atom_task' || taskType === 'ai_atomise' || taskType === 'mark_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
+      const excerptLimit = taskType === 'summarize_note' || taskType === 'answer_with_context' || taskType === 'ai_atomise' || taskType === 'critique_writing' || taskType === 'update_project_instructions' ? 4200 : 1600
       const excerpt = collectText(selectedNote.content).slice(0, excerptLimit)
       if (excerpt) items.push({ id: 'note-excerpt', label: 'Note excerpt', sensitivity: 'high', enabledByPolicy: userSettings.aiIncludeNoteExcerpt, content: `${excerptLimit > 1600 ? 'Bounded note excerpt' : 'Short note excerpt'}:\n${excerpt}` })
     }
@@ -4343,12 +4043,34 @@ function App() {
       const codeNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'codeBlock')
       if (codeNode) items.push({ id: 'highlighted-code', label: 'Highlighted code block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted code block:\n${codeDataFromNode(codeNode)}` })
     }
-    if (highlighted && highlightedType === 'latex') {
-      const latexNode = blockContentNodes(highlighted.block.content).find((node) => node.type === 'lociLatex')
-      if (latexNode) items.push({ id: 'highlighted-latex', label: 'Highlighted LaTeX block', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted LaTeX block JSON:\n${JSON.stringify({ blockId: highlighted.block.id, latex: latexDataFromNode(latexNode) })}` })
+    const highlightedMath = highlighted ? displayMathLatexInBlock(highlighted.block) : null
+    if (highlighted && highlightedMath) {
+      items.push({ id: 'highlighted-math', label: 'Highlighted equation', sensitivity: 'high', enabledByPolicy: true, content: `Highlighted display equation JSON:\n${JSON.stringify({ blockId: highlighted.block.id, latex: highlightedMath })}` })
     }
     return buildAIContextFromPolicy(items, 'directByok')
   }
+
+  const validateStructuredResponseText = (taskType: AITaskType, responseText: string) => {
+    if (!structuredOutputForTask(taskType)) return { ok: true as const, error: '' }
+    try {
+      const value = parseAIJson(responseText)
+      const validation = validateStructuredTaskValue(taskType, value)
+      return validation.ok ? { ok: true as const, error: '' } : { ok: false as const, error: validation.error }
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : 'Structured response failed validation.' }
+    }
+  }
+
+  const structuredAIErrorDiagnostic = (providerId: AIProviderId, model: string, taskType: AITaskType, strategy: string, error: string, raw: string) =>
+    [
+      'Structured response failed validation.',
+      `provider=${providerId}`,
+      `model=${model}`,
+      `task=${taskType}`,
+      `strategy=${strategy}`,
+      `error=${error}`,
+      `raw=${raw.slice(0, 500)}`,
+    ].join(' ')
 
   const requestAICompletion = async (prompt: string, command: AICommandId = activeAICommand) => {
     const providerId = userSettings.defaultAIProvider
@@ -4369,78 +4091,144 @@ function App() {
     }
 
     const selection = editor ? aiContextRangeRef.current ?? undefined : undefined
-    const taskType = routeAITask(prompt, !!selection, command)
+    const hasSelectedBlockContext = selectedBlockIdsRef.current.length > 0
+    const routedTaskType = routeAITask(prompt, Boolean(selection || hasSelectedBlockContext), command)
+    const taskType = routedTaskType === 'edit_selection' && !selection ? 'generate_insert' : routedTaskType
     const selectionOriginalText =
       selection && editor && taskType === 'edit_selection'
         ? editor.state.doc.textBetween(selection.from, selection.to, '\n')
         : undefined
-    const actionConfig = aiActionConfig(taskType, !!selection)
-    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Marking criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
+    const activeRangeForReplace = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
+    const highlightedForReplace = activeRangeForReplace ? highlightedFormatBlock(activeRangeForReplace) : null
+    const hasReplaceTarget = Boolean(selection || highlightedForReplace || selectedBlockIdsRef.current.length > 0)
+    const actionConfig = aiDocumentActionFlags(taskType, hasReplaceTarget)
+    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\nUse the project memory sections supplied in context according to their labels. Do not treat Writing style as Critique criteria unless the criteria explicitly says style matters.\n\n${AI_TASK_CONTRACTS[taskType]}`
+    const responseFormat = taskResponseFormat(taskType)
+    const structuredOutput = structuredOutputForTask(taskType)
     const aiContext = buildAIContext(taskType, selection)
     const context = aiContext.text
     const userContent = `${context ? `Context:\n${context}\n\n` : ''}User request:\n${prompt.trim()}`
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+    setAiRequestStatus('running')
     setAiRunning(true)
-    showNotice('')
     try {
-      const result = await requestAIText({
+      let result: AITextResponse = await requestAIText({
         providerId,
         provider,
         providerMeta,
         taskInstruction,
         userContent,
         promptCacheKey: selectedNote?.id ?? 'loci-notes-local',
+        responseFormat,
+        structuredOutput,
         temperature: userSettings.aiTemperature,
         maxTokens: userSettings.aiMaxTokens,
         contextManifest: aiContext.manifest,
         signal: controller.signal,
       })
-      const { responseText, usage } = result
+      let responseText = result.responseText
+      let structuredParseError = ''
+      const structuredValidation = validateStructuredResponseText(taskType, responseText)
+      if (!structuredValidation.ok && structuredOutput) {
+        try {
+          const repairResult = await requestAIText({
+            providerId,
+            provider,
+            providerMeta,
+            taskInstruction: [
+              AI_SYSTEM_INSTRUCTION,
+              'Repair the invalid structured response so it is valid JSON matching the supplied JSON Schema.',
+              'Return JSON only. Do not include markdown fences or explanatory text.',
+            ].join('\n\n'),
+            userContent: [
+              `Task type: ${taskType}`,
+              `JSON Schema:\n${JSON.stringify(structuredOutput.schema)}`,
+              `Validation error:\n${structuredValidation.error}`,
+              `Original user content:\n${userContent}`,
+              `Invalid response:\n${responseText}`,
+            ].join('\n\n'),
+            promptCacheKey: `${selectedNote?.id ?? 'loci-notes-local'}-repair`,
+            responseFormat: 'json',
+            structuredOutput,
+            maxTokens: userSettings.aiMaxTokens,
+            contextManifest: aiContext.manifest,
+            signal: controller.signal,
+          })
+          const repairValidation = validateStructuredResponseText(taskType, repairResult.responseText)
+          if (repairValidation.ok) {
+            result = repairResult
+            responseText = repairResult.responseText
+          } else {
+            structuredParseError = repairValidation.error
+          }
+        } catch (error) {
+          structuredParseError = error instanceof Error ? error.message : structuredValidation.error
+        }
+      }
+      const { usage } = result
       const insertableResponse = cleanAIDraftFormatting(sanitizeAIInsertText(responseText))
       const activeRange = selection ?? (editor ? { from: editor.state.selection.from, to: editor.state.selection.to } : undefined)
       const highlighted = activeRange ? highlightedFormatBlock(activeRange) : null
       const highlightedType = highlighted ? formatBlockTypeForBlock(highlighted.block) : null
-      const blockPayload: AIBlockPayload | undefined =
-        taskType === 'table_block'
-          ? {
-              kind: 'table',
-              data: parseAITablePayload(responseText),
-              targetBlockId: highlightedType === 'table' ? highlighted?.block.id : undefined,
-            }
-          : taskType === 'quote_block'
+      const highlightedMath = highlighted ? displayMathLatexInBlock(highlighted.block) : null
+      let parseError = structuredParseError
+      let blockPayload: AIBlockPayload | undefined
+      let documentPatch: AIDocumentPatch | undefined
+      try {
+        blockPayload =
+          taskType === 'table_block'
             ? {
-                kind: 'quote',
-                data: parseAIQuotePayload(responseText),
-                targetBlockId: highlightedType === 'quote' ? highlighted?.block.id : undefined,
+                kind: 'table',
+                data: parseAITablePayload(responseText),
+                targetBlockId: highlightedType === 'table' ? highlighted?.block.id : undefined,
               }
-            : taskType === 'list_block'
+            : taskType === 'quote_block'
               ? {
-                  kind: 'list',
-                  data: parseAIListPayload(responseText),
-                  targetBlockId: highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList' ? highlighted?.block.id : undefined,
+                  kind: 'quote',
+                  data: parseAIQuotePayload(responseText),
+                  targetBlockId: highlightedType === 'quote' ? highlighted?.block.id : undefined,
                 }
-              : taskType === 'code_block'
+              : taskType === 'list_block'
                 ? {
-                    kind: 'code',
-                    data: parseAICodePayload(responseText),
-                    targetBlockId: highlightedType === 'code' ? highlighted?.block.id : undefined,
+                    kind: 'list',
+                    data: parseAIListPayload(responseText),
+                    targetBlockId: highlightedType === 'checklist' || highlightedType === 'bulletList' || highlightedType === 'numberedList' ? highlighted?.block.id : undefined,
                   }
-                : taskType === 'latex_block'
+                : taskType === 'code_block'
                   ? {
-                      kind: 'latex',
-                      data: parseAILatexPayload(responseText),
-                      targetBlockId: highlightedType === 'latex' ? highlighted?.block.id : undefined,
+                      kind: 'code',
+                      data: parseAICodePayload(responseText),
+                      targetBlockId: highlightedType === 'code' ? highlighted?.block.id : undefined,
                     }
-                  : undefined
+                  : taskType === 'latex_block'
+                    ? {
+                        kind: 'latex',
+                        data: parseAILatexPayload(responseText),
+                        targetBlockId: highlightedMath ? highlighted?.block.id : undefined,
+                      }
+                    : undefined
+        documentPatch = taskType === 'compose_blocks' ? parseAIDocumentPatch(responseText) : undefined
+      } catch (error) {
+        parseError = parseError || (error instanceof Error ? error.message : 'Structured response failed validation.')
+      }
+      if (parseError) {
+        showNotice('Structured response failed validation. Edit the draft or view raw response.')
+        if (import.meta.env.DEV) {
+          console.warn(structuredAIErrorDiagnostic(providerId, provider.model, taskType, structuredOutput ? structuredOutput.name : 'none', parseError, responseText))
+        }
+      }
+      const diagnostic = parseError ? structuredAIErrorDiagnostic(providerId, provider.model, taskType, structuredOutput ? structuredOutput.name : 'none', parseError, responseText) : ''
       setAiResult({
         prompt,
         taskType,
         response: responseText,
         insertableResponse,
-        draftText: insertableResponse || responseText,
+        draftText: responseFormat === 'json' ? responseText.trim() : insertableResponse || responseText,
         blockPayload,
+        documentPatch,
+        parseError,
         provider: providerId,
         selection,
         selectionOriginalText,
@@ -4451,12 +4239,14 @@ function App() {
         ...userSettings,
         aiLastStatus: 'success',
         aiLastProvider: result.providerId,
-        aiLastError: '',
+        aiLastError: diagnostic,
         aiLastUsage: usage,
         aiLastRequestAt: nowIso(),
       })
-      setAiPrompt('')
-      setAiPromptFocused(false)
+      requestAnimationFrame(() => {
+        setAiPrompt('')
+      })
+      setAiRequestStatus('succeeded')
     } catch (error) {
       const timedOut = error instanceof DOMException && error.name === 'AbortError'
       const message = timedOut
@@ -4467,6 +4257,7 @@ function App() {
             ? error.message
             : 'AI request failed.'
       showNotice(`${providerMeta.name}: ${message}`)
+      setAiRequestStatus('failed')
       void saveUserSettings({
         ...userSettings,
         aiLastStatus: timedOut ? 'timeout' : 'error',
@@ -4481,10 +4272,11 @@ function App() {
   }
 
   const submitAIPrompt = (command: AICommandId = activeAICommand) => {
-    const fallbackPrompt = defaultPromptForCommand(command, hasExplicitAIContext)
+    const resolvedCommand = normalizeAICommandId(command)
+    const fallbackPrompt = defaultPromptForCommand(resolvedCommand, hasExplicitAIContext)
     const prompt = aiPrompt.trim() || fallbackPrompt
     if (!prompt || aiRunning) return
-    void requestAICompletion(prompt, command)
+    void requestAICompletion(prompt, resolvedCommand)
   }
 
   const createAtomsFromAIResult = async () => {
@@ -4755,7 +4547,7 @@ function App() {
     if (!id) return
     setNoteHistoryOpen(true)
     setHistoryPreviewExpanded({})
-    const rows = await loadNoteSnapshots(id)
+    const rows = await loadNoteSnapshotsForNote(id)
     setNoteSnapshots(rows)
   }, [])
 
@@ -4773,7 +4565,7 @@ function App() {
           await persistNote({ title: snap.title, templateId: 'blank', templateData: { kind: 'blank', body: snap.content }, content: snap.content }, id)
           await flushPendingNoteSaves()
           editor?.commands.setContent(snap.content)
-          const rows = await loadNoteSnapshots(id)
+          const rows = await loadNoteSnapshotsForNote(id)
           setNoteSnapshots(rows)
           setNoteHistoryOpen(false)
           showNotification({ message: 'Note restored from history.', tone: 'success' })
@@ -4821,7 +4613,7 @@ function App() {
 
     await notesStore.save(note)
     setTemplateProjectId(null)
-    setNotes((current) => [note, ...current])
+    upsertWorkspaceNote(note)
     openNote(note.id)
     setSelectedNoteIds([])
     setSelectedProjectId(projectId === UNASSIGNED_PROJECT_ID ? '' : projectId)
@@ -4834,6 +4626,12 @@ function App() {
 
   const persistBlocks = (blocks: LociBlock[]) => {
     if (!selectedNote) return
+    typingDirtyNoteIdRef.current = null
+    if (noteSaveDebounceRef.current) {
+      clearTimeout(noteSaveDebounceRef.current)
+      noteSaveDebounceRef.current = null
+    }
+    blockPosCacheKeyRef.current = ''
     const content = contentFromBlocks(blocks)
     lastLocalEditorContentRef.current = { noteId: selectedNote.id, contentKey: editorContentKey(content) }
     const templateData = updatePrimaryTemplateContent(selectedNote, content)
@@ -4864,10 +4662,56 @@ function App() {
   const selectedBlocksKey = selectedBlocks
     .map((block) => `${block.id}:${block.type}:${block.updatedAt}:${blockContentNodes(block.content).length}`)
     .join('|')
+  const blockRangesForIds = useCallback((blockIds: string[]): EditorRange[] => {
+    if (!editor) return []
+    rebuildBlockPosCache(editor)
+    const selected = new Set(blockIds)
+    return blockPosRangesRef.current
+      .filter((range) => selected.has(range.blockId))
+      .map((range) => ({ from: range.from, to: range.to }))
+  }, [editor, rebuildBlockPosCache])
+
+  const clearBlockSelection = useCallback(() => {
+    selectedBlockIdsRef.current = []
+    blockSelectionAnchorIdRef.current = ''
+    setSelectedBlockIds([])
+    setBlockSelectionAnchorId('')
+  }, [])
+
+  useEffect(() => {
+    clearBlockSelection()
+  }, [activeView, clearBlockSelection, selectedNoteId])
+
+  useEffect(() => {
+    if (blockPicker.open) clearBlockSelection()
+  }, [blockPicker.open, clearBlockSelection])
+
+  useEffect(() => {
+    selectedBlockIdsRef.current = selectedBlockIds
+  }, [selectedBlockIds])
+
+  useEffect(() => {
+    blockSelectionAnchorIdRef.current = blockSelectionAnchorId
+  }, [blockSelectionAnchorId])
+
+  useEffect(() => {
+    const blockIds = new Set(selectedBlocksRef.current.map((block) => block.id))
+    setSelectedBlockIds((current) => current.filter((id) => blockIds.has(id)))
+    setBlockSelectionAnchorId((current) => (current && blockIds.has(current) ? current : ''))
+  }, [selectedBlocksKey])
+
+  useEffect(() => {
+    if (!editor) return
+    editor.view.dispatch(editor.state.tr.setMeta(blockSelectionHighlightKey, {
+      ranges: blockRangesForIds(selectedBlockIds),
+    }))
+  }, [blockRangesForIds, editor, selectedBlockIds])
+
   const visibleBlockPickerOptions = blockPickerOptions.filter((option) => {
     const query = blockPicker.query.trim().toLowerCase()
     if (!query) return true
-    return `${option.label} ${option.description} ${option.type}`.toLowerCase().includes(query)
+    const headingLevelText = option.headingLevel ? `heading ${option.headingLevel}` : ''
+    return `${option.id} ${option.label} ${option.description} ${option.type} ${headingLevelText}`.toLowerCase().includes(query)
   })
 
   const highlightedFormatBlock = useCallback((range: EditorRange): { block: LociBlock; index: number } | null => {
@@ -4896,7 +4740,7 @@ function App() {
   } = useBlockGutter({
     editor,
     shellRef: blockEditorShellRef,
-    blocks: selectedBlocks,
+    blocksRef: selectedBlocksRef,
     draggedBlockIdRef,
   })
 
@@ -4904,6 +4748,22 @@ function App() {
     const controls = measureGutterBlockControls()
     setBlockControls((current) => (sameBlockControls(current, controls) ? current : controls))
   }, [measureGutterBlockControls])
+
+  const scheduleBlockControlsMeasure = useCallback(() => {
+    if (blockControlsMeasureTimerRef.current) clearTimeout(blockControlsMeasureTimerRef.current)
+    blockControlsMeasureTimerRef.current = setTimeout(() => {
+      blockControlsMeasureTimerRef.current = null
+      measureBlockControls()
+    }, BLOCK_CONTROLS_MEASURE_DEBOUNCE_MS)
+  }, [measureBlockControls])
+
+  const scheduleFormatSideControlsSync = useCallback(() => {
+    if (formatSideControlsFrameRef.current) return
+    formatSideControlsFrameRef.current = requestAnimationFrame(() => {
+      formatSideControlsFrameRef.current = null
+      syncFormatSideControls()
+    })
+  }, [syncFormatSideControls])
 
   const {
     queueFloatingToolbarRemeasure,
@@ -5021,21 +4881,31 @@ function App() {
     }
   }, [activeView, editorFocusMode, markActiveEditorBlock])
 
-  const scheduleFormatSideControls = useCallback(() => {
-    if (formatSideFrameRef.current) return
-    formatSideFrameRef.current = requestAnimationFrame(() => {
-      formatSideFrameRef.current = null
-      syncFormatSideControls()
+  const scheduleEditorChromeSync = useCallback((force = false) => {
+    if (force) editorChromeSyncForceRef.current = true
+    if (editorChromeFrameRef.current) return
+    editorChromeFrameRef.current = requestAnimationFrame(() => {
+      editorChromeFrameRef.current = null
+      const currentEditor = editorRef.current
+      if (!currentEditor || currentEditor.isDestroyed) return
+      const blockIndex = prosemirrorBlockIndex(currentEditor)
+      const childCount = currentEditor.state.doc.childCount
+      const forceSync = editorChromeSyncForceRef.current
+      editorChromeSyncForceRef.current = false
+      const childCountChanged = childCount !== lastChromeSyncRef.current.childCount
+      const blockIndexChanged = blockIndex !== lastChromeSyncRef.current.blockIndex
+      const structureChanged = forceSync || childCountChanged
+      lastChromeSyncRef.current = { blockIndex, childCount }
+      if (structureChanged) {
+        rebuildBlockPosCache(currentEditor)
+        scheduleBlockControlsMeasure()
+      }
+      if (forceSync || structureChanged || blockIndexChanged) {
+        scheduleFormatSideControlsSync()
+      }
+      if (editorFocusMode && activeView === 'editor') markActiveEditorBlock()
     })
-  }, [syncFormatSideControls])
-
-  const scheduleBlockControls = useCallback(() => {
-    if (formatBlockFrameRef.current) return
-    formatBlockFrameRef.current = requestAnimationFrame(() => {
-      formatBlockFrameRef.current = null
-      measureBlockControls()
-    })
-  }, [measureBlockControls])
+  }, [activeView, editorFocusMode, markActiveEditorBlock, rebuildBlockPosCache, scheduleBlockControlsMeasure, scheduleFormatSideControlsSync])
 
   const scheduleEditorResizeMeasurements = useCallback(() => {
     if (activeView !== 'editor' || !blockEditorShellRef.current || !mountedEditorDom(editor)) return
@@ -5046,42 +4916,49 @@ function App() {
       syncFormatSideControls()
       measureBlockControls()
       updateFloatingToolbarPosition()
+      queueFloatingToolbarRemeasure(80)
     })
-  }, [activeView, editor, measureBlockControls, syncFormatSideControls, updateFloatingToolbarPosition])
+  }, [activeView, editor, measureBlockControls, queueFloatingToolbarRemeasure, syncFormatSideControls, updateFloatingToolbarPosition])
 
   useLayoutEffect(() => {
-    measureBlockControls()
+    scheduleBlockControlsMeasure()
     scheduleFloatingToolbarPosition()
-  }, [measureBlockControls, scheduleFloatingToolbarPosition])
+  }, [scheduleBlockControlsMeasure, scheduleFloatingToolbarPosition])
 
   useEffect(() => {
     if (!editor) return
-    syncFormatSideControls()
-    measureBlockControls()
-    markActiveEditorBlock()
-    editor.on('selectionUpdate', scheduleFormatSideControls)
-    editor.on('selectionUpdate', markActiveEditorBlock)
-    editor.on('transaction', scheduleFormatSideControls)
-    editor.on('transaction', scheduleBlockControls)
-    editor.on('transaction', markActiveEditorBlock)
+    const flushNotesOnBlur = () => {
+      flushTypingPersist()
+      flushNotesReactState()
+    }
+    const onSelectionUpdateChrome = () => scheduleEditorChromeSync(true)
+    const onTransactionChrome = () => scheduleEditorChromeSync(false)
+    const onEditorScrollLayout = () => {
+      scheduleFormatSideControlsSync()
+      scheduleBlockControlsMeasure()
+    }
+    scheduleEditorChromeSync(true)
+    editor.on('selectionUpdate', onSelectionUpdateChrome)
+    editor.on('transaction', onTransactionChrome)
+    editor.on('blur', flushNotesOnBlur)
     window.addEventListener('resize', scheduleEditorResizeMeasurements)
-    documentScrollRef.current?.addEventListener('scroll', scheduleFormatSideControls)
-    documentScrollRef.current?.addEventListener('scroll', scheduleBlockControls)
+    documentScrollRef.current?.addEventListener('scroll', onEditorScrollLayout)
     return () => {
-      editor.off('selectionUpdate', scheduleFormatSideControls)
-      editor.off('selectionUpdate', markActiveEditorBlock)
-      editor.off('transaction', scheduleFormatSideControls)
-      editor.off('transaction', scheduleBlockControls)
-      editor.off('transaction', markActiveEditorBlock)
+      editor.off('selectionUpdate', onSelectionUpdateChrome)
+      editor.off('transaction', onTransactionChrome)
+      editor.off('blur', flushNotesOnBlur)
       window.removeEventListener('resize', scheduleEditorResizeMeasurements)
-      documentScrollRef.current?.removeEventListener('scroll', scheduleFormatSideControls)
-      documentScrollRef.current?.removeEventListener('scroll', scheduleBlockControls)
+      documentScrollRef.current?.removeEventListener('scroll', onEditorScrollLayout)
       if (editorResizeFrameRef.current) {
         cancelAnimationFrame(editorResizeFrameRef.current)
         editorResizeFrameRef.current = null
       }
+      if (editorChromeFrameRef.current) {
+        cancelAnimationFrame(editorChromeFrameRef.current)
+        editorChromeFrameRef.current = null
+      }
     }
-  }, [editor, markActiveEditorBlock, measureBlockControls, scheduleBlockControls, scheduleEditorResizeMeasurements, scheduleFormatSideControls, syncFormatSideControls])
+  }, [editor, flushNotesReactState, flushTypingPersist, scheduleBlockControlsMeasure, scheduleEditorChromeSync, scheduleEditorResizeMeasurements, scheduleFormatSideControlsSync])
 
   useEffect(() => {
     markActiveEditorBlock()
@@ -5089,34 +4966,19 @@ function App() {
     queueFloatingToolbarRemeasure(180)
   }, [editorFocusMode, markActiveEditorBlock, queueFloatingToolbarRemeasure, scheduleEditorResizeMeasurements])
 
-  const insertBlock = (blockId: string, type: LociBlockType, placement: 'before' | 'after' = 'after') => {
+  const insertBlockFromPicker = (blockId: string, option: BlockPickerOption, placement: 'before' | 'after' = 'after') => {
     if (!selectedBlocks.length) return
-    const newBlock = createLociBlock(blankContentForBlockType(type), type)
+    const newBlock = createLociBlock(contentForBlockPickerOption(option), option.type)
     const nextBlocks = insertBlockRelative(selectedBlocks, blockId, newBlock, placement)
     persistBlocks(nextBlocks)
     setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
   }
 
-  const insertImageAfterActive = (src: string) => {
-    const safeSrc = sanitizeImageUrl(src)
-    if (!safeSrc) {
-      showNotice('Use a valid http(s) image URL or supported image data URL.')
+  const applyAIBlockPayload = (payload: AIBlockPayload, mode: 'insert' | 'replace' = 'insert') => {
+    if (!selectedBlocks.length) {
+      showNotice('Open a note before applying AI blocks.')
       return
     }
-    if (!selectedBlocksRef.current.length) {
-      editor?.chain().focus().insertContent(imageBlockDoc(safeSrc).content?.[0] ?? { type: 'image', attrs: { src: safeSrc } }).run()
-      return
-    }
-    const insertIndex = Math.min(selectedBlocksRef.current.length, activeBlockIndex() + 1)
-    const block = createLociBlock(imageBlockDoc(safeSrc), 'image')
-    const targetBlockId = selectedBlocksRef.current[Math.max(0, insertIndex - 1)]?.id ?? ''
-    const nextBlocks = targetBlockId ? insertBlockRelative(selectedBlocks, targetBlockId, block, 'after') : [...selectedBlocks, block]
-    persistBlocks(nextBlocks)
-    showNotice('Image block added.')
-  }
-
-  const applyAIBlockPayload = (payload: AIBlockPayload) => {
-    if (!selectedBlocksRef.current.length) return
     const previousBlocks = selectedBlocks
     const content = aiGeneratedContent(
       payload.kind === 'table'
@@ -5127,7 +4989,7 @@ function App() {
             ? listBlockDocFromData(payload.data.listType, payload.data.items)
             : payload.kind === 'code'
               ? codeBlockDocFromData(payload.data.code)
-              : latexBlockDoc(payload.data.latex),
+              : displayMathParagraphDoc(payload.data.latex),
     )
     const type: LociBlockType =
       payload.kind === 'table'
@@ -5138,16 +5000,20 @@ function App() {
             ? payload.data.listType
             : payload.kind === 'code'
               ? 'code'
-              : 'latex'
+              : 'paragraph'
     const flatBlocks = selectedBlocksRef.current
     const targetIndex = payload.targetBlockId ? flatBlocks.findIndex((block) => block.id === payload.targetBlockId) : -1
-    const targetBlock = targetIndex >= 0 ? flatBlocks[targetIndex] : null
+    let targetBlock = targetIndex >= 0 ? flatBlocks[targetIndex] : null
+    if (mode === 'replace' && !targetBlock && flatBlocks.length) {
+      const activeIndex = activeBlockIndex()
+      targetBlock = flatBlocks[Math.max(0, Math.min(activeIndex, flatBlocks.length - 1))] ?? null
+    }
     const targetFormatType = targetBlock ? formatBlockTypeForBlock(targetBlock) : null
-    const canUpdateTarget = targetBlock && (
+    const canUpdateTarget = mode === 'replace' || (targetBlock && (
       targetBlock.type === type ||
       targetFormatType === type ||
       (payload.kind === 'list' && (targetFormatType === 'checklist' || targetFormatType === 'bulletList' || targetFormatType === 'numberedList'))
-    )
+    ))
     const nextBlocks = canUpdateTarget && targetBlock
       ? updateBlockById(selectedBlocks, targetBlock.id, (block) => ({
         ...block,
@@ -5171,6 +5037,90 @@ function App() {
         onClick: () => {
           persistBlocks(previousBlocks)
           showNotification({ message: 'AI block undone.', tone: 'success' })
+        },
+      }],
+    })
+  }
+
+  const applyAIDocumentPatch = (patch: AIDocumentPatch, mode: 'insert' | 'replace' = 'insert') => {
+    if (!selectedBlocks.length) {
+      showNotice('Open a note before applying AI blocks.')
+      return
+    }
+    const patchBlocks = blocksFromAIDocumentPatch(patch)
+    if (!patchBlocks.length) {
+      showNotice('AI patch did not contain any valid blocks.')
+      return
+    }
+
+    const previousBlocks = selectedBlocks
+    const flatBlocks = selectedBlocksRef.current
+    const selectedIds = selectedBlockIdsRef.current
+    let nextBlocks = [...selectedBlocks]
+
+    if (mode === 'replace' && selectedIds.length) {
+      const replaceIndexes = selectedIds
+        .map((id) => nextBlocks.findIndex((block) => block.id === id))
+        .filter((index) => index >= 0)
+        .sort((a, b) => a - b)
+      if (replaceIndexes.length) {
+        const start = replaceIndexes[0]
+        nextBlocks.splice(start, replaceIndexes.length, ...patchBlocks)
+        persistBlocks(nextBlocks)
+        showNotification({
+          message: `${patchBlocks.length} AI-composed block${patchBlocks.length === 1 ? '' : 's'} replaced the selection.`,
+          tone: 'success',
+          actions: [{
+            label: 'Undo',
+            intent: 'primary',
+            onClick: () => {
+              persistBlocks(previousBlocks)
+              showNotification({ message: 'AI document patch undone.', tone: 'success' })
+            },
+          }],
+        })
+        return
+      }
+    }
+
+    if (mode === 'replace' && flatBlocks.length) {
+      const activeIndex = Math.max(0, Math.min(activeBlockIndex(), flatBlocks.length - 1))
+      const targetId = flatBlocks[activeIndex]?.id
+      const targetIndex = targetId ? nextBlocks.findIndex((block) => block.id === targetId) : -1
+      if (targetIndex >= 0) {
+        nextBlocks.splice(targetIndex, 1, ...patchBlocks)
+        persistBlocks(nextBlocks)
+        showNotification({
+          message: `${patchBlocks.length} AI-composed block${patchBlocks.length === 1 ? '' : 's'} replaced the active block.`,
+          tone: 'success',
+          actions: [{
+            label: 'Undo',
+            intent: 'primary',
+            onClick: () => {
+              persistBlocks(previousBlocks)
+              showNotification({ message: 'AI document patch undone.', tone: 'success' })
+            },
+          }],
+        })
+        return
+      }
+    }
+
+    const insertIndex = Math.min(flatBlocks.length, activeBlockIndex() + 1)
+    const targetBlockId = flatBlocks[Math.max(0, insertIndex - 1)]?.id ?? ''
+    const targetIndex = targetBlockId ? nextBlocks.findIndex((block) => block.id === targetBlockId) : nextBlocks.length - 1
+    const insertionIndex = targetIndex >= 0 ? targetIndex + 1 : nextBlocks.length
+    nextBlocks.splice(insertionIndex, 0, ...patchBlocks)
+    persistBlocks(nextBlocks)
+    showNotification({
+      message: `${patchBlocks.length} AI-composed block${patchBlocks.length === 1 ? '' : 's'} inserted.`,
+      tone: 'success',
+      actions: [{
+        label: 'Undo',
+        intent: 'primary',
+        onClick: () => {
+          persistBlocks(previousBlocks)
+          showNotification({ message: 'AI document patch undone.', tone: 'success' })
         },
       }],
     })
@@ -5218,32 +5168,11 @@ function App() {
     }
   }
 
-  const activeLatexSource = () => {
-    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex')
-    if (activeLatex?.dataset.latex !== undefined) return activeLatex.dataset.latex
-    if (!editor) return ''
-    const { $from } = editor.state.selection
-    for (let depth = $from.depth; depth >= 0; depth -= 1) {
-      const node = $from.node(depth)
-      if (node.type.name === 'lociLatex') return String(node.attrs.latex ?? '')
-    }
-    return ''
-  }
-
-  const copyActiveLatex = () => {
-    const source = activeLatexSource()
+  const copyActiveMathLatex = () => {
+    const source = activeMathLatexSource()
     if (!source) return
     void copyToClipboard(source)
     showNotice('Equation copied.')
-  }
-
-  const toggleActiveLatexEditor = () => {
-    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const activeLatex = activeElement?.closest<HTMLElement>('.loci-latex') ?? document.querySelector<HTMLElement>('.loci-latex.ProseMirror-selectednode')
-    if (!activeLatex) return
-    activeLatex.classList.toggle('is-editing')
-    if (activeLatex.classList.contains('is-editing')) activeLatex.querySelector<HTMLTextAreaElement>('.loci-latex-source')?.focus()
   }
 
   const updateImageAttributes = (attrs: Partial<{
@@ -5343,6 +5272,7 @@ function App() {
   }
 
   const handleBlockEditorPointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (updateBlockSelectionDrag(event)) return
     handleImageCropPointerMove(event)
     if (!imageCropDragRef.current) syncHoveredBlockControl(event)
   }
@@ -5354,6 +5284,7 @@ function App() {
   }
 
   const handleImageCropPointerEnd = (event: React.PointerEvent<HTMLElement>) => {
+    if (endBlockSelectionDrag(event)) return
     if (!imageCropDragRef.current) return
     event.preventDefault()
     event.stopPropagation()
@@ -5393,8 +5324,7 @@ function App() {
         onTableCommand={runTableCommand}
         onAddListLine={addLineToActiveListFromControls}
         onCopyCode={copyActiveCodeBlock}
-        onEditLatex={toggleActiveLatexEditor}
-        onCopyLatex={copyActiveLatex}
+        onCopyMath={copyActiveMathLatex}
         onToggleQuoteAuthor={toggleQuoteAuthor}
         onFitImage={() => updateImageAttributes({ width: 100, cropMode: 'contain', aspect: 'auto', offsetX: 50, offsetY: 50, zoom: 100 })}
         onToggleCrop={() => {
@@ -5411,43 +5341,6 @@ function App() {
         onZoomIn={() => zoomImage(10)}
         onAlignImage={(align) => updateImageAttributes({ align })}
       />
-    )
-  }
-
-  const renderBlockControls = () => {
-    if (!blockControls.length) return null
-    return (
-      <div className="block-controls-layer" aria-hidden={false}>
-        {blockControls.map((control) => {
-          const block = selectedBlocksRef.current.find((item) => item.id === control.blockId)
-          return (
-          <span key={control.blockId} className={`block-control-hotspot ${hoveredBlockControlId === control.blockId ? 'is-hovered' : ''}`} style={{ top: control.top, height: control.height }}>
-            <span
-              className="block-hover-controls"
-              data-block-id={control.blockId}
-              data-block-type={block?.type ?? ''}
-              contentEditable={false}
-            >
-              {selectedBlocksRef.current.length > 1 && (
-                <button className="block-control-button block-control-delete" type="button" aria-label="Delete block" data-block-action="delete" data-block-id={control.blockId}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
-                </button>
-              )}
-              <button className="block-control-button" type="button" aria-label="Insert block after block" data-block-action="insert" data-block-id={control.blockId}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
-              </button>
-              <button className="block-control-button block-control-handle" type="button" aria-label="Move block" draggable data-block-action="drag" data-block-id={control.blockId}>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <circle cx="9" cy="7.5" r="1.25" /><circle cx="15" cy="7.5" r="1.25" />
-                  <circle cx="9" cy="12" r="1.25" /><circle cx="15" cy="12" r="1.25" />
-                  <circle cx="9" cy="16.5" r="1.25" /><circle cx="15" cy="16.5" r="1.25" />
-                </svg>
-              </button>
-            </span>
-          </span>
-          )
-        })}
-      </div>
     )
   }
 
@@ -5509,15 +5402,96 @@ function App() {
     hideBlockDropIndicator()
   }, [])
 
+  const pushBlockUndoSnapshot = useCallback(() => {
+    if (!selectedNote) return
+    blockUndoStackRef.current = [
+      ...blockUndoStackRef.current.slice(-19),
+      { noteId: selectedNote.id, blocks: cloneTemplateValue(selectedBlocksRef.current) },
+    ]
+  }, [selectedNote])
+
+  const selectedBlocksForClipboard = useCallback(() => selectedBlocksInDocumentOrder(selectedBlocksRef.current, selectedBlockIdsRef.current), [])
+
+  const deleteBlockSelection = useCallback((blockIds = selectedBlockIdsRef.current) => {
+    if (!blockIds.length || selectedBlocksRef.current.length <= 1) return false
+    const nextBlocks = deleteSelectedBlocks(selectedBlocksRef.current, blockIds)
+    if (nextBlocks === selectedBlocksRef.current) return false
+    pushBlockUndoSnapshot()
+    persistBlocks(nextBlocks)
+    clearBlockSelection()
+    return true
+  }, [clearBlockSelection, persistBlocks, pushBlockUndoSnapshot])
+
   const deleteBlock = (blockId: string) => {
     if (selectedBlocks.length <= 1) return
-    if (selectedNote) {
-      blockUndoStackRef.current = [
-        ...blockUndoStackRef.current.slice(-19),
-        { noteId: selectedNote.id, blocks: cloneTemplateValue(selectedBlocks) },
-      ]
+    const blockIds = selectedBlockIdsRef.current.includes(blockId) ? selectedBlockIdsRef.current : [blockId]
+    if (deleteBlockSelection(blockIds)) return
+  }
+
+  const blockControlIdAtPoint = (clientX: number, clientY: number) => {
+    const direct = document.elementFromPoint(clientX, clientY)
+    const directBlockId = direct instanceof Element ? direct.closest<HTMLElement>('[data-block-id]')?.dataset.blockId : ''
+    if (directBlockId && blockControls.some((control) => control.blockId === directBlockId)) return directBlockId
+
+    const shell = blockEditorShellRef.current
+    if (!shell) return ''
+    const shellRect = shell.getBoundingClientRect()
+    const pointerY = clientY - shellRect.top
+    return blockControls.find((control) => pointerY >= control.top && pointerY <= control.top + control.height)?.blockId ?? ''
+  }
+
+  const startBlockSelectionDrag = (blockId: string, event: ReactPointerEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const anchorId = blockId
+    blockSelectionDragRef.current = {
+      anchorId,
+      initialIds: selectedBlockIdsRef.current,
+      moved: false,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
     }
-    persistBlocks(selectedBlocks.filter((block) => block.id !== blockId))
+    blockSelectionAnchorIdRef.current = anchorId
+    setBlockSelectionAnchorId(anchorId)
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  const updateBlockSelectionDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = blockSelectionDragRef.current
+    if (!drag) return false
+    event.preventDefault()
+    event.stopPropagation()
+    const blockId = blockControlIdAtPoint(event.clientX, event.clientY)
+    if (!blockId) return true
+    const delta = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY)
+    if (!drag.moved && blockId === drag.anchorId && delta < 8) return true
+    drag.moved = true
+    const nextIds = blockSelectionRange(selectedBlocksRef.current, drag.anchorId, blockId)
+    if (nextIds.join('|') !== selectedBlockIdsRef.current.join('|')) {
+      selectedBlockIdsRef.current = nextIds
+      setSelectedBlockIds(nextIds)
+    }
+    return true
+  }
+
+  const endBlockSelectionDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = blockSelectionDragRef.current
+    if (!drag) return false
+    event.preventDefault()
+    event.stopPropagation()
+    blockSelectionDragRef.current = null
+    if (!drag.moved) {
+      const nextIds = toggleBlockSelection(drag.initialIds, drag.anchorId)
+      selectedBlockIdsRef.current = nextIds
+      setSelectedBlockIds(nextIds)
+      blockSelectionAnchorIdRef.current = drag.anchorId
+      setBlockSelectionAnchorId(drag.anchorId)
+    }
+    if (event.currentTarget.hasPointerCapture?.(drag.pointerId)) {
+      event.currentTarget.releasePointerCapture(drag.pointerId)
+    }
+    return true
   }
 
   const handleBlockControlsClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -5532,22 +5506,22 @@ function App() {
     if (action === 'delete') deleteBlock(blockId)
   }
 
-  const handleAuthorshipPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!editor || editor.isDestroyed) return false
+  const handleAuthorshipContextMenu = (event: React.MouseEvent<HTMLElement>) => {
+    if (!editor || editor.isDestroyed) return
     const target = event.target instanceof Element ? event.target : null
-    if (!target || !editor.view.dom.contains(target)) return false
-    if (target.closest('[data-block-action], .format-side-controls, .block-drop-overlay')) return false
+    if (!target || !editor.view.dom.contains(target)) return
+    if (target.closest('[data-block-action], .format-side-controls, .block-drop-overlay')) return
 
     const { from, to, empty } = editor.state.selection
     if (empty) {
       setAuthorshipMenu(null)
-      return false
+      return
     }
 
     const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })
     if (!position || position.pos < from || position.pos > to) {
       setAuthorshipMenu(null)
-      return false
+      return
     }
 
     event.preventDefault()
@@ -5558,11 +5532,18 @@ function App() {
       to,
       ...positionStyle,
     })
-    return true
   }
 
   const handleEditorPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (handleAuthorshipPointerDown(event)) return
+    const target = event.target instanceof Element ? event.target : null
+    const blockHandle = target?.closest<HTMLElement>('[data-block-action="drag"]')
+    if (blockHandle?.dataset.blockId) {
+      if (event.shiftKey) startBlockSelectionDrag(blockHandle.dataset.blockId, event)
+      return
+    }
+    if (!target?.closest('[data-block-action], .format-side-controls, .block-drop-overlay') && selectedBlockIdsRef.current.length) {
+      clearBlockSelection()
+    }
     handleImageCropPointerDown(event)
   }
 
@@ -5597,6 +5578,10 @@ function App() {
     event.stopPropagation()
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('application/x-loci-block', target.dataset.blockId)
+    const draggedIds = selectedBlockIdsRef.current.includes(target.dataset.blockId)
+      ? selectedBlockIdsRef.current
+      : [target.dataset.blockId]
+    event.dataTransfer.setData('application/x-loci-blocks-drag', JSON.stringify(draggedIds))
     event.dataTransfer.setDragImage(target, 11, 11)
     draggedBlockIdRef.current = target.dataset.blockId
     setDraggedBlockId(target.dataset.blockId)
@@ -5615,7 +5600,8 @@ function App() {
       blockDropFrameRef.current = null
       const intentTarget = nearestBlockDropTarget(clientX, clientY)
       const draggedId = draggedBlockIdRef.current
-      if (!intentTarget || !draggedId) {
+      const draggedIds = selectedBlockIdsRef.current.includes(draggedId) ? selectedBlockIdsRef.current : [draggedId]
+      if (!intentTarget || !draggedId || draggedIds.includes(intentTarget.target.blockId)) {
         hideBlockDropIndicator()
         return
       }
@@ -5636,9 +5622,12 @@ function App() {
     event.preventDefault()
     event.stopPropagation()
     const draggedId = event.dataTransfer.getData('application/x-loci-block') || draggedBlockIdRef.current
+    const draggedIds = selectedBlockIdsRef.current.includes(draggedId) ? selectedBlockIdsRef.current : [draggedId]
     const intent = blockDropIntentRef.current?.draggedId ? blockDropIntentRef.current : null
     if (draggedId && intent) {
-      const nextBlocks = applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
+      const nextBlocks = draggedIds.length > 1
+        ? applyBlockGroupDrop(selectedBlocksRef.current, { draggedIds, targetId: intent.targetId, placement: intent.placement })
+        : applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
       if (nextBlocks !== selectedBlocksRef.current) persistBlocks(nextBlocks)
     }
     resetBlockDragState()
@@ -5668,9 +5657,12 @@ function App() {
     const dropFromDocument = (event: DragEvent) => {
       event.preventDefault()
       const draggedId = event.dataTransfer?.getData('application/x-loci-block') || draggedBlockIdRef.current
+      const draggedIds = selectedBlockIdsRef.current.includes(draggedId) ? selectedBlockIdsRef.current : [draggedId]
       const intent = blockDropIntentRef.current?.draggedId ? blockDropIntentRef.current : null
       if (draggedId && intent) {
-        const nextBlocks = applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
+        const nextBlocks = draggedIds.length > 1
+          ? applyBlockGroupDrop(selectedBlocksRef.current, { draggedIds, targetId: intent.targetId, placement: intent.placement })
+          : applyBlockDrop(selectedBlocksRef.current, { ...intent, draggedId })
         if (nextBlocks !== selectedBlocksRef.current) persistBlocks(nextBlocks)
       }
       resetBlockDragState()
@@ -5706,6 +5698,77 @@ function App() {
     document.addEventListener('keydown', restoreDeletedBlock, true)
     return () => document.removeEventListener('keydown', restoreDeletedBlock, true)
   }, [editor, persistBlocks])
+
+  useEffect(() => {
+    const isEditorActive = () => {
+      const activeElement = document.activeElement
+      return Boolean(
+        editor?.isFocused ||
+        (activeElement && editor?.view.dom.contains(activeElement)) ||
+        (activeElement && blockEditorShellRef.current?.contains(activeElement)),
+      )
+    }
+
+    const copySelectedBlocks = (event: ClipboardEvent) => {
+      if (!selectedBlockIdsRef.current.length || !isEditorActive()) return false
+      const blocks = selectedBlocksForClipboard()
+      if (!blocks.length) return false
+      const payload = blockClipboardPayload(blocks)
+      event.preventDefault()
+      event.clipboardData?.setData('application/x-loci-blocks', JSON.stringify(payload))
+      event.clipboardData?.setData('text/plain', collectText(contentFromBlocks(blocks)))
+      return true
+    }
+
+    const onCopy = (event: ClipboardEvent) => {
+      if (copySelectedBlocks(event)) showNotice(`${selectedBlockIdsRef.current.length} block${selectedBlockIdsRef.current.length === 1 ? '' : 's'} copied.`)
+    }
+
+    const onCut = (event: ClipboardEvent) => {
+      if (!copySelectedBlocks(event)) return
+      deleteBlockSelection()
+      showNotice('Blocks cut.')
+    }
+
+    const onPaste = (event: ClipboardEvent) => {
+      if (!isEditorActive()) return
+      const rawPayload = event.clipboardData?.getData('application/x-loci-blocks') || event.clipboardData?.getData('text/plain') || ''
+      const payload = parseBlockClipboardPayload(rawPayload)
+      if (!payload?.blocks.length) return
+      event.preventDefault()
+      const pastedBlocks = cloneBlocksForPaste(payload.blocks, () => createId('block'), nowIso())
+      const currentBlocks = selectedBlocksRef.current
+      const nextBlocks = selectedBlockIdsRef.current.length
+        ? replaceSelectedBlocks(currentBlocks, selectedBlockIdsRef.current, pastedBlocks)
+        : (() => {
+            const targetBlockId = currentBlocks[Math.min(currentBlocks.length - 1, activeBlockIndex())]?.id ?? ''
+            return insertBlocksRelative(currentBlocks, targetBlockId, pastedBlocks, 'after')
+          })()
+      pushBlockUndoSnapshot()
+      persistBlocks(nextBlocks)
+      clearBlockSelection()
+      showNotice(`${pastedBlocks.length} block${pastedBlocks.length === 1 ? '' : 's'} pasted.`)
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!selectedBlockIdsRef.current.length || !isEditorActive()) return
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      event.preventDefault()
+      event.stopPropagation()
+      deleteBlockSelection()
+    }
+
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('copy', onCopy)
+    document.addEventListener('cut', onCut)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('copy', onCopy)
+      document.removeEventListener('cut', onCut)
+      document.removeEventListener('paste', onPaste)
+    }
+  }, [activeBlockIndex, clearBlockSelection, deleteBlockSelection, editor, persistBlocks, pushBlockUndoSnapshot, selectedBlocksForClipboard, showNotice])
 
   const updatePlannerTask = (taskId: string, patch: Partial<TemplateTask>) => {
     if (!selectedTemplateData || selectedTemplateData.kind !== 'planner') return
@@ -5805,7 +5868,7 @@ function App() {
           ? note.projectId
           : ''
         notesRef.current = remaining
-        setNotes(remaining)
+        setWorkspaceNotes(remaining)
         if (selectedNoteIdRef.current === note.id) {
           setSelectedNoteId('')
         }
@@ -5819,7 +5882,7 @@ function App() {
           if (timer) clearTimeout(timer)
           optimisticDeleteTimersRef.current.delete(note.id)
           notesRef.current = previousNotes
-          setNotes(previousNotes)
+          setWorkspaceNotes(previousNotes)
           setSelectedNoteId(note.id)
           setActiveView('editor')
           showNotification({ message: 'Note restored.', tone: 'success' })
@@ -5836,7 +5899,7 @@ function App() {
           dismissNotification(`delete-note-${note.id}`)
           void notesStore.deleteWithSnapshots(note.id).catch(() => {
             notesRef.current = previousNotes
-            setNotes(previousNotes)
+            setWorkspaceNotes(previousNotes)
             showNotification({ message: 'Could not delete the note. It has been restored.', tone: 'error' })
           })
         }, OPTIMISTIC_UNDO_MS)
@@ -5855,7 +5918,7 @@ function App() {
       updatedAt: now,
     }
     await notesStore.save(duplicatedNote)
-    setNotes((current) => [duplicatedNote, ...current].sort(sortByUpdated))
+    upsertWorkspaceNote(duplicatedNote)
     setOpenLooseNoteMenuId('')
     showNotification({ message: 'Note duplicated.', tone: 'success' })
   }
@@ -5889,11 +5952,7 @@ function App() {
         setFlippedAtomIds((current) => current.filter((id) => !atomIdSet.has(id)))
         setSelectedAtomIds([])
         setAtomSelectionMode(false)
-        setNotes((current) =>
-          current
-            .map((note) => touchedNotes.find((updated) => updated.id === note.id) ?? note)
-            .sort(sortByUpdated),
-        )
+        patchWorkspaceNotes(touchedNotes)
         showNotification({
           message: `${atomIds.length} atom${atomIds.length === 1 ? '' : 's'} deleted.`,
           tone: 'success',
@@ -6145,11 +6204,11 @@ function App() {
   }) => {
     await projectsStore.save(project)
     if (projectNotes.length) await notesStore.saveMany(projectNotes)
-    if (projectSnapshots.length) await db.noteSnapshots.bulkPut(projectSnapshots)
+    if (projectSnapshots.length) await bulkRestoreNoteSnapshots(projectSnapshots)
     if (deletedAtoms.length) await atomsStore.saveMany(deletedAtoms)
     if (previousSets.length) await flashcardSetsStore.saveMany(previousSets)
     setProjects((current) => [...current, project].sort((a, b) => a.name.localeCompare(b.name)))
-    setNotes((current) => [...projectNotes, ...current].sort(sortByUpdated))
+    setWorkspaceNotes([...projectNotes, ...notes].sort(sortByUpdated))
     setAtoms((current) => [...deletedAtoms, ...current.filter((atom) => !deletedAtoms.some((deleted) => deleted.id === atom.id))])
     if (previousSets.length) {
       setFlashcardSets((current) =>
@@ -6260,18 +6319,53 @@ function App() {
     const timeoutMs = userSettings.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+    const responseFormat = taskResponseFormat(taskType)
+    const structuredOutput = structuredOutputForTask(taskType)
+    const taskInstruction = `${AI_SYSTEM_INSTRUCTION}\n\n${AI_TASK_CONTRACTS[taskType]}`
     try {
-      const result = await requestAIText({
+      let result = await requestAIText({
         providerId,
         provider,
         providerMeta,
-        taskInstruction: `${AI_SYSTEM_INSTRUCTION}\n\n${AI_TASK_CONTRACTS[taskType]}`,
+        taskInstruction,
         userContent,
         promptCacheKey: set.id,
+        responseFormat,
+        structuredOutput,
         temperature: userSettings.aiTemperature,
         maxTokens: userSettings.aiMaxTokens,
         signal: controller.signal,
       })
+      let responseText = result.responseText
+      const validation = validateStructuredResponseText(taskType, responseText)
+      if (!validation.ok && structuredOutput) {
+        const repairResult = await requestAIText({
+          providerId,
+          provider,
+          providerMeta,
+          taskInstruction: [
+            AI_SYSTEM_INSTRUCTION,
+            'Repair the invalid structured response so it is valid JSON matching the supplied JSON Schema.',
+            'Return JSON only. Do not include markdown fences or explanatory text.',
+          ].join('\n\n'),
+          userContent: [
+            `Task type: ${taskType}`,
+            `JSON Schema:\n${JSON.stringify(structuredOutput.schema)}`,
+            `Validation error:\n${validation.error}`,
+            `Original user content:\n${userContent}`,
+            `Invalid response:\n${responseText}`,
+          ].join('\n\n'),
+          promptCacheKey: `${set.id}-repair`,
+          responseFormat: 'json',
+          structuredOutput,
+          maxTokens: userSettings.aiMaxTokens,
+          signal: controller.signal,
+        })
+        const repairValidation = validateStructuredResponseText(taskType, repairResult.responseText)
+        if (!repairValidation.ok) throw new Error(repairValidation.error)
+        result = repairResult
+        responseText = repairResult.responseText
+      }
       void saveUserSettings({
         ...userSettings,
         aiLastStatus: 'success',
@@ -6280,7 +6374,7 @@ function App() {
         aiLastError: '',
         aiLastRequestAt: nowIso(),
       })
-      return result.responseText
+      return responseText
     } catch (error) {
       const message = error instanceof DOMException && error.name === 'AbortError'
         ? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
@@ -6456,7 +6550,7 @@ function App() {
         await projectsStore.deleteProjectData(projectId, projectNotes, snapshotIdsToDelete, atomIdsToDelete, updatedSets)
 
         setProjects((current) => current.filter((item) => item.id !== projectId))
-        setNotes(keptNotes.sort(sortByUpdated))
+        setWorkspaceNotes(keptNotes.sort(sortByUpdated))
         setAtoms((current) => current.filter((atom) => !atomIdsToDelete.includes(atom.id)))
         if (updatedSets.length) {
           setFlashcardSets((current) =>
@@ -6670,26 +6764,6 @@ function App() {
     })
   }
 
-  const addImage = () => {
-    if (!editor) return
-    setAppDialog({
-      kind: 'prompt',
-      title: 'Add image',
-      label: 'Image URL',
-      value: '',
-      placeholder: 'https://example.com/image.jpg',
-      confirmLabel: 'Add image',
-      onConfirm: (src) => {
-        const safeSrc = sanitizeImageUrl(src)
-        if (!safeSrc) {
-          showNotice('Use a valid http(s) image URL or supported image data URL.')
-          return
-        }
-        insertImageAfterActive(safeSrc)
-      },
-    })
-  }
-
   const replaceSelectionWithAIResult = (result: AIResult) => {
     if (!editor || !result.selection) return
     const selection = result.selection
@@ -6731,6 +6805,25 @@ function App() {
     })
   }
 
+  const applyAIResult = (result: AIResult, mode: 'insert' | 'replace') => {
+    if (result.documentPatch) {
+      applyAIDocumentPatch(result.documentPatch, mode)
+      closeAIResult()
+      return
+    }
+    if (result.blockPayload) {
+      applyAIBlockPayload(result.blockPayload, mode)
+      closeAIResult()
+      return
+    }
+    if (mode === 'replace') {
+      replaceSelectionWithAIResult(result)
+    } else {
+      insertAIResultDraft(result)
+    }
+    closeAIResult()
+  }
+
   const applyHighlightToSelection = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
     if (!editor || editor.state.selection.empty) return false
     editor.chain().focus().setHighlight({ color }).run()
@@ -6751,15 +6844,6 @@ function App() {
 
   const openHighlightPalette = () => {
     setHighlightPaletteOpen(true)
-  }
-
-  const toggleHighlight = (color = userSettings.highlighterColor || DEFAULT_HIGHLIGHTER_COLOR) => {
-    if (!editor) return
-    if (applyHighlightToSelection(color)) return
-    setHighlighterArmed((armed) => !armed)
-    setHighlightPaletteOpen(false)
-    lastPaintedHighlightRangeRef.current = ''
-    editor.chain().focus().run()
   }
 
   const selectHighlighterColor = (color: string) => {
@@ -6813,152 +6897,29 @@ function App() {
     return () => document.removeEventListener('keydown', handleClearFormattingShortcut)
   }, [clearFormatting, editor])
 
-  const formatOptions: FormatOption[] = [
-    {
-      id: 'heading-1',
-      label: 'Heading 1',
-      icon: Heading1,
-      description: 'Top-level title for the current line.',
-      group: 'Structure',
-      enabled: true,
-      action: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
-    },
-    {
-      id: 'heading-2',
-      label: 'Heading 2',
-      icon: Heading2,
-      description: 'Section heading for the current line.',
-      group: 'Structure',
-      enabled: true,
-      action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
-    },
-    {
-      id: 'heading-3',
-      label: 'Heading 3',
-      icon: Heading3,
-      description: 'Compact subheading.',
-      group: 'Structure',
-      enabled: true,
-      action: () => editor?.chain().focus().toggleHeading({ level: 3 }).run(),
-    },
-    {
-      id: 'checklist',
-      label: 'Checklist',
-      icon: CheckSquare,
-      description: 'Turn lines into tappable tasks.',
-      group: 'Structure',
-      enabled: true,
-      action: () => applyListFormat('checklist'),
-    },
-    {
-      id: 'bullet-list',
-      label: 'Bullet list',
-      icon: List,
-      description: 'Turn lines into dot points.',
-      group: 'Structure',
-      enabled: true,
-      action: () => applyListFormat('bulletList'),
-    },
-    {
-      id: 'numbered-list',
-      label: 'Numbered list',
-      icon: ListOrdered,
-      description: 'Turn lines into ordered steps.',
-      group: 'Structure',
-      enabled: true,
-      action: () => editor?.chain().focus().toggleOrderedList().run(),
-    },
-    {
-      id: 'table',
-      label: 'Table',
-      icon: Table2,
-      description: 'Study grid with header row.',
-      group: 'Structure',
-      enabled: true,
-      action: () => {
-        if (!editor) return
-        editor.chain().focus().insertTable({ rows: 4, cols: 2, withHeaderRow: true }).run()
-      },
-    },
-    {
-      id: 'code',
-      label: 'Code',
-      icon: Code2,
-      description: 'Insert a formatted code block.',
-      group: 'Structure',
-      enabled: true,
-      action: () => editor?.chain().focus().toggleCodeBlock().run(),
-    },
-    {
-      id: 'latex',
-      label: 'LaTeX',
-      icon: Radical,
-      description: 'Insert an equation block.',
-      group: 'Structure',
-      enabled: true,
-      action: () => {
-        const blocks = selectedBlocksRef.current
-        const targetBlockId = blocks[activeBlockIndex()]?.id
-        if (targetBlockId) insertBlock(targetBlockId, 'latex', 'after')
-        else editor?.chain().focus().insertContent(latexBlockDoc().content?.[0] ?? { type: 'lociLatex', attrs: { latex: '' } }).run()
-      },
-    },
-    {
-      id: 'divider',
-      label: 'Divider',
-      icon: Minus,
-      description: 'Separate sections with a rule.',
-      group: 'Structure',
-      enabled: true,
-      action: () => {
-        const blocks = selectedBlocksRef.current
-        const targetBlockId = blocks[activeBlockIndex()]?.id
-        if (targetBlockId) insertBlock(targetBlockId, 'divider', 'after')
-        else editor?.chain().focus().setHorizontalRule().run()
-      },
-    },
-    {
-      id: 'highlight',
-      label: 'Highlight',
-      icon: Highlighter,
-      description: 'Tint the selection with your highlighter color.',
-      group: 'Text',
-      enabled: true,
-      action: () => toggleHighlight(),
-    },
-    {
-      id: 'clear-formatting',
-      label: 'Clear formatting',
-      icon: RemoveFormatting,
-      description: 'Strip marks, links, and block styles.',
-      ariaLabel: 'Clear formatting. Shortcut: Control or Command+Backslash.',
-      group: 'Text',
-      enabled: true,
-      action: clearFormatting,
-    },
-    {
-      id: 'link',
-      label: 'Link',
-      icon: LinkIcon,
-      description: 'Attach a URL to selected text.',
-      group: 'Insert',
-      enabled: true,
-      action: addLink,
-    },
-    {
-      id: 'image',
-      label: 'Image',
-      icon: ImageIcon,
-      description: 'Insert a picture from a URL.',
-      group: 'Insert',
-      enabled: true,
-      action: addImage,
-    },
-  ]
+  const addLinkFromAuthorshipMenu = () => {
+    if (!editor || !authorshipMenu) return
+    editor.chain().focus().setTextSelection({ from: authorshipMenu.from, to: authorshipMenu.to }).run()
+    setAuthorshipMenu(null)
+    addLink()
+  }
+
+  const clearFormattingFromAuthorshipMenu = () => {
+    if (!editor || !authorshipMenu) return
+    editor.chain().focus().setTextSelection({ from: authorshipMenu.from, to: authorshipMenu.to }).run()
+    clearFormatting()
+    setAuthorshipMenu(null)
+  }
 
   const startWindowDrag = () => {
     if (!window.__TAURI_INTERNALS__) return
     void getCurrentWindow().startDragging()
+  }
+  const startWindowResize = (direction: 'East' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West') => (event: ReactMouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!window.__TAURI_INTERNALS__) return
+    void getCurrentWindow().startResizeDragging(direction)
   }
   const minimizeWindow = () => {
     if (!window.__TAURI_INTERNALS__) return
@@ -7052,6 +7013,11 @@ function App() {
     if (now - sidebarFlickAtRef.current < SIDEBAR_FLICK_COOLDOWN_MS) return
 
     const verticalIntent = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.35
+
+    if (activeView === 'editor' && verticalIntent) {
+      return
+    }
+
     const resolveActiveScrollable = () => {
       const shell = event.currentTarget
       const startNode = event.target instanceof HTMLElement ? event.target : null
@@ -7113,6 +7079,16 @@ function App() {
     }
 
     if (appFullscreen && !appImmersiveFullscreen && verticalIntent && Math.abs(event.deltaY) > 6) {
+      const activeScrollable = resolveActiveScrollable()
+      if (activeScrollable) {
+        const { scrollTop, scrollHeight, clientHeight } = activeScrollable
+        const canScrollDown = scrollTop + clientHeight < scrollHeight - 1
+        const canScrollUp = scrollTop > 1
+        if ((event.deltaY > 0 && canScrollDown) || (event.deltaY < 0 && canScrollUp)) {
+          return
+        }
+      }
+
       resetImmersiveTopExitArm()
       sidebarFlickAtRef.current = now
       event.preventDefault()
@@ -7151,20 +7127,6 @@ function App() {
     queueFloatingToolbarRemeasure(220)
   }
 
-  const formatDialogQueryNormalized = formatDialogQuery.trim().toLowerCase()
-  const formatOptionMatchesFormatDialog = (option: FormatOption) => {
-    if (!option.enabled) return false
-    if (!formatDialogQueryNormalized) return true
-    return (
-      option.label.toLowerCase().includes(formatDialogQueryNormalized) ||
-      option.description.toLowerCase().includes(formatDialogQueryNormalized) ||
-      option.group.toLowerCase().includes(formatDialogQueryNormalized)
-    )
-  }
-  const formatDialogSections = FORMAT_DIALOG_GROUP_ORDER.map((group) => ({
-    group,
-    options: formatOptions.filter((option) => option.group === group && formatOptionMatchesFormatDialog(option)),
-  })).filter((section) => section.options.length > 0)
   const themeOptions = [
     { value: 'loci', label: 'Loci' },
     { value: 'light', label: 'Light · coming soon', disabled: true },
@@ -7258,9 +7220,15 @@ function App() {
           className="authorship-popover"
           style={{ top: authorshipMenu.top, left: authorshipMenu.left }}
           role="menu"
-          aria-label="Mark selected text"
+          aria-label="Selection actions"
           onMouseDown={(event) => event.stopPropagation()}
         >
+          <button type="button" role="menuitem" onClick={addLinkFromAuthorshipMenu}>
+            Add link
+          </button>
+          <button type="button" role="menuitem" onClick={clearFormattingFromAuthorshipMenu}>
+            Clear formatting
+          </button>
           <button type="button" role="menuitem" onClick={markSelectionAsCopied}>
             Mark as Copied
           </button>
@@ -7273,6 +7241,7 @@ function App() {
     : null
 
   return (
+    <WorkspaceProvider>
     <main className="app-stage">
       {notifications.length > 0 && (
         <div className="toast-notice-stack" aria-live="polite" aria-label="Notifications">
@@ -7314,6 +7283,17 @@ function App() {
           <button type="button" className="is-close" aria-label="Close window" onClick={closeWindow}>×</button>
         </div>
       </header>
+      {window.__TAURI_INTERNALS__ ? (
+        <div className="window-resize-handles" aria-hidden>
+          <div className="window-resize-handle window-resize-handle--east" onMouseDown={startWindowResize('East')} />
+          <div className="window-resize-handle window-resize-handle--west" onMouseDown={startWindowResize('West')} />
+          <div className="window-resize-handle window-resize-handle--south" onMouseDown={startWindowResize('South')} />
+          <div className="window-resize-handle window-resize-handle--south-east" onMouseDown={startWindowResize('SouthEast')} />
+          <div className="window-resize-handle window-resize-handle--south-west" onMouseDown={startWindowResize('SouthWest')} />
+          <div className="window-resize-handle window-resize-handle--north-east" onMouseDown={startWindowResize('NorthEast')} />
+          <div className="window-resize-handle window-resize-handle--north-west" onMouseDown={startWindowResize('NorthWest')} />
+        </div>
+      ) : null}
       <section
         className={`app-shell ${profileLoaded ? '' : 'is-profile-loading'} ${postOnboardingReveal ? 'is-post-onboarding-reveal' : ''} ${appFullscreen ? 'is-fullscreen' : ''} ${appImmersiveFullscreen ? 'is-immersive-fullscreen' : ''} ${fullscreenExitStaging ? 'is-exiting-immersive' : ''} ${sidebarRevealAnimating ? 'is-revealing-sidebar' : ''} ${layoutTransitioning ? 'is-layout-transitioning' : ''} ${userSettings.compactMode ? 'is-compact-mode' : ''} ${userSettings.reduceMotion ? 'is-reduce-motion' : ''}`}
         aria-label="Loci Notes"
@@ -7506,6 +7486,8 @@ function App() {
         )}
 
         {activeView === 'editor' && selectedNote && (
+          <EditorSessionProvider value={{ editor: editor ?? null, flushTypingPersist }}>
+            <EditorSessionBoundary>
           <section className={`main-pane editor-pane ${editorFocusModeVisual ? 'is-focus-mode' : ''}`} ref={documentScrollRef}>
             {selectedEditorCityMarginalia && (
               <figure
@@ -7545,21 +7527,25 @@ function App() {
                         <textarea value={selectedTemplateData.recommendations} onChange={(event) => persistTemplateData({ ...selectedTemplateData, recommendations: event.target.value })} />
                       </label>
                     </div>
-                    <LociEditor
+                    <EditorWorkspace
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
                       smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                       smoothCaretScrollContainerRef={documentScrollRef}
-                      shellRef={(node) => { blockEditorShellRef.current = node }}
+                      shellRef={assignBlockEditorShell}
                       className={`template-rich-section ${highlighterArmed ? 'is-highlighter-armed' : ''}`}
                       label={<span>Appendix / body</span>}
                       draggedBlockId={draggedBlockId}
                       imageCropEditing={imageCropEditing}
                       imageCropDragging={imageCropDragging}
-                      blockControls={renderBlockControls()}
+                      blockControls={blockControls}
+                      blocks={selectedBlocks}
+                      selectedBlockIds={selectedBlockIdSet}
+                      hoveredBlockControlId={hoveredBlockControlId}
                       formatSideControls={renderFormatSideControls()}
                       blockDropOverlay={renderBlockDropOverlay()}
                       onClick={handleBlockControlsClick}
+                      onContextMenu={handleAuthorshipContextMenu}
                       onPointerDown={handleEditorPointerDown}
                       onPointerMove={handleBlockEditorPointerMove}
                       onPointerLeave={handleBlockEditorPointerLeave}
@@ -7621,21 +7607,25 @@ function App() {
                       </div>
                       <button className="template-soft-action" type="button" onClick={addPlannerSchedule}>Add schedule block</button>
                     </section>
-                    <LociEditor
+                    <EditorWorkspace
                       editor={editor}
                       isFocusMode={editorFocusModeVisual}
                       smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                       smoothCaretScrollContainerRef={documentScrollRef}
-                      shellRef={(node) => { blockEditorShellRef.current = node }}
+                      shellRef={assignBlockEditorShell}
                       className={`template-rich-section ${highlighterArmed ? 'is-highlighter-armed' : ''}`}
                       label={<span>Notes</span>}
                       draggedBlockId={draggedBlockId}
                       imageCropEditing={imageCropEditing}
                       imageCropDragging={imageCropDragging}
-                      blockControls={renderBlockControls()}
+                      blockControls={blockControls}
+                      blocks={selectedBlocks}
+                      selectedBlockIds={selectedBlockIdSet}
+                      hoveredBlockControlId={hoveredBlockControlId}
                       formatSideControls={renderFormatSideControls()}
                       blockDropOverlay={renderBlockDropOverlay()}
                       onClick={handleBlockControlsClick}
+                      onContextMenu={handleAuthorshipContextMenu}
                       onPointerDown={handleEditorPointerDown}
                       onPointerMove={handleBlockEditorPointerMove}
                       onPointerLeave={handleBlockEditorPointerLeave}
@@ -7670,20 +7660,24 @@ function App() {
                       return (
                         <section className="slide-stage">
                           <input value={slide.title} onChange={(event) => updateSlide(slide.id, { title: event.target.value })} placeholder="Slide title" />
-                          <LociEditor
+                          <EditorWorkspace
                             editor={editor}
                             isFocusMode={editorFocusModeVisual}
                             smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                             smoothCaretScrollContainerRef={documentScrollRef}
-                            shellRef={(node) => { blockEditorShellRef.current = node }}
+                            shellRef={assignBlockEditorShell}
                             className={highlighterArmed ? 'is-highlighter-armed' : ''}
                             draggedBlockId={draggedBlockId}
                             imageCropEditing={imageCropEditing}
                             imageCropDragging={imageCropDragging}
-                            blockControls={renderBlockControls()}
+                            blockControls={blockControls}
+                            blocks={selectedBlocks}
+                            selectedBlockIds={selectedBlockIdSet}
+                            hoveredBlockControlId={hoveredBlockControlId}
                             formatSideControls={renderFormatSideControls()}
                             blockDropOverlay={renderBlockDropOverlay()}
                             onClick={handleBlockControlsClick}
+                            onContextMenu={handleAuthorshipContextMenu}
                             onPointerDown={handleEditorPointerDown}
                             onPointerMove={handleBlockEditorPointerMove}
                             onPointerLeave={handleBlockEditorPointerLeave}
@@ -7705,20 +7699,24 @@ function App() {
                   </div>
                 )}
                 {(!selectedTemplateData || selectedTemplateData.kind === 'blank') && (
-                  <LociEditor
+                  <EditorWorkspace
                     editor={editor}
                     isFocusMode={editorFocusModeVisual}
                     smoothCaretFocusMode={editorFocusMode && activeView === 'editor'}
                     smoothCaretScrollContainerRef={documentScrollRef}
-                    shellRef={(node) => { blockEditorShellRef.current = node }}
+                    shellRef={assignBlockEditorShell}
                     className={highlighterArmed ? 'is-highlighter-armed' : ''}
                     draggedBlockId={draggedBlockId}
                     imageCropEditing={imageCropEditing}
                     imageCropDragging={imageCropDragging}
-                    blockControls={renderBlockControls()}
+                    blockControls={blockControls}
+                    blocks={selectedBlocks}
+                    selectedBlockIds={selectedBlockIdSet}
+                    hoveredBlockControlId={hoveredBlockControlId}
                     formatSideControls={renderFormatSideControls()}
                     blockDropOverlay={renderBlockDropOverlay()}
                     onClick={handleBlockControlsClick}
+                    onContextMenu={handleAuthorshipContextMenu}
                     onPointerDown={handleEditorPointerDown}
                     onPointerMove={handleBlockEditorPointerMove}
                     onPointerLeave={handleBlockEditorPointerLeave}
@@ -7741,7 +7739,7 @@ function App() {
                         onChange={(event) => setBlockPicker((current) => ({ ...current, query: event.target.value }))}
                         onKeyDown={(event) => {
                           if (event.key === 'Escape') setBlockPicker({ open: false, blockId: '', placement: 'after', query: '' })
-                          if (event.key === 'Enter' && visibleBlockPickerOptions[0]) insertBlock(blockPicker.blockId, visibleBlockPickerOptions[0].type, blockPicker.placement)
+                          if (event.key === 'Enter' && visibleBlockPickerOptions[0]) insertBlockFromPicker(blockPicker.blockId, visibleBlockPickerOptions[0], blockPicker.placement)
                         }}
                         placeholder="Search blocks..."
                         autoFocus
@@ -7751,7 +7749,7 @@ function App() {
                       {visibleBlockPickerOptions.map((option) => {
                         const Icon = option.icon
                         return (
-                          <button key={option.type} type="button" onClick={() => insertBlock(blockPicker.blockId, option.type, blockPicker.placement)}>
+                          <button key={option.id} type="button" onClick={() => insertBlockFromPicker(blockPicker.blockId, option, blockPicker.placement)}>
                             <Icon size={16} aria-hidden />
                             <span>
                               <strong>{option.label}</strong>
@@ -7774,9 +7772,11 @@ function App() {
               editorAuthenticWriterMode={editorAuthenticWriterMode}
               aiPromptFocused={aiPromptFocused}
               aiRunning={aiRunning}
+              aiRequestStatus={aiRequestStatus}
               activeAICommand={activeAICommand}
               visibleAICommand={visibleAICommand}
               aiPrompt={aiPrompt}
+              aiPromptCanSubmit={Boolean((aiPrompt.trim() || defaultPromptForCommand(activeAICommand, hasExplicitAIContext)) && !aiRunning)}
               aiPromptInputRef={aiPromptInputRef}
               aiPromptHintVisible={aiPromptHintVisible}
               aiPromptHint={aiPromptHint}
@@ -7795,7 +7795,6 @@ function App() {
               onToggleHighlight={toggleHighlighterMode}
               onOpenHighlightPalette={openHighlightPalette}
               onSelectHighlightColor={selectHighlighterColor}
-              onToggleFormat={() => setActiveEditorPanel((panel) => (panel === 'format' ? null : 'format'))}
               onToggleMore={() => setActiveEditorPanel((panel) => (panel === 'more' ? null : 'more'))}
               onPromptMouseDown={() => {
                 const range = captureAIContextRange()
@@ -7808,8 +7807,9 @@ function App() {
                 setActiveEditorPanel(null)
               }}
               onPromptBlur={() => {
+                if (aiRunning) return
                 setAiPromptFocused(false)
-                if (!aiRunning) clearAIContextRange()
+                clearAIContextRange()
               }}
               onPromptChange={(event) => {
                 setAiPrompt(event.target.value)
@@ -7825,6 +7825,7 @@ function App() {
                 }
                 if (event.key === 'Escape') {
                   event.preventDefault()
+                  if (aiRunning) return
                   setAiPromptFocused(false)
                   clearAIContextRange()
                   aiPromptInputRef.current?.blur()
@@ -7835,6 +7836,7 @@ function App() {
                   submitAIPrompt()
                 }
               }}
+              onPromptSubmit={() => submitAIPrompt()}
               onDismissPromptHint={(event) => {
                 event.preventDefault()
                 setAiPromptHintVisible(false)
@@ -7843,72 +7845,8 @@ function App() {
             />
             {authorshipPopover}
           </section>
-        )}
-
-        {activeView === 'editor' && selectedNote && activeEditorPanel === 'format' && (
-          <ModalBackdrop containerRef={documentScrollRef} className="format-modal-backdrop" onClose={() => setActiveEditorPanel(null)}>
-            <section
-              className="format-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="format-dialog-title"
-              ref={formatDialogRef}
-              onMouseDown={(event) => event.stopPropagation()}
-            >
-              <h2 id="format-dialog-title" className="visually-hidden">
-                Formatting and blocks
-              </h2>
-              <div className="format-dialog-search" onMouseDown={(event) => event.stopPropagation()}>
-                <Search size={18} aria-hidden />
-                <input
-                  type="text"
-                  role="searchbox"
-                  value={formatDialogQuery}
-                  onChange={(event) => setFormatDialogQuery(event.target.value)}
-                  placeholder="Search formats..."
-                  aria-label="Filter format options"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <div className="format-dialog-scroll scroll-hover">
-                <div className="format-dialog-grid">
-                  {formatDialogSections.length === 0 ? (
-                    <p className="format-dialog-empty">No matches.</p>
-                  ) : (
-                    formatDialogSections.map(({ group, options }) => (
-                      <section className="format-option-section" key={group}>
-                        <span>{group}</span>
-                        <div className="format-option-grid">
-                          {options.map((option) => {
-                            const Icon = option.icon
-                            const aria = option.ariaLabel ?? `${option.label}. ${option.description}`
-                            return (
-                              <button
-                                type="button"
-                                key={option.id}
-                                aria-label={aria}
-                                onClick={() => {
-                                  option.action?.()
-                                  setActiveEditorPanel(null)
-                                }}
-                              >
-                                <Icon size={18} aria-hidden />
-                                <span>
-                                  <strong>{option.label}</strong>
-                                  <small>{option.description}</small>
-                                </span>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </section>
-                    ))
-                  )}
-                </div>
-              </div>
-            </section>
-          </ModalBackdrop>
+            </EditorSessionBoundary>
+          </EditorSessionProvider>
         )}
 
         {activeView === 'projects' && (
@@ -7949,15 +7887,6 @@ function App() {
                       <p>{localLoadIssues[0] ?? 'Some local workspace data could not load cleanly.'}</p>
                       <button type="button" onClick={() => void repairLocalDatabase()}>
                         Repair local database
-                      </button>
-                    </section>
-                  )}
-                  {!starterWorkspaceVisible && (
-                    <section className="project-empty-state">
-                      <h2>{projects.length || unassignedNotes.length ? 'Onboarding files missing.' : 'No projects yet.'}</h2>
-                      <p>Restore the onboarding workspace with guide notes, projects, atoms, and writing examples.</p>
-                      <button type="button" onClick={() => void seedStarterWorkspace()}>
-                        Restore onboarding files
                       </button>
                     </section>
                   )}
@@ -8483,15 +8412,7 @@ function App() {
 
               {atomSubView === 'sets' && (
                 <div className="flashcard-set-grid">
-                  {flashcardSets.length === 0 ? (
-                    <section className="flashcard-empty-state">
-                      <Brain size={24} aria-hidden />
-                      <h3>Create your first flashcard set</h3>
-                      <p>Group atoms into a study deck, then review them one card at a time.</p>
-                      <button type="button" onClick={() => openCreateFlashcardSet([])}>Create set</button>
-                    </section>
-                  ) : (
-                    flashcardSets.map((set) => {
+                  {flashcardSets.map((set) => {
                       const setAtoms = set.atomIds.filter((id) => atoms.some((atom) => atom.id === id))
                       const summary = setStudySummaries.get(set.id)
                       const mastery = summary?.masteryPercent ?? 0
@@ -8563,8 +8484,7 @@ function App() {
                           </footer>
                         </article>
                       )
-                    })
-                  )}
+                  })}
                   <button className="flashcard-new-set-tile" type="button" onClick={() => openCreateFlashcardSet([])}>
                     <Plus size={18} aria-hidden />
                     <span>New set</span>
@@ -10022,24 +9942,9 @@ function App() {
           containerRef={activeView === 'editor' ? documentScrollRef : undefined}
           onClose={closeAIResult}
           onDraftChange={(patch) => setAiResult((current) => (current ? { ...current, ...patch } : current))}
-          onPrimaryAction={() => {
-            if (aiResult.canCreateAtoms) {
-              void createAtomsFromAIResult()
-              return
-            }
-            if (aiResult.canApplyBlock && aiResult.blockPayload) {
-              applyAIBlockPayload(aiResult.blockPayload)
-              closeAIResult()
-              return
-            }
-            if (aiResult.canReplaceSelection && aiResult.selection) {
-              replaceSelectionWithAIResult(aiResult)
-              closeAIResult()
-              return
-            }
-            insertAIResultDraft(aiResult)
-            closeAIResult()
-          }}
+          onInsert={() => applyAIResult(aiResult, 'insert')}
+          onReplace={() => applyAIResult(aiResult, 'replace')}
+          onCreateAtoms={aiResult.canCreateAtoms ? () => void createAtomsFromAIResult() : undefined}
           onDraftProjectInstructions={() => void draftProjectInstructionsFromAIResult()}
           onSaveProjectInstructions={(draft) => {
             if (!selectedProject) return
@@ -10514,6 +10419,7 @@ function App() {
         </div>
       )}
     </main>
+    </WorkspaceProvider>
   )
 }
 
@@ -10551,54 +10457,6 @@ async function copyToClipboard(text: string) {
       document.body.removeChild(ta)
     }
   }
-}
-
-function sortByUpdated(a: Note, b: Note) {
-  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-}
-
-function sortByCreated(a: Note, b: Note) {
-  const createdDelta = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  if (createdDelta !== 0) return createdDelta
-  const titleDelta = a.title.localeCompare(b.title)
-  return titleDelta || a.id.localeCompare(b.id)
-}
-
-function applyBlockDrop(blocks: LociBlock[], intent: BlockDropIntent): LociBlock[] {
-  if (intent.draggedId === intent.targetId) return blocks
-  const nextBlocks = [...blocks]
-  const draggedIndex = nextBlocks.findIndex((block) => block.id === intent.draggedId)
-  const targetIndex = nextBlocks.findIndex((block) => block.id === intent.targetId)
-  if (draggedIndex < 0 || targetIndex < 0) return blocks
-  const [removed] = nextBlocks.splice(draggedIndex, 1)
-  const nextTargetIndex = nextBlocks.findIndex((block) => block.id === intent.targetId)
-  if (nextTargetIndex < 0) return blocks
-  const insertIndex = intent.placement === 'above' ? nextTargetIndex : nextTargetIndex + 1
-  nextBlocks.splice(insertIndex, 0, removed)
-  return nextBlocks
-}
-
-function insertBlockRelative(blocks: LociBlock[], targetId: string, blockToInsert: LociBlock, placement: 'before' | 'after') {
-  const nextBlocks = [...blocks]
-  const targetIndex = nextBlocks.findIndex((block) => block.id === targetId)
-  if (targetIndex < 0) return [...nextBlocks, blockToInsert]
-  const insertIndex = placement === 'before' ? targetIndex : targetIndex + 1
-  nextBlocks.splice(insertIndex, 0, blockToInsert)
-  return nextBlocks
-}
-
-function updateBlockById(blocks: LociBlock[], blockId: string, updater: (block: LociBlock) => LociBlock): LociBlock[] {
-  let changed = false
-  const next = blocks.map((block) => {
-    if (block.id === blockId) {
-      changed = true
-      return updater(block)
-    }
-
-    return block
-  })
-
-  return changed ? next : blocks
 }
 
 function shuffleList<T>(items: T[]) {
@@ -10651,37 +10509,8 @@ function formatDuration(ms: number) {
   return `${hours} hr ${minutes} min`
 }
 
-function relativeStudyLabel(value: string) {
-  const studiedAt = new Date(value).getTime()
-  if (!Number.isFinite(studiedAt)) return formatDay(value)
-  const days = Math.floor((Date.now() - studiedAt) / DAY_MS)
-  if (days <= 0) return 'today'
-  if (days === 1) return 'yesterday'
-  if (days < 7) return `${days} days ago`
-  return formatDay(value)
-}
-
-function initialsFromName(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return ''
-  const initials = words.length === 1 ? words[0].slice(0, 2) : `${words[0][0]}${words[words.length - 1][0]}`
-  return normalizeInitials(initials)
-}
-
-function normalizeInitials(value: string) {
-  return value.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase()
-}
-
 function isBadProfileDisplayName(value: string | undefined) {
   return value === BAD_PROFILE_DISPLAY_NAME
-}
-
-function createBaseHandleFromDisplayName(displayName: string) {
-  const words = displayName.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return ''
-  const [firstName] = words
-  const lastInitial = words.length > 1 ? words[words.length - 1][0] : ''
-  return normalizeUserHandle(`${firstName}${lastInitial}`).replace(/[._-]+/g, '')
 }
 
 async function createAvailableLocalHandle(value: string, currentAccountId?: string) {
@@ -10702,6 +10531,16 @@ async function createAvailableLocalHandle(value: string, currentAccountId?: stri
 
 function formatDay(value: string) {
   return new Intl.DateTimeFormat('en-AU', { day: '2-digit', month: 'short' }).format(new Date(value)).toUpperCase()
+}
+
+function relativeStudyLabel(value: string) {
+  const studiedAt = new Date(value).getTime()
+  if (!Number.isFinite(studiedAt)) return formatDay(value)
+  const days = Math.floor((Date.now() - studiedAt) / DAY_MS)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  return formatDay(value)
 }
 
 function formatDateTime(value: string) {

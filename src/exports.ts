@@ -2,6 +2,7 @@ import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import { saveAs } from 'file-saver'
 import { jsPDF } from 'jspdf'
 import type { Atom, JSONContent, Note, Project } from './db'
+import { collectText, contentHasAtom, tableDataFromNode } from './editor/blocks'
 
 type PdfSegment = {
   text: string
@@ -257,7 +258,8 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
   }
 
   const renderTableNode = (node: JSONContent) => {
-    const rows = tableRows(node)
+    const { columns, rows: bodyRows } = tableDataFromNode(node)
+    const rows = columns.length ? [columns, ...bodyRows] : bodyRows
     if (!rows.length) return
     const columnCount = Math.max(...rows.map((row) => row.length))
     const cellWidth = contentWidth / Math.max(1, columnCount)
@@ -328,7 +330,7 @@ export async function exportNotePdf(note: Note, project: Project | undefined) {
 
 export async function exportNoteDocx(note: Note, project: Project | undefined, atoms: Atom[]) {
   const templateId = note.templateId ?? 'blank'
-  const atomDefinitions = atoms.filter((atom) => noteHasAtom(note.content, atom.id))
+  const atomDefinitions = atoms.filter((atom) => contentHasAtom(note.content, atom.id))
   const bodyChildren = templateDocxParagraphs(note)
   const children = [
     new Paragraph({
@@ -458,9 +460,11 @@ function nodeToParagraph(node: JSONContent): Paragraph[] {
   }
 
   if (node.type === 'table') {
+    const { columns, rows: bodyRows } = tableDataFromNode(node)
+    const rows = columns.length ? [columns, ...bodyRows] : bodyRows
     return [
       new Paragraph({ text: 'Table', heading: HeadingLevel.HEADING_2 }),
-      ...tableRows(node).map((row) => new Paragraph({ text: row.join(' | ') })),
+      ...rows.map((row) => new Paragraph({ text: row.join(' | ') })),
     ]
   }
 
@@ -503,29 +507,10 @@ function inlineContent(node: JSONContent): TextRun[] {
   })
 }
 
-function collectText(node: JSONContent): string {
-  if (node.text) return node.text
-  return (node.content ?? []).map(collectText).join(' ')
-}
-
 function collectCodeText(node: JSONContent): string {
   if (node.text) return node.text
   if (node.type === 'hardBreak') return '\n'
   return (node.content ?? []).map(collectCodeText).join('')
-}
-
-function tableRows(node: JSONContent): string[][] {
-  return (node.content ?? [])
-    .filter((row) => row.type === 'tableRow')
-    .map((row) => (row.content ?? []).map((cell) => collectText(cell).replace(/\s+/g, ' ').trim()))
-}
-
-function noteHasAtom(content: JSONContent, atomId: string): boolean {
-  if (content.marks?.some((mark) => mark.type === 'atom' && mark.attrs?.atomId === atomId)) {
-    return true
-  }
-
-  return (content.content ?? []).some((child) => noteHasAtom(child, atomId))
 }
 
 function templateLabel(value: string) {

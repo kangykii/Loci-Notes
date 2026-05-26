@@ -38,7 +38,7 @@
   z-index: 40;
   display: grid;
   justify-items: center;
-  width: min(940px, var(--floating-toolbar-max-width, calc(100vw - 48px)));
+  width: min(840px, var(--floating-toolbar-max-width, calc(100vw - 48px)));
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -50,7 +50,7 @@
   height: 52px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0;
   overflow: hidden;
   border: 1px solid rgba(46, 52, 64, 0.1);
@@ -78,7 +78,9 @@
     inset 0 0 0 1px rgba(244, 244, 242, 0.46),
     inset 0 -14px 32px rgba(46, 52, 64, 0.035),
     0 18px 46px rgba(26, 26, 26, 0.13),
-    0 2px 10px rgba(26, 26, 26, 0.06);
+    0 2px 10px rgba(26, 26, 26, 0.06),
+    0 0 0 3px rgba(232, 169, 104, 0.16);
+  animation: aiThinkingGlow 1.55s var(--editor-motion-ease) infinite;
 }
 
 .toolbar-zone {
@@ -99,18 +101,27 @@
 }
 
 .toolbar-zone-left {
-  min-width: 132px;
-  flex-basis: 132px;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-basis: auto;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 8px 0 14px;
 }
 
 .toolbar-zone-right {
-  min-width: 78px;
-  flex-basis: 78px;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-basis: auto;
   justify-content: flex-end;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 14px 0 8px;
+}
+
+.floating-editor-bar.is-prompt-open .toolbar-zone-left,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-zone-left,
+.floating-editor-bar.is-prompt-open .toolbar-zone-right,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-zone-right {
+  display: none;
 }
 
 .floating-editor-bar.is-prompt-open .toolbar-zone,
@@ -121,11 +132,25 @@
   flex-basis: 0;
   max-width: 0;
   min-width: 0;
+  margin: 0;
+  gap: 0;
   opacity: 0;
-  transform: translateY(2px) scale(0.98);
+  transform: none;
   overflow: hidden;
   padding-inline: 0;
   pointer-events: none;
+}
+
+.floating-editor-bar.is-prompt-open .toolbar-structural-divider,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .toolbar-structural-divider {
+  display: none;
+}
+
+.floating-editor-bar.is-prompt-open .floating-ai-prompt,
+.floating-editor-bar:has(.floating-ai-prompt:focus-within) .floating-ai-prompt {
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
 }
 
 .toolbar-divider {
@@ -280,11 +305,12 @@
   width: 100%;
   max-width: none;
   height: 100%;
-  min-width: 120px;
-  display: inline-flex;
+  min-width: 0;
+  display: flex;
   align-items: center;
+  align-self: stretch;
   gap: 8px;
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   border: 0;
   border-radius: 14px;
   background: transparent;
@@ -309,7 +335,10 @@
 .floating-ai-prompt:focus-within {
   height: 100%;
   max-width: none;
+  flex: 1 1 0;
   flex-basis: 100%;
+  min-width: 0;
+  width: 100%;
   border-radius: 18px;
   background: transparent;
   box-shadow: none;
@@ -323,6 +352,7 @@
 
 .floating-ai-prompt > svg,
 .floating-ai-prompt input,
+.floating-ai-send,
 .ai-mode-pill,
 .ai-prompt-hint {
   position: relative;
@@ -372,7 +402,7 @@
   background: #2E3440;
 }
 
-.ai-mode-pill--mark span {
+.ai-mode-pill--critique span {
   background: #3E3220;
 }
 
@@ -397,7 +427,7 @@
   outline: 0;
   background: transparent;
   color: #1A1A1A;
-  padding: 1rem 1.25rem;
+  padding: 0 12px;
   font-size: 13px;
   font-weight: 400;
   transition:
@@ -407,6 +437,34 @@
 
 .floating-ai-prompt .ai-mode-pill + input {
   padding-left: 0;
+}
+
+.floating-ai-send {
+  width: 34px;
+  min-width: 34px;
+  margin-right: 10px;
+  border: 1px solid rgba(46, 52, 64, 0.12);
+  border-radius: 10px;
+  background: #2E3440;
+  color: #F4F4F2;
+  transition:
+    border-color var(--editor-motion-fast) ease,
+    background var(--editor-motion-fast) ease,
+    color var(--editor-motion-fast) ease,
+    opacity var(--editor-motion-fast) ease,
+    transform var(--editor-motion-fast) var(--editor-motion-ease);
+}
+
+.floating-ai-send:hover:not(:disabled) {
+  background: #1A1A1A;
+  color: #F4F4F2;
+  transform: translateY(-1px);
+}
+
+.floating-ai-send:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .floating-ai-prompt input::placeholder {
@@ -578,6 +636,29 @@
   }
 }
 
+@keyframes aiThinkingGlow {
+  0%,
+  100% {
+    border-color: rgba(62, 50, 32, 0.2);
+    box-shadow:
+      inset 0 0 0 1px rgba(244, 244, 242, 0.46),
+      inset 0 -14px 32px rgba(46, 52, 64, 0.035),
+      0 18px 46px rgba(26, 26, 26, 0.13),
+      0 2px 10px rgba(26, 26, 26, 0.06),
+      0 0 0 3px rgba(232, 169, 104, 0.12);
+  }
+
+  50% {
+    border-color: rgba(150, 84, 44, 0.42);
+    box-shadow:
+      inset 0 0 0 1px rgba(244, 244, 242, 0.56),
+      inset 0 -14px 32px rgba(46, 52, 64, 0.04),
+      0 20px 52px rgba(26, 26, 26, 0.15),
+      0 2px 10px rgba(26, 26, 26, 0.06),
+      0 0 0 5px rgba(232, 169, 104, 0.24);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .smooth-caret {
     display: none;
@@ -592,8 +673,9 @@
   .toolbar-structural-divider,
   .highlight-button,
   .highlight-palette,
-  .floating-ai-prompt,
-  .ai-mode-pill,
+    .floating-ai-prompt,
+    .floating-ai-send,
+    .ai-mode-pill,
   .floating-ai-prompt input,
   .floating-ai-prompt input::placeholder,
   .ai-prompt-hint,
@@ -613,18 +695,18 @@
   }
 
   .floating-editor-bar {
-    gap: 10px;
+    gap: 0;
   }
 
   .toolbar-zone-left {
-    min-width: 112px;
-    flex-basis: 112px;
+    min-width: 0;
+    flex-basis: auto;
     gap: 8px;
   }
 
   .toolbar-zone-right {
-    min-width: 72px;
-    flex-basis: 72px;
+    min-width: 0;
+    flex-basis: auto;
     gap: 8px;
   }
 
@@ -674,12 +756,18 @@
     inset 0 0 0 1px rgba(244, 244, 242, 0.46),
     inset 0 -14px 32px rgba(46, 52, 64, 0.035),
     0 18px 46px rgba(26, 26, 26, 0.13),
-    0 2px 10px rgba(26, 26, 26, 0.06);
+    0 2px 10px rgba(26, 26, 26, 0.06),
+    0 0 0 3px rgba(232, 169, 104, 0.16);
 }
 
 .floating-editor-bar button,
 .floating-ai-prompt input {
   color: #1A1A1A;
+}
+
+.floating-editor-bar .floating-ai-send {
+  background: #2E3440;
+  color: #F4F4F2;
 }
 
 .floating-editor-bar button:hover,
@@ -724,7 +812,7 @@
 }
 
 .ai-mode-pill span,
-.ai-mode-pill--mark span,
+.ai-mode-pill--critique span,
 .ai-mode-pill--continue span {
   background: #3E3220;
 }

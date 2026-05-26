@@ -826,6 +826,72 @@ summary:focus-visible {
   color: var(--color-secondary);
 }
 
+.window-resize-handles {
+  pointer-events: none;
+}
+
+.window-resize-handle {
+  position: fixed;
+  z-index: 45;
+  pointer-events: auto;
+}
+
+.window-resize-handle--east {
+  top: 34px;
+  right: 0;
+  bottom: 8px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.window-resize-handle--west {
+  top: 34px;
+  left: 0;
+  bottom: 8px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.window-resize-handle--south {
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.window-resize-handle--south-east {
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
+.window-resize-handle--south-west {
+  left: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+.window-resize-handle--north-east {
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+.window-resize-handle--north-west {
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
 .app-shell {
   --sidebar-rail-width: 204px;
   --sidebar-width: var(--sidebar-rail-width);
@@ -835,6 +901,7 @@ summary:focus-visible {
   height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   position: relative;
   overflow: hidden;
   background:
@@ -1551,7 +1618,10 @@ summary:focus-visible {
 .main-pane.editor-pane {
   position: relative;
   isolation: isolate;
+  min-height: 0;
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
@@ -1563,7 +1633,7 @@ summary:focus-visible {
 
 .document-scroll {
   min-height: min-content;
-  padding: 66px clamp(40px, 8vw, 128px) 154px;
+  padding: 66px clamp(40px, 8vw, 128px) 120px;
 }
 
 .icon-button,
@@ -1594,7 +1664,7 @@ summary:focus-visible {
 
 .editor-pane.is-focus-mode .document-scroll {
   min-height: min-content;
-  padding-bottom: max(154px, 50vh);
+  padding-bottom: max(120px, 50vh);
 }
 
 .document-card.is-focus-mode {
@@ -2076,11 +2146,39 @@ summary:focus-visible {
   font-size: 14px;
 }
 
+.ai-result-dialog .ai-result-warning {
+  border: 1px solid rgba(150, 84, 44, 0.22);
+  border-radius: 8px;
+  background: rgba(232, 169, 104, 0.16);
+  color: #5B321D;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.ai-result-warning summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ai-result-warning p {
+  margin-top: 8px;
+  color: #5B321D;
+}
+
+.ai-result-warning pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+
+.ai-critique-feedback-cards,
 .ai-mark-feedback-cards {
   display: grid;
   gap: 12px;
 }
 
+.ai-critique-feedback-card,
 .ai-mark-feedback-card {
   display: grid;
   gap: 8px;
@@ -2090,6 +2188,7 @@ summary:focus-visible {
   padding: 0;
 }
 
+.ai-critique-feedback-card-title,
 .ai-mark-feedback-card-title {
   font-size: 13px;
   font-weight: 750;
@@ -2097,6 +2196,7 @@ summary:focus-visible {
   color: #2E3440;
 }
 
+.ai-critique-feedback-card-input,
 .ai-mark-feedback-card-input {
   width: 100%;
   min-height: 0;
@@ -2113,6 +2213,7 @@ summary:focus-visible {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.ai-critique-feedback-card-input:focus,
 .ai-mark-feedback-card-input:focus {
   border-bottom-color: #1A1A1A;
 }
@@ -2215,6 +2316,33 @@ summary:focus-visible {
   font-size: 13px;
   font-style: italic;
   color: #7F7981;
+}
+
+.ai-document-patch-preview-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.ai-document-patch-preview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-document-patch-preview-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7F7981;
+}
+
+.ai-block-preview-html-snippet {
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .ai-block-preview {
@@ -2760,197 +2888,11 @@ summary:focus-visible {
   font-size: 17px;
   line-height: 1.76;
   white-space: pre-wrap;
+  text-rendering: auto;
 }
 
 .note-editor > * {
   position: relative;
-}
-
-.block-editor-shell {
-  position: relative;
-  --block-control-gutter: clamp(48px, 5vw, 72px);
-  --block-control-size: 24px;
-  --block-control-icon-size: 14px;
-}
-
-.block-drop-overlay {
-  position: absolute;
-  inset: -18px -96px -18px calc(-1 * var(--block-control-gutter));
-  z-index: 14;
-  pointer-events: none;
-}
-
-.block-hover-controls {
-  position: absolute;
-  top: 0;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  opacity: 0;
-  transform: translateY(2px);
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-  pointer-events: auto;
-}
-
-.block-control-hotspot.is-hovered .block-hover-controls,
-.block-control-hotspot:hover .block-hover-controls,
-.block-control-hotspot:focus-within .block-hover-controls,
-.block-hover-controls:hover,
-.block-hover-controls:focus-within {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.block-controls-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 13;
-  pointer-events: none;
-}
-
-.block-control-hotspot {
-  position: absolute;
-  left: calc(-1 * var(--block-control-gutter));
-  width: var(--block-control-gutter);
-  display: block;
-  pointer-events: auto;
-}
-
-.block-control-button {
-  width: var(--block-control-size);
-  height: var(--block-control-size);
-  min-width: 24px;
-  min-height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: rgba(124, 121, 115, 0.72);
-  padding: 0;
-  transition:
-    background 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
-}
-
-.block-control-button svg {
-  width: var(--block-control-icon-size);
-  height: var(--block-control-icon-size);
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-}
-
-.block-control-button svg circle {
-  fill: currentColor;
-  stroke: none;
-}
-
-.block-control-delete:hover {
-  background: rgba(62, 50, 32, 0.07);
-  color: #3E3220;
-}
-
-.block-control-button:hover {
-  background: var(--hover-wash);
-  color: #1A1A1A;
-  box-shadow: inset 0 0 0 1px rgba(26, 26, 26, 0.035);
-}
-
-.block-control-handle {
-  cursor: grab;
-  touch-action: none;
-}
-
-.block-control-handle svg {
-  width: 16px;
-  height: 16px;
-}
-
-.block-control-handle:active {
-  cursor: grabbing;
-}
-
-.block-drop-indicator {
-  position: absolute;
-  left: 0;
-  top: 0;
-  opacity: 0;
-  pointer-events: none;
-  border-radius: 2px;
-  transform-origin: 0 50%;
-  will-change: transform, width, height, opacity;
-  transition:
-    opacity 90ms ease,
-    width 110ms ease,
-    transform 95ms cubic-bezier(0.2, 0, 0.2, 1);
-}
-
-.block-drop-indicator::before,
-.block-drop-indicator::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-50%) scale(0.86);
-  transition:
-    opacity 90ms ease,
-    transform 95ms cubic-bezier(0.2, 0, 0.2, 1);
-}
-
-.block-drop-indicator:not([data-placement='inside']) {
-  height: 2px;
-  background:
-    linear-gradient(90deg, transparent 0%, rgba(62, 50, 32, 0.16) 8%, rgba(62, 50, 32, 0.34) 50%, rgba(62, 50, 32, 0.16) 92%, transparent 100%);
-  box-shadow: none;
-}
-
-.block-drop-indicator:not([data-placement='inside'])::before {
-  left: -2px;
-  width: 6px;
-  height: 6px;
-  border: 1px solid rgba(46, 52, 64, 0.24);
-  border-radius: 999px;
-  background: #F4F4F2;
-  box-shadow:
-    inset 0 0 0 1px rgba(244, 244, 242, 0.88),
-    0 3px 8px rgba(26, 26, 26, 0.08);
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-}
-
-.block-drop-indicator:not([data-placement='inside'])::after {
-  right: 0;
-  width: 26px;
-  height: 2px;
-  border-radius: inherit;
-  background: linear-gradient(90deg, rgba(244, 244, 242, 0), rgba(244, 244, 242, 0.86));
-  opacity: 0.7;
-  transform: translateY(-50%) scaleX(1);
-}
-
-.block-drop-indicator[data-placement='inside'] {
-  border: 1px solid rgba(62, 50, 32, 0.14);
-  background:
-    linear-gradient(180deg, rgba(244, 244, 242, 0.72), rgba(62, 50, 32, 0.035));
-  box-shadow:
-    inset 0 0 0 1px rgba(244, 244, 242, 0.7),
-    0 10px 26px rgba(26, 26, 26, 0.08);
-  backdrop-filter: blur(2px);
-}
-
-.block-editor-shell.is-dragging-block .note-editor > * {
-  transition: transform 140ms ease, opacity 140ms ease;
-}
-
-.block-editor-shell.is-dragging-block .block-control-hotspot {
-  opacity: 0.45;
 }
 
 .block-picker-backdrop {
@@ -10489,57 +10431,14 @@ button:focus-visible,
   }
 }
 
-/* Extracted editor Focus Mode overrides sit last to beat base Tiptap block typography. */
-.block-editor-shell .note-editor {
-  line-height: 1.68;
-}
-
-.block-editor-shell .note-editor > * {
-  transition:
-    color var(--editor-motion-medium, 220ms) ease,
-    filter var(--editor-motion-medium, 220ms) ease,
-    opacity var(--editor-motion-medium, 220ms) ease,
-    transform var(--editor-motion-medium, 220ms) var(--editor-motion-ease, cubic-bezier(0.22, 1, 0.36, 1));
-}
-
-.block-editor-shell[data-focus-mode='true'] .note-editor > * {
-  color: var(--muted);
-  opacity: 0.2;
-  filter: blur(0.2px);
-}
-
-.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'] {
-  opacity: 1;
-  filter: none;
-  position: relative;
-  z-index: 1;
-}
-
-.block-editor-shell[data-focus-mode='true'] .note-editor > *:not([data-loci-active-block='true']),
-.block-editor-shell[data-focus-mode='true'] .note-editor > *:not([data-loci-active-block='true']) * {
-  color: var(--muted);
-}
-
-.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'],
-.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'] * {
-  color: var(--text);
-}
-
-.block-editor-shell[data-focus-mode='true'] .block-control-button {
-  color: var(--muted);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .document-scroll,
   .document-card,
-  .block-editor-shell,
-  .block-editor-shell[data-focus-mode='true'] .note-editor,
   .format-side-controls,
   .format-side-controls button,
   .note-editor .loci-image-frame,
   .note-editor .loci-image-frame img,
   .block-editor-shell.is-cropping-image .note-editor .loci-image-frame.ProseMirror-selectednode::after,
-  .block-editor-shell[data-focus-mode='true'] .note-editor > *,
   .global-search-backdrop,
   .global-search-modal,
   .global-search-input-row,

@@ -2,12 +2,95 @@ import { Extension, mergeAttributes, Node as TiptapNode } from '@tiptap/core'
 import Image from '@tiptap/extension-image'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { createId } from '../db'
 import { sanitizeImageUrl } from '../utils/urlValidation'
+import { createAIBlockAttrs } from './aiBlocks'
+import { renderAIBlockShell, shouldStopAIBlockEvent } from './aiBlockSandbox'
+import { LOCI_BLOCK_ID_ATTR } from './documentUtils'
+
+const LOCI_BLOCK_ID_NODE_TYPES = [
+  'paragraph',
+  'heading',
+  'taskList',
+  'bulletList',
+  'orderedList',
+  'blockquote',
+  'codeBlock',
+  'horizontalRule',
+  'lociQuote',
+  'lociAIBlock',
+  'image',
+  'table',
+]
+
+const lociBlockIdPluginKey = new PluginKey('lociBlockIdRepair')
+
+export const LociBlockId = Extension.create({
+  name: 'lociBlockId',
+
+  addGlobalAttributes() {
+    return [
+      {
+        types: LOCI_BLOCK_ID_NODE_TYPES,
+        attributes: {
+          [LOCI_BLOCK_ID_ATTR]: {
+            default: null,
+            parseHTML: (element) => element.getAttribute('data-loci-block-id'),
+            renderHTML: (attributes) => {
+              const id = attributes[LOCI_BLOCK_ID_ATTR]
+              if (!id) return {}
+              return { 'data-loci-block-id': String(id) }
+            },
+          },
+        },
+      },
+    ]
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: lociBlockIdPluginKey,
+        appendTransaction(transactions, oldState, newState) {
+          if (!transactions.some((transaction) => transaction.docChanged)) return null
+
+          const used = new Set<string>()
+          let needsRepair = oldState.doc.childCount !== newState.doc.childCount
+          if (!needsRepair) {
+            newState.doc.forEach((node) => {
+              const existing = node.attrs?.[LOCI_BLOCK_ID_ATTR]
+              const blockId = typeof existing === 'string' && existing.trim() ? existing.trim() : ''
+              if (!blockId || used.has(blockId)) needsRepair = true
+              else used.add(blockId)
+            })
+            if (!needsRepair) return null
+          }
+
+          used.clear()
+          let changed = false
+          const tr = newState.tr
+          newState.doc.forEach((node, offset) => {
+            const existing = node.attrs?.[LOCI_BLOCK_ID_ATTR]
+            let blockId = typeof existing === 'string' && existing.trim() ? existing.trim() : ''
+            if (!blockId || used.has(blockId)) {
+              blockId = createId('block')
+              tr.setNodeMarkup(offset, undefined, { ...node.attrs, [LOCI_BLOCK_ID_ATTR]: blockId })
+              changed = true
+            }
+            used.add(blockId)
+          })
+          return changed ? tr : null
+        },
+      }),
+    ]
+  },
+})
 
 export type EditorRange = { from: number; to: number }
 
 export const aiSelectionHighlightKey = new PluginKey<EditorRange | null>('aiSelectionHighlight')
 export const activeBlockHighlightKey = new PluginKey('activeBlockHighlight')
+export const blockSelectionHighlightKey = new PluginKey<EditorRange[]>('blockSelectionHighlight')
 
 export const ActiveBlockHighlight = Extension.create({
   name: 'activeBlockHighlight',
@@ -59,113 +142,60 @@ export const LociQuote = TiptapNode.create({
   },
 })
 
-function renderLatexPreview(source: string) {
-  return source
-    .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1) / ($2)')
-    .replace(/\\sqrt\{([^{}]+)\}/g, 'sqrt($1)')
-    .replace(/\\cdot/g, '·')
-    .replace(/\\times/g, '×')
-    .replace(/\\pm/g, '±')
-    .replace(/\\leq/g, '≤')
-    .replace(/\\geq/g, '≥')
-    .replace(/\\neq/g, '≠')
-    .replace(/\\alpha/g, 'α')
-    .replace(/\\beta/g, 'β')
-    .replace(/\\gamma/g, 'γ')
-    .replace(/\\delta/g, 'δ')
-    .replace(/\\theta/g, 'θ')
-    .replace(/\\lambda/g, 'λ')
-    .replace(/\\mu/g, 'μ')
-    .replace(/\\pi/g, 'π')
-    .replace(/\\sigma/g, 'σ')
-    .replace(/\\sum/g, 'Σ')
-    .replace(/\\int/g, '∫')
-    .replace(/[{}]/g, '')
-    .trim()
-}
+export { LociMathInline, LociMathPaste } from './LociMath'
 
-export const LociLatex = TiptapNode.create({
-  name: 'lociLatex',
+export const LociAIBlock = TiptapNode.create({
+  name: 'lociAIBlock',
   group: 'block',
   atom: true,
   isolating: true,
   selectable: true,
 
   addAttributes() {
+    const defaults = createAIBlockAttrs()
     return {
-      latex: { default: '' },
+      id: { default: defaults.id, renderHTML: () => ({}) },
+      prompt: { default: '', renderHTML: () => ({}) },
+      sourceKind: { default: 'placeholder', renderHTML: () => ({}) },
+      source: { default: '', renderHTML: () => ({}) },
+      artifact: { default: defaults.artifact, renderHTML: () => ({}) },
+      data: { default: {}, renderHTML: () => ({}) },
+      status: { default: 'ready', renderHTML: () => ({}) },
+      revision: { default: 1, renderHTML: () => ({}) },
+      createdAt: { default: defaults.createdAt, renderHTML: () => ({}) },
+      updatedAt: { default: defaults.updatedAt, renderHTML: () => ({}) },
+      error: { default: '', renderHTML: () => ({}) },
     }
   },
 
   parseHTML() {
-    return [{ tag: 'figure[data-loci-latex]' }]
+    return [{ tag: 'figure[data-loci-ai-block]' }]
   },
 
-  renderHTML({ HTMLAttributes }) {
-    const latex = typeof HTMLAttributes.latex === 'string' ? HTMLAttributes.latex : ''
+  renderHTML() {
     return [
       'figure',
-      { ...HTMLAttributes, 'data-loci-latex': 'true', class: 'loci-latex', 'data-latex': latex },
-      ['pre', { class: 'loci-latex-source' }, latex],
-      ['div', { class: 'loci-latex-preview' }, renderLatexPreview(latex) || 'Equation preview'],
+      {
+        'data-loci-ai-block': 'true',
+        class: 'loci-ai-block',
+      },
+      ['div', { class: 'loci-ai-block-label' }, 'AI-Block'],
     ]
   },
 
   addNodeView() {
-    return ({ node, getPos, editor }) => {
+    return ({ node }) => {
       const dom = document.createElement('figure')
-      dom.className = 'loci-latex'
-      dom.dataset.lociLatex = 'true'
-
-      const textarea = document.createElement('textarea')
-      textarea.className = 'loci-latex-source'
-      textarea.value = String(node.attrs.latex ?? '')
-      textarea.rows = Math.max(2, textarea.value.split('\n').length)
-      textarea.setAttribute('aria-label', 'LaTeX equation source')
-      textarea.spellcheck = false
-
-      const preview = document.createElement('div')
-      preview.className = 'loci-latex-preview'
-
-      const syncPreview = () => {
-        const source = textarea.value
-        dom.dataset.latex = source
-        preview.textContent = renderLatexPreview(source) || 'Equation preview'
-        textarea.rows = Math.max(2, source.split('\n').length)
-      }
-
-      textarea.addEventListener('input', () => {
-        const pos = typeof getPos === 'function' ? getPos() : null
-        if (typeof pos !== 'number') return
-        editor.view.dispatch(editor.view.state.tr.setNodeMarkup(pos, undefined, {
-          ...node.attrs,
-          latex: textarea.value,
-        }))
-        syncPreview()
-      })
-      textarea.addEventListener('blur', () => {
-        dom.classList.remove('is-editing')
-      })
-      dom.addEventListener('dblclick', () => {
-        dom.classList.add('is-editing')
-        textarea.focus()
-      })
-
-      dom.append(textarea, preview)
-      syncPreview()
+      renderAIBlockShell(dom, node.attrs)
 
       return {
         dom,
         update: (updatedNode) => {
-          if (updatedNode.type.name !== 'lociLatex') return false
-          const nextLatex = String(updatedNode.attrs.latex ?? '')
-          if (textarea.value !== nextLatex) {
-            textarea.value = nextLatex
-            syncPreview()
-          }
+          if (updatedNode.type.name !== 'lociAIBlock') return false
+          renderAIBlockShell(dom, updatedNode.attrs)
           return true
         },
-        stopEvent: (event) => event.target === textarea,
+        stopEvent: shouldStopAIBlockEvent,
         ignoreMutation: () => true,
       }
     }
@@ -270,6 +300,46 @@ export const AISelectionHighlight = Extension.create({
             return DecorationSet.create(state.doc, [
               Decoration.inline(range.from, range.to, { class: 'ai-selection-highlight' }),
             ])
+          },
+        },
+      }),
+    ]
+  },
+})
+
+export const BlockSelectionHighlight = Extension.create({
+  name: 'blockSelectionHighlight',
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<EditorRange[]>({
+        key: blockSelectionHighlightKey,
+        state: {
+          init: () => [],
+          apply(transaction, previous) {
+            const meta = transaction.getMeta(blockSelectionHighlightKey) as { ranges: EditorRange[] } | undefined
+            if (meta) return meta.ranges
+            if (!previous.length || !transaction.docChanged) return previous
+            return previous
+              .map((range) => ({
+                from: transaction.mapping.map(range.from, -1),
+                to: transaction.mapping.map(range.to, 1),
+              }))
+              .filter((range) => range.from < range.to)
+          },
+        },
+        props: {
+          decorations(state) {
+            const ranges = blockSelectionHighlightKey.getState(state) ?? []
+            if (!ranges.length) return null
+            return DecorationSet.create(
+              state.doc,
+              ranges.map((range) =>
+                Decoration.node(range.from, range.to, {
+                  'data-loci-selected-block': 'true',
+                }),
+              ),
+            )
           },
         },
       }),

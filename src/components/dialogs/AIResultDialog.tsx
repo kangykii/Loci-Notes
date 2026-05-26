@@ -1,35 +1,36 @@
-import type { ReactNode, RefObject } from 'react'
+import { useMemo, type ReactNode, type RefObject } from 'react'
 import { X } from 'lucide-react'
 import { ModalBackdrop } from './ModalBackdrop'
 import {
-  MARK_WRITING_FEEDBACK_SECTIONS,
+  CRITIQUE_WRITING_FEEDBACK_SECTIONS,
   aiDraftLabel,
-  aiPrimaryActionLabel,
   aiResultTitle,
-  parseMarkWritingFeedback,
-  serializeMarkWritingFeedback,
+  parseAIResultPreview,
+  parseCritiqueWritingFeedback,
+  serializeCritiqueWritingFeedback,
 } from '../../ai/aiTasks'
-import type { AIBlockPayload, AIResult, MarkWritingFeedbackKey } from '../../ai/aiTasks'
+import type { AIBlockPayload, AIResult, AIDocumentOperation, CritiqueWritingFeedbackKey } from '../../ai/aiTasks'
+import type { AIDocumentPatch } from '../../ai/aiTasks'
 
-function MarkWritingFeedbackFields({
+function CritiqueWritingFeedbackFields({
   draftText,
   onChange,
 }: {
   draftText: string
   onChange: (next: string) => void
 }) {
-  const sections = parseMarkWritingFeedback(draftText)
-  const patch = (key: MarkWritingFeedbackKey, value: string) => {
-    onChange(serializeMarkWritingFeedback({ ...sections, [key]: value }))
+  const sections = parseCritiqueWritingFeedback(draftText)
+  const patch = (key: CritiqueWritingFeedbackKey, value: string) => {
+    onChange(serializeCritiqueWritingFeedback({ ...sections, [key]: value }))
   }
 
   return (
-    <div className="ai-mark-feedback-cards" role="group" aria-label="Editable feedback sections">
-      {MARK_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => (
-        <div key={key} className="ai-mark-feedback-card">
-          <span className="ai-mark-feedback-card-title">{label}</span>
+    <div className="ai-critique-feedback-cards" role="group" aria-label="Editable critique sections">
+      {CRITIQUE_WRITING_FEEDBACK_SECTIONS.map(({ key, label }) => (
+        <div key={key} className="ai-critique-feedback-card">
+          <span className="ai-critique-feedback-card-title">{label}</span>
           <textarea
-            className="ai-mark-feedback-card-input"
+            className="ai-critique-feedback-card-input"
             value={sections[key]}
             onChange={(event) => patch(key, event.target.value)}
             aria-label={label}
@@ -97,7 +98,7 @@ function AiDraftFormattedPreview({ text }: { text: string }) {
   return <div className="ai-draft-preview-doc">{nodes}</div>
 }
 
-function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
+export function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
   if (payload.kind === 'table') {
     return (
       <div className="ai-block-preview">
@@ -163,6 +164,74 @@ function AIBlockFormattedPreview({ payload }: { payload: AIBlockPayload }) {
   )
 }
 
+function DocumentOperationPreview({ operation }: { operation: AIDocumentOperation }) {
+  if (operation.type === 'table') {
+    return <AIBlockFormattedPreview payload={{ kind: 'table', data: { mode: 'create', columns: operation.columns, rows: operation.rows } }} />
+  }
+  if (operation.type === 'list') {
+    return <AIBlockFormattedPreview payload={{ kind: 'list', data: { mode: 'create', listType: operation.listType, items: operation.items } }} />
+  }
+  if (operation.type === 'quote') {
+    return <AIBlockFormattedPreview payload={{ kind: 'quote', data: { mode: 'create', quote: operation.quote, author: operation.author } }} />
+  }
+  if (operation.type === 'code') {
+    return <AIBlockFormattedPreview payload={{ kind: 'code', data: { mode: 'create', code: operation.code } }} />
+  }
+  if (operation.type === 'latex') {
+    return <AIBlockFormattedPreview payload={{ kind: 'latex', data: { mode: 'create', latex: operation.latex } }} />
+  }
+  if (operation.type === 'aiBlock') {
+    const html = operation.attrs.artifact?.kind === 'html' ? operation.attrs.artifact.html : ''
+    return (
+      <div className="ai-block-preview">
+        <p><strong>{operation.attrs.artifact?.title ?? 'AI-Block'}</strong> ({operation.attrs.sourceKind})</p>
+        {html ? <pre className="ai-block-preview-code ai-block-preview-html-snippet">{html.slice(0, 400)}{html.length > 400 ? '…' : ''}</pre> : null}
+      </div>
+    )
+  }
+  if (operation.type === 'heading') {
+    const Tag = operation.level === 1 ? 'h1' : operation.level === 3 ? 'h3' : 'h2'
+    return <div className="ai-block-preview"><Tag className="ai-draft-preview-p">{operation.text}</Tag></div>
+  }
+  return <p className="ai-draft-preview-p">{operation.text}</p>
+}
+
+function AIDocumentPatchPreview({ patch }: { patch: AIDocumentPatch }) {
+  const aiBlocks = patch.operations.filter((operation) => operation.type === 'aiBlock')
+  return (
+    <div className="ai-block-preview ai-document-patch-preview">
+      <p><strong>{patch.operations.length}</strong> block{patch.operations.length === 1 ? '' : 's'} in this patch.</p>
+      <div className="ai-document-patch-preview-stack">
+        {patch.operations.map((operation, index) => (
+          <div key={`${operation.type}-${index}`} className="ai-document-patch-preview-item">
+            <span className="ai-document-patch-preview-label">{operation.type}</span>
+            <DocumentOperationPreview operation={operation} />
+          </div>
+        ))}
+      </div>
+      {!!aiBlocks.length && <p>{aiBlocks.length} sandboxed artifact{aiBlocks.length === 1 ? '' : 's'} included.</p>}
+    </div>
+  )
+}
+
+function AIResultFormattedPreview({ result }: { result: AIResult }) {
+  const parsed = useMemo(
+    () => parseAIResultPreview(result.taskType, result.draftText),
+    [result.draftText, result.taskType],
+  )
+
+  if (parsed.previewError) {
+    return <p className="ai-draft-preview-empty">{parsed.previewError}</p>
+  }
+  if (parsed.blockPayload) {
+    return <AIBlockFormattedPreview payload={parsed.blockPayload} />
+  }
+  if (parsed.documentPatch) {
+    return <AIDocumentPatchPreview patch={parsed.documentPatch} />
+  }
+  return <AiDraftFormattedPreview text={result.draftText} />
+}
+
 export function AIResultDialog({
   result,
   selectedProjectName,
@@ -171,7 +240,9 @@ export function AIResultDialog({
   containerRef,
   onClose,
   onDraftChange,
-  onPrimaryAction,
+  onInsert,
+  onReplace,
+  onCreateAtoms,
   onDraftProjectInstructions,
   onSaveProjectInstructions,
   onCopy,
@@ -183,15 +254,19 @@ export function AIResultDialog({
   containerRef?: RefObject<HTMLElement | null>
   onClose: () => void
   onDraftChange: (patch: Partial<Pick<AIResult, 'draftText' | 'projectInstructionDraft'>>) => void
-  onPrimaryAction: () => void
+  onInsert: () => void
+  onReplace: () => void
+  onCreateAtoms?: () => void
   onDraftProjectInstructions: () => void
   onSaveProjectInstructions: (draft: string) => void
   onCopy: () => void
 }) {
+  const showRewriteCompare = result.taskType === 'edit_selection' && result.selectionOriginalText !== undefined
+
   return (
     <ModalBackdrop anchorRef={anchorRef} containerRef={containerRef} className="ai-result-backdrop" onClose={onClose}>
       <section
-        className={`ai-result-dialog${result.canReplaceSelection && result.selectionOriginalText !== undefined ? ' ai-result-dialog--wide' : ''}`}
+        className={`ai-result-dialog${showRewriteCompare ? ' ai-result-dialog--wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="ai-result-title"
@@ -202,16 +277,23 @@ export function AIResultDialog({
         </button>
         <div className="ai-result-dialog-scroll scroll-hover">
           <h2 id="ai-result-title">{aiResultTitle(result)}</h2>
-          {result.taskType === 'mark_writing' ? (
-            <MarkWritingFeedbackFields
+          {result.parseError && (
+            <details className="ai-result-warning">
+              <summary>Structured response failed validation</summary>
+              <p>Edit the draft, then apply it again.</p>
+              <pre>{result.parseError}</pre>
+            </details>
+          )}
+          {result.taskType === 'critique_writing' ? (
+            <CritiqueWritingFeedbackFields
               draftText={result.draftText}
               onChange={(next) => onDraftChange({ draftText: next })}
             />
-          ) : result.canReplaceSelection && result.selectionOriginalText !== undefined ? (
+          ) : showRewriteCompare ? (
             <div className="ai-rewrite-compare" aria-label="Original selection and replacement">
               <div className="ai-rewrite-compare-pane">
                 <span className="ai-rewrite-compare-heading">Original selection</span>
-                <div className="ai-rewrite-compare-readonly">{result.selectionOriginalText.trim() || '—'}</div>
+                <div className="ai-rewrite-compare-readonly">{result.selectionOriginalText?.trim() || '—'}</div>
               </div>
               <div className="ai-rewrite-compare-pane">
                 <label className="ai-draft-editor ai-rewrite-compare-draft">
@@ -234,20 +316,14 @@ export function AIResultDialog({
               />
             </label>
           )}
-          {result.taskType !== 'mark_writing' &&
-            result.taskType !== 'ai_atomise' &&
-            result.taskType !== 'atom_task' && (
-              <details className="ai-draft-preview-details" open>
-                <summary>Formatted preview</summary>
-                <div className="ai-draft-preview-panel">
-                  {result.blockPayload ? (
-                    <AIBlockFormattedPreview payload={result.blockPayload} />
-                  ) : (
-                    <AiDraftFormattedPreview text={result.draftText} />
-                  )}
-                </div>
-              </details>
-            )}
+          {result.taskType !== 'ai_atomise' && (
+            <details className="ai-draft-preview-details" open>
+              <summary>Formatted preview</summary>
+              <div className="ai-draft-preview-panel">
+                <AIResultFormattedPreview result={result} />
+              </div>
+            </details>
+          )}
           {result.projectInstructionDraft !== undefined && (
             <label className="ai-draft-editor ai-project-instruction-draft">
               <textarea
@@ -259,9 +335,24 @@ export function AIResultDialog({
           )}
         </div>
         <footer>
-          {(result.canCreateAtoms || result.canApplyBlock || result.canReplaceSelection || result.canInsert || result.taskType === 'answer_with_context' || result.taskType === 'app_help' || result.taskType === 'mark_writing') && (
-            <button type="button" className="primary" onClick={onPrimaryAction}>
-              {aiPrimaryActionLabel(result)}
+          {result.canInsertDocument && (
+            <button type="button" className="primary" onClick={onInsert}>
+              Insert
+            </button>
+          )}
+          {result.canInsertDocument && (
+            <button
+              type="button"
+              onClick={onReplace}
+              disabled={!result.canReplaceDocument}
+              title={result.canReplaceDocument ? 'Replace the selection or active block' : 'Select text or a block to replace'}
+            >
+              Replace
+            </button>
+          )}
+          {result.canCreateAtoms && onCreateAtoms && (
+            <button type="button" onClick={onCreateAtoms}>
+              Create atoms
             </button>
           )}
           {result.canUpdateProjectInstructions && selectedProjectName && result.projectInstructionDraft === undefined && (

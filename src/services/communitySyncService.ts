@@ -1,5 +1,10 @@
 import { createId, db, nowIso } from '../db'
 import type { CommunitySyncQueueItem } from '../db'
+import {
+  listCommunitySyncQueueFromRust,
+  putCommunitySyncQueueItemsToRust,
+  shouldUseRustJsonEntities,
+} from '../tauri/jsonEntitiesClient'
 
 export type CommunitySyncQueueDraft = Pick<CommunitySyncQueueItem, 'entityType' | 'entityId' | 'operation'> & {
   accountId?: string
@@ -18,7 +23,24 @@ export type CommunitySyncQueueDraft = Pick<CommunitySyncQueueItem, 'entityType' 
 export type CommunitySyncService = {
   enqueue: (draft: CommunitySyncQueueDraft) => Promise<CommunitySyncQueueItem>
   listPending: () => Promise<CommunitySyncQueueItem[]>
+  listFailed: () => Promise<CommunitySyncQueueItem[]>
+  saveItem: (item: CommunitySyncQueueItem) => Promise<void>
   markStatus: (id: string, status: CommunitySyncQueueItem['status'], lastError?: string) => Promise<CommunitySyncQueueItem | undefined>
+}
+
+async function listCommunitySyncQueue(): Promise<CommunitySyncQueueItem[]> {
+  if (shouldUseRustJsonEntities()) {
+    return (await listCommunitySyncQueueFromRust()) as CommunitySyncQueueItem[]
+  }
+  return db.communitySyncQueue.toArray()
+}
+
+async function putCommunitySyncQueueItem(item: CommunitySyncQueueItem) {
+  if (shouldUseRustJsonEntities()) {
+    await putCommunitySyncQueueItemsToRust([item])
+    return
+  }
+  await db.communitySyncQueue.put(item)
 }
 
 export const communitySyncService: CommunitySyncService = {
@@ -44,20 +66,31 @@ export const communitySyncService: CommunitySyncService = {
       createdAt: now,
       updatedAt: now,
     }
-    await db.communitySyncQueue.put(item)
+    await putCommunitySyncQueueItem(item)
     return item
   },
 
   async listPending() {
-    const rows = await db.communitySyncQueue.where('status').equals('pending').toArray()
+    const rows = await listCommunitySyncQueue()
     const now = nowIso()
     return rows
+      .filter((row) => row.status === 'pending')
       .filter((row) => !row.nextAttemptAt || row.nextAttemptAt <= now)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   },
 
+  async listFailed() {
+    const rows = await listCommunitySyncQueue()
+    return rows.filter((row) => row.status === 'failed')
+  },
+
+  async saveItem(item) {
+    await putCommunitySyncQueueItem(item)
+  },
+
   async markStatus(id, status, lastError) {
-    const row = await db.communitySyncQueue.get(id)
+    const rows = await listCommunitySyncQueue()
+    const row = rows.find((item) => item.id === id)
     if (!row) return undefined
     const next: CommunitySyncQueueItem = {
       ...row,
@@ -66,7 +99,7 @@ export const communitySyncService: CommunitySyncService = {
       lastError,
       updatedAt: nowIso(),
     }
-    await db.communitySyncQueue.put(next)
+    await putCommunitySyncQueueItem(next)
     return next
   },
 }

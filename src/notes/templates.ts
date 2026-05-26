@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { Calendar, ChartNoAxesColumn, CheckSquare, Code2, Columns3, FileText, List, ListOrdered, Minus, Quote, Radical, Table2 } from 'lucide-react'
+import { Calendar, ChartNoAxesColumn, CheckSquare, Code2, Columns3, FileText, Heading1, Heading2, Heading3, List, ListOrdered, Minus, Quote, Sparkles, Table2 } from 'lucide-react'
 import { createId, nowIso } from '../db'
 import type { JSONContent, LociBlock, LociBlockType, Note, NoteTemplateData, NoteTemplateId } from '../db'
 import {
@@ -16,10 +16,12 @@ import {
 type IconComponent = ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
 
 export type BlockPickerOption = {
+  id: string
   type: LociBlockType
   label: string
   description: string
   icon: IconComponent
+  headingLevel?: 1 | 2 | 3
 }
 
 export type NoteTemplate = {
@@ -136,14 +138,17 @@ export const noteTemplateIcons: Record<NoteTemplateId, IconComponent> = {
 }
 
 export const blockPickerOptions: BlockPickerOption[] = [
-  { type: 'checklist', label: 'Checklist', description: 'Track tasks with checkable lines.', icon: CheckSquare },
-  { type: 'numberedList', label: 'Numbered list', description: 'Ordered steps or ranked points.', icon: ListOrdered },
-  { type: 'bulletList', label: 'Bullet list', description: 'Dot-point notes and grouped ideas.', icon: List },
-  { type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
-  { type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
-  { type: 'code', label: 'Code', description: 'Add a formatted code snippet.', icon: Code2 },
-  { type: 'latex', label: 'LaTeX', description: 'Write an equation with a preview.', icon: Radical },
-  { type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
+  { id: 'heading-1', type: 'heading', label: 'Heading 1', description: 'Top-level title for a section.', icon: Heading1, headingLevel: 1 },
+  { id: 'heading-2', type: 'heading', label: 'Heading 2', description: 'Section heading.', icon: Heading2, headingLevel: 2 },
+  { id: 'heading-3', type: 'heading', label: 'Heading 3', description: 'Compact subheading.', icon: Heading3, headingLevel: 3 },
+  { id: 'checklist', type: 'checklist', label: 'Checklist', description: 'Track tasks with checkable lines.', icon: CheckSquare },
+  { id: 'numberedList', type: 'numberedList', label: 'Numbered list', description: 'Ordered steps or ranked points.', icon: ListOrdered },
+  { id: 'bulletList', type: 'bulletList', label: 'Bullet list', description: 'Dot-point notes and grouped ideas.', icon: List },
+  { id: 'table', type: 'table', label: 'Table', description: 'Editable study grid with headers.', icon: Table2 },
+  { id: 'quote', type: 'quote', label: 'Quote', description: 'Pull out a reference or idea.', icon: Quote },
+  { id: 'code', type: 'code', label: 'Code', description: 'Add a formatted code snippet.', icon: Code2 },
+  { id: 'aiBlock', type: 'aiBlock', label: 'AI-Block', description: 'Sandboxed mini-document built by AI.', icon: Sparkles },
+  { id: 'divider', type: 'divider', label: 'Divider', description: 'Separate sections.', icon: Minus },
 ]
 
 export function templateStructureLabel(id: NoteTemplateId) {

@@ -1,4 +1,8 @@
 import Dexie from 'dexie'
+import type { AIProviderId, AIProviderSettings } from './ai/aiTypes'
+import { blockTypeForNode, collectAtomIds, collectText, remapAtomIds } from './editor/documentUtils'
+
+export type { AIProviderId, AIProviderSettings } from './ai/aiTypes'
 
 export type JSONContent = {
   type?: string
@@ -27,15 +31,6 @@ export type UserProfile = {
   avatarColor: string
   createdAt: string
   updatedAt: string
-}
-
-export type AIProviderId = 'openai' | 'gemini' | 'claude' | 'kimi'
-
-export type AIProviderSettings = {
-  enabled: boolean
-  apiKey: string
-  model: string
-  baseUrl?: string
 }
 
 export type UserSettings = {
@@ -438,6 +433,7 @@ export type LociBlockType =
   | 'code'
   | 'latex'
   | 'divider'
+  | 'aiBlock'
   | 'template'
 
 export type LociBlock = {
@@ -759,7 +755,7 @@ class LociNotesDatabase extends Dexie {
 
         bodies.forEach((body) => {
           const projectId = noteProjectById.get(body.noteId) ?? '__unassigned__'
-          collectAtomIdsFromContent(body.content).forEach((atomId) => {
+          collectAtomIds(body.content).forEach((atomId) => {
             const projects = usageByAtomId.get(atomId) ?? new Set<string>()
             projects.add(projectId)
             usageByAtomId.set(atomId, projects)
@@ -793,11 +789,11 @@ class LociNotesDatabase extends Dexie {
             if (mappedId && mappedId !== atomId) idMap.set(atomId, mappedId)
           })
           if (!idMap.size) return body
-          const content = remapAtomIdsInContent(body.content, idMap)
+          const content = remapAtomIds(body.content, idMap)
           const templateData = remapAtomIdsInTemplateData(body.templateData, idMap)
           const blocks = body.blocks?.map((block) => ({
             ...block,
-            content: remapAtomIdsInContent(block.content, idMap),
+            content: remapAtomIds(block.content, idMap),
           }))
           return { ...body, content, templateData, blocks }
         })
@@ -1013,22 +1009,6 @@ export const nowIso = () => new Date().toISOString()
 export const createId = (prefix: string) =>
   `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
 
-function blockTypeForNode(node: JSONContent): LociBlockType {
-  if (node.type === 'doc') return blockTypeForNode(node.content?.[0] ?? { type: 'paragraph' })
-  if (node.type === 'heading') return 'heading'
-  if (node.type === 'taskList') return 'checklist'
-  if (node.type === 'table') return 'table'
-  if (node.type === 'lociQuote') return 'quote'
-  if (node.type === 'bulletList') return 'bulletList'
-  if (node.type === 'orderedList') return 'numberedList'
-  if (node.type === 'blockquote') return 'quote'
-  if (node.type === 'image') return 'image'
-  if (node.type === 'codeBlock') return 'code'
-  if (node.type === 'lociLatex') return 'latex'
-  if (node.type === 'horizontalRule') return 'divider'
-  return 'paragraph'
-}
-
 function contentToSeedBlocks(content?: JSONContent): LociBlock[] {
   const now = nowIso()
   const nodes = content?.type === 'doc' ? content.content ?? [] : []
@@ -1042,50 +1022,18 @@ function contentToSeedBlocks(content?: JSONContent): LociBlock[] {
   }]
 }
 
-function collectAtomIdsFromContent(content: JSONContent): string[] {
-  const attrAtomId = typeof content.attrs?.atomId === 'string' ? [content.attrs.atomId] : []
-  const markAtomIds = (content.marks ?? [])
-    .filter((mark) => mark.type === 'atom' && typeof mark.attrs?.atomId === 'string')
-    .map((mark) => mark.attrs?.atomId as string)
-  return [...attrAtomId, ...markAtomIds, ...(content.content ?? []).flatMap(collectAtomIdsFromContent)]
-}
-
-function remapAtomIdsInContent(content: JSONContent, atomIdMap: Map<string, string>): JSONContent {
-  if (!content || typeof content !== 'object') return { type: 'doc', content: [] }
-  const next: JSONContent = { ...content }
-  if (content.attrs && typeof content.attrs.atomId === 'string') {
-    const mappedAtomId = atomIdMap.get(content.attrs.atomId)
-    if (mappedAtomId) next.attrs = { ...content.attrs, atomId: mappedAtomId }
-  }
-  if (content.marks) {
-    next.marks = content.marks.map((mark) => {
-      if (mark.type !== 'atom' || typeof mark.attrs?.atomId !== 'string') return mark
-      const mappedAtomId = atomIdMap.get(mark.attrs.atomId)
-      return mappedAtomId ? { ...mark, attrs: { ...mark.attrs, atomId: mappedAtomId } } : mark
-    })
-  }
-  if (content.content) next.content = content.content.map((child) => remapAtomIdsInContent(child, atomIdMap))
-  return next
-}
-
 function remapAtomIdsInTemplateData(templateData: NoteTemplateData, atomIdMap: Map<string, string>): NoteTemplateData {
-  if (templateData.kind === 'blank') return { ...templateData, body: remapAtomIdsInContent(templateData.body, atomIdMap) }
-  if (templateData.kind === 'report') return { ...templateData, appendix: remapAtomIdsInContent(templateData.appendix, atomIdMap) }
-  if (templateData.kind === 'planner') return { ...templateData, notes: remapAtomIdsInContent(templateData.notes, atomIdMap) }
+  if (templateData.kind === 'blank') return { ...templateData, body: remapAtomIds(templateData.body, atomIdMap) }
+  if (templateData.kind === 'report') return { ...templateData, appendix: remapAtomIds(templateData.appendix, atomIdMap) }
+  if (templateData.kind === 'planner') return { ...templateData, notes: remapAtomIds(templateData.notes, atomIdMap) }
   if (templateData.kind === 'slideshow') {
     const slides = Array.isArray(templateData.slides) ? templateData.slides : []
     return {
       ...templateData,
-      slides: slides.map((slide) => ({ ...slide, body: remapAtomIdsInContent(slide.body, atomIdMap) })),
+      slides: slides.map((slide) => ({ ...slide, body: remapAtomIds(slide.body, atomIdMap) })),
     }
   }
   return templateData
-}
-
-function collectPlainText(content: JSONContent | undefined): string {
-  if (!content) return ''
-  if (typeof content.text === 'string') return content.text
-  return (content.content ?? []).map(collectPlainText).join(' ').replace(/\s+/g, ' ').trim()
 }
 
 function truncatePreview(value: string, max = 180) {
@@ -1125,7 +1073,7 @@ export function noteToMeta(note: Note): NoteMeta {
     templateId: note.templateId,
     tags: note.tags ?? [],
     updatedAt: note.updatedAt,
-    preview: truncatePreview(collectPlainText(note.content)),
+    preview: truncatePreview(collectText(note.content ?? { type: 'doc', content: [] })),
     hasMedia: mediaAssets.length > 0,
   }
 }

@@ -1,10 +1,26 @@
 import { db } from '../db'
 import type { Atom } from '../db'
+import { listAtomsFromRust, saveAtomsBatchToRust, shouldUseRustStorage } from '../tauri/workspaceClient'
 
 export const atomsRepository = {
-  listByUpdated: () => db.atoms.orderBy('updatedAt').reverse().toArray(),
+  listByUpdated: () => {
+    if (shouldUseRustStorage()) return listAtomsFromRust()
+    return db.atoms.orderBy('updatedAt').reverse().toArray()
+  },
 
-  save: (atom: Atom) => db.atoms.put(atom),
+  save: async (atom: Atom) => {
+    if (shouldUseRustStorage()) {
+      await saveAtomsBatchToRust([atom])
+      return
+    }
+    await db.atoms.put(atom)
+  },
 
-  saveMany: (atoms: Atom[]) => db.atoms.bulkPut(atoms),
+  saveMany: async (atoms: Atom[]) => {
+    if (shouldUseRustStorage()) {
+      await saveAtomsBatchToRust(atoms)
+      return
+    }
+    await db.atoms.bulkPut(atoms)
+  },
 }

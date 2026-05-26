@@ -2,7 +2,6 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
-  Brackets,
   ChevronsLeftRight,
   Columns2,
   Copy,
@@ -49,8 +48,7 @@ export type FormatSideControlsProps = ImageControlsProps & {
   onTableCommand: (command: TableCommand) => void
   onAddListLine: () => void
   onCopyCode: () => void
-  onEditLatex: () => void
-  onCopyLatex: () => void
+  onCopyMath: () => void
   onToggleQuoteAuthor: () => void
 }
 
@@ -62,8 +60,7 @@ export function FormatSideControls({
   onTableCommand,
   onAddListLine,
   onCopyCode,
-  onEditLatex,
-  onCopyLatex,
+  onCopyMath,
   onToggleQuoteAuthor,
   onFitImage,
   onToggleCrop,
@@ -95,11 +92,8 @@ export function FormatSideControls({
       {type === 'code' && (
         <button type="button" title="Copy code" aria-label="Copy code block" onClick={onCopyCode}><Copy aria-hidden /></button>
       )}
-      {type === 'latex' && (
-        <>
-          <button type="button" title="Edit equation" aria-label="Edit LaTeX equation source" onClick={onEditLatex}><Brackets aria-hidden /></button>
-          <button type="button" title="Copy equation" aria-label="Copy LaTeX equation" onClick={onCopyLatex}><Copy aria-hidden /></button>
-        </>
+      {type === 'math' && (
+        <button type="button" title="Copy equation" aria-label="Copy equation LaTeX" onClick={onCopyMath}><Copy aria-hidden /></button>
       )}
       {type === 'quote' && (
         <button type="button" title="Toggle author" aria-label="Toggle quote author" onClick={onToggleQuoteAuthor}><Quote aria-hidden /></button>
@@ -110,16 +104,12 @@ export function FormatSideControls({
           <button type="button" aria-label={imageCropEditing ? 'Finish cropping image' : 'Crop image'} onClick={onToggleCrop}>
             <Crop aria-hidden />
           </button>
-          <button className="format-side-control-wide" type="button" aria-label="Cycle crop aspect ratio" onClick={onCycleAspect}><span aria-hidden>Aspect</span></button>
-          {imageCropEditing && (
-            <>
-              <button type="button" aria-label="Zoom crop out" onClick={onZoomOut}><span aria-hidden>Z-</span></button>
-              <button type="button" aria-label="Zoom crop in" onClick={onZoomIn}><span aria-hidden>Z+</span></button>
-            </>
-          )}
-          <button type="button" aria-label="Align image left" onClick={() => onAlignImage('left')}><span aria-hidden>L</span></button>
-          <button type="button" aria-label="Align image center" onClick={() => onAlignImage('center')}><span aria-hidden>C</span></button>
-          <button type="button" aria-label="Align image right" onClick={() => onAlignImage('right')}><span aria-hidden>R</span></button>
+          <button type="button" title="Cycle aspect ratio" aria-label="Cycle image aspect ratio" onClick={onCycleAspect}><Columns2 aria-hidden /></button>
+          <button type="button" title="Zoom out" aria-label="Zoom image out" onClick={onZoomOut}>-</button>
+          <button type="button" title="Zoom in" aria-label="Zoom image in" onClick={onZoomIn}>+</button>
+          <button type="button" title="Align left" aria-label="Align image left" onClick={() => onAlignImage('left')}><AlignLeft aria-hidden /></button>
+          <button type="button" title="Align center" aria-label="Align image center" onClick={() => onAlignImage('center')}><AlignCenter aria-hidden /></button>
+          <button type="button" title="Align right" aria-label="Align image right" onClick={() => onAlignImage('right')}><AlignRight aria-hidden /></button>
         </>
       )}
     </div>

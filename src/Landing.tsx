@@ -137,7 +137,7 @@ function ProductDemo() {
             </button>
             <button type="button">Summarise</button>
             <button type="button">Atomise</button>
-            <button type="button">Mark</button>
+            <button type="button">Critique</button>
           </div>
         </div>
       </div>

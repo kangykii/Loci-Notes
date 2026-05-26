@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, CSSProperties, KeyboardEvent, MouseEvent, RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, FileText, Highlighter, History, MoreHorizontal, Sparkles, X } from 'lucide-react'
+import { Download, FileText, Highlighter, History, MoreHorizontal, SendHorizontal, Sparkles, X } from 'lucide-react'
 import type { AICommandId } from '../../ai/aiTasks'
 
 type AICommandMeta = {
   label: string
+  description: string
 }
 
 type HighlighterColorOption = {
@@ -15,15 +16,17 @@ type HighlighterColorOption = {
 
 type EditorBottomToolbarProps = {
   wrapRef: RefObject<HTMLDivElement | null>
-  activePanel: 'more' | 'format' | null
+  activePanel: 'more' | null
   atomUnderlinesVisible: boolean
   editorFocusMode: boolean
   editorAuthenticWriterMode: boolean
   aiPromptFocused: boolean
   aiRunning: boolean
+  aiRequestStatus: 'idle' | 'running' | 'succeeded' | 'failed'
   activeAICommand: AICommandId
   visibleAICommand: AICommandMeta | null | undefined
   aiPrompt: string
+  aiPromptCanSubmit: boolean
   aiPromptInputRef: RefObject<HTMLInputElement | null>
   aiPromptHintVisible: boolean
   aiPromptHint: string
@@ -42,13 +45,13 @@ type EditorBottomToolbarProps = {
   onToggleHighlight: () => void
   onOpenHighlightPalette: () => void
   onSelectHighlightColor: (color: string) => void
-  onToggleFormat: () => void
   onToggleMore: () => void
   onPromptMouseDown: () => void
   onPromptFocus: () => void
   onPromptBlur: () => void
   onPromptChange: (event: ChangeEvent<HTMLInputElement>) => void
   onPromptKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void
+  onPromptSubmit: () => void
   onDismissPromptHint: (event: MouseEvent<HTMLButtonElement>) => void
 }
 
@@ -60,9 +63,11 @@ export function EditorBottomToolbar({
   editorAuthenticWriterMode,
   aiPromptFocused,
   aiRunning,
+  aiRequestStatus,
   activeAICommand,
   visibleAICommand,
   aiPrompt,
+  aiPromptCanSubmit,
   aiPromptInputRef,
   aiPromptHintVisible,
   aiPromptHint,
@@ -81,13 +86,13 @@ export function EditorBottomToolbar({
   onToggleHighlight,
   onOpenHighlightPalette,
   onSelectHighlightColor,
-  onToggleFormat,
   onToggleMore,
   onPromptMouseDown,
   onPromptFocus,
   onPromptBlur,
   onPromptChange,
   onPromptKeyDown,
+  onPromptSubmit,
   onDismissPromptHint,
 }: EditorBottomToolbarProps) {
   const highlightButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -209,15 +214,24 @@ export function EditorBottomToolbar({
         aria-label="Editor tools"
       >
         <div className="toolbar-zone toolbar-zone-left">
-          <button type="button" className="toolbar-text-button toolbar-text-button--primary" onClick={onAtomise}>Atomise</button>
-          <span className="toolbar-divider" aria-hidden />
-          <button type="button" className="toolbar-text-button toolbar-text-button--muted" onClick={onToggleFormat}>Format</button>
+          <button
+            type="button"
+            className="toolbar-text-button toolbar-text-button--primary"
+            onClick={onAtomise}
+            title="Create or edit an atom from the selection (manual, not AI)"
+          >
+            Atomise
+          </button>
         </div>
         <span className="toolbar-structural-divider" aria-hidden />
         <label className={`floating-ai-prompt ${aiPromptFocused ? 'is-open' : ''}`} onMouseDown={onPromptMouseDown}>
           <Sparkles size={16} aria-hidden />
           {visibleAICommand && (
-            <span className={`ai-mode-pill ai-mode-pill--${activeAICommand}`}>
+            <span
+              className={`ai-mode-pill ai-mode-pill--${activeAICommand}`}
+              title={visibleAICommand.description}
+              aria-label={`${visibleAICommand.label}: ${visibleAICommand.description}`}
+            >
               <span aria-hidden />
               {visibleAICommand.label}
             </span>
@@ -229,9 +243,25 @@ export function EditorBottomToolbar({
             onBlur={onPromptBlur}
             onChange={onPromptChange}
             onKeyDown={onPromptKeyDown}
-            disabled={aiRunning}
-            placeholder={aiRunning ? 'Working...' : 'Ask AI...'}
+            readOnly={aiRunning}
+            placeholder={aiRequestStatus === 'running' ? 'Working in background...' : 'Ask AI...'}
           />
+          {aiPromptFocused && (
+            <button
+              type="button"
+              className="floating-ai-send"
+              aria-label="Send AI prompt"
+              title="Send AI prompt"
+              disabled={!aiPromptCanSubmit || aiRunning}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                event.preventDefault()
+                onPromptSubmit()
+              }}
+            >
+              <SendHorizontal size={15} aria-hidden />
+            </button>
+          )}
           {aiPromptHintVisible && aiPromptHint && (
             <span className="ai-prompt-hint">
               {aiPromptHint}

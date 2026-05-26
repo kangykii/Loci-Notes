@@ -1,3 +1,5 @@
+@import 'katex/dist/katex.min.css';
+
 .note-editor ul[data-type="taskList"] {
   list-style: none;
   width: calc(100% - 64px);
@@ -147,11 +149,18 @@
 .note-editor .column-resize-handle {
   background: #1A1A1A;
   bottom: -1px;
-  pointer-events: none;
+  pointer-events: auto;
   position: absolute;
   right: -2px;
   top: 0;
-  width: 3px;
+  width: 4px;
+  z-index: 2;
+  cursor: col-resize;
+}
+
+.note-editor.resize-cursor,
+.note-editor.resize-cursor * {
+  cursor: col-resize !important;
 }
 
 .note-editor .loci-quote {
@@ -205,6 +214,52 @@
   color: #F4F4F2;
   padding: 14px 16px;
   box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+}
+
+.note-editor .loci-math-inline {
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.note-editor .loci-math-inline-katex {
+  pointer-events: none;
+  user-select: none;
+}
+
+.note-editor .loci-math-inline-source {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+  caret-color: var(--text-primary, #1a1a1a);
+  background: transparent;
+  white-space: pre;
+}
+
+.note-editor .loci-math-inline--display {
+  display: inline-block;
+  margin: 0.35em 0;
+  width: 100%;
+  text-align: center;
+}
+
+.note-editor .loci-math-inline-katex .katex {
+  font-size: 1.05em;
+}
+
+.note-editor .loci-math-inline--display .loci-math-inline-katex .katex {
+  font-size: 1.2em;
+}
+
+.note-editor .loci-math-error,
+.note-editor .loci-math-inline-katex .katex-error {
+  color: #b42318;
+}
+
+.note-editor .loci-latex-preview .katex,
+.note-editor .loci-math-block-preview .katex {
+  font-size: 1.35em;
 }
 
 .note-editor pre code {
@@ -261,7 +316,8 @@
   box-shadow: 0 0 0 3px rgba(244, 244, 242, 0.08);
 }
 
-.note-editor .loci-latex-preview {
+.note-editor .loci-latex-preview,
+.note-editor .loci-math-block-preview {
   min-height: 48px;
   display: flex;
   align-items: center;
@@ -269,15 +325,117 @@
   border-radius: 8px;
   background: rgba(244, 244, 242, 0.95);
   color: #1A1A1A;
-  font-family: "Cambria Math", "Times New Roman", serif;
-  font-size: 24px;
   line-height: 1.45;
   text-align: center;
-  overflow-wrap: anywhere;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 8px 12px;
 }
 
 .note-editor .loci-latex.ProseMirror-selectednode {
   outline: 2px solid rgba(26, 26, 26, 0.28);
+  outline-offset: 3px;
+}
+
+.note-editor .loci-ai-block {
+  display: grid;
+  gap: 0;
+  width: calc(100% - 64px);
+  max-width: calc(100% - 64px);
+  margin: 8px auto 22px;
+  border: 1px solid rgba(46, 52, 64, 0.16);
+  border-radius: 10px;
+  background: #F4F4F2;
+  color: #1A1A1A;
+  padding: 16px;
+  box-shadow: 0 12px 30px rgba(26, 26, 26, 0.08);
+}
+
+.note-editor .loci-ai-block-shell {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.note-editor .loci-ai-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.note-editor .loci-ai-block-label {
+  color: #5A5260;
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.note-editor .loci-ai-block-editbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.note-editor .loci-ai-block-editbar button,
+.note-editor .loci-ai-block-artifact button {
+  min-height: 30px;
+  border: 1px solid rgba(46, 52, 64, 0.14);
+  border-radius: 7px;
+  background: rgba(46, 52, 64, 0.06);
+  color: #1A1A1A;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.note-editor .loci-ai-block-editbar button:hover,
+.note-editor .loci-ai-block-artifact button:hover {
+  background: rgba(46, 52, 64, 0.1);
+}
+
+.note-editor .loci-ai-block-artifact {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.note-editor .loci-ai-block-artifact strong {
+  color: #1A1A1A;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.note-editor .loci-ai-block-artifact p {
+  margin: 0;
+  color: #2E3440;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.note-editor .loci-ai-block-artifact button {
+  justify-self: start;
+}
+
+.note-editor .loci-ai-block-frame {
+  width: 100%;
+  min-height: 80px;
+  border: 0;
+  border-radius: 8px;
+  background: #FFFFFF;
+  overflow: hidden;
+}
+
+.note-editor .loci-ai-block.is-invalid {
+  border-color: rgba(62, 50, 32, 0.22);
+  background: rgba(244, 244, 242, 0.72);
+}
+
+.note-editor .loci-ai-block.ProseMirror-selectednode {
+  outline: 2px solid rgba(26, 26, 26, 0.24);
   outline-offset: 3px;
 }
 

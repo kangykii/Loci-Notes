@@ -1,4 +1,8 @@
 import { ensureSeedData } from '../db'
+import { listNoteMetasFromRust, shouldUseRustNotes } from '../tauri/notesClient'
+import { ensureRustBackendReady } from '../tauri/legacyExport'
+import { seedRustWorkspaceIfEmpty, shouldUseRustStorage } from '../tauri/workspaceClient'
+import { workspaceStore } from '../workspace/workspaceStore'
 import { atomsStore } from './atomsStore'
 import { flashcardSetsStore } from './flashcardSetsStore'
 import { notesStore } from './notesStore'
@@ -30,15 +34,29 @@ async function loadPart<T>(area: string, fallback: T, loader: () => Promise<T>, 
 
 export async function loadLocalAppData() {
   const loadIssues: LocalAppDataLoadIssue[] = []
-  try {
-    await ensureSeedData()
-  } catch (error) {
-    console.error('Could not prepare seed data', error)
-    loadIssues.push(loadIssue('starter workspace', error))
+
+  if (shouldUseRustStorage()) {
+    try {
+      await ensureRustBackendReady()
+      await seedRustWorkspaceIfEmpty()
+    } catch (error) {
+      console.error('Could not prepare Rust workspace storage', error)
+      loadIssues.push(loadIssue('rust storage', error))
+    }
+  } else {
+    try {
+      await ensureSeedData()
+    } catch (error) {
+      console.error('Could not prepare seed data', error)
+      loadIssues.push(loadIssue('starter workspace', error))
+    }
   }
 
-  const [notes, atoms, flashcardSets, projects, profile, settings] = await Promise.all([
+  const [notes, noteMetas, atoms, flashcardSets, projects, profile, settings] = await Promise.all([
     loadPart('notes', [], notesStore.listByUpdated, loadIssues),
+    loadPart('note metas', [], () => (
+      shouldUseRustNotes() ? listNoteMetasFromRust() : notesStore.listMetasByUpdated()
+    ), loadIssues),
     loadPart('atoms', [], atomsStore.listByUpdated, loadIssues),
     loadPart('flashcard sets', [], flashcardSetsStore.listByUpdated, loadIssues),
     loadPart('projects', [], projectsStore.listByName, loadIssues),
@@ -46,8 +64,12 @@ export async function loadLocalAppData() {
     loadPart('settings', undefined, settingsStore.getLocal, loadIssues),
   ])
 
+  workspaceStore.setNotes(notes)
+  if (noteMetas.length) workspaceStore.setNoteMetas(noteMetas)
+
   return {
     notes,
+    noteMetas,
     atoms,
     flashcardSets,
     projects,

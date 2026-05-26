@@ -1,5 +1,14 @@
+import type { ZodType } from 'zod'
+
 export type AIProviderId = 'openai' | 'gemini' | 'claude' | 'kimi'
 export type AITransportMode = 'directByok' | 'local' | 'gateway'
+export type AIResponseFormat = 'text' | 'json'
+export type AIJsonSchema = Record<string, unknown>
+export type AIStructuredOutput = {
+  name: string
+  schema: AIJsonSchema
+  zodSchema: ZodType
+}
 
 export type AIProviderSettings = {
   enabled: boolean
@@ -31,6 +40,8 @@ export type AITextRequest = {
   taskInstruction: string
   userContent: string
   promptCacheKey?: string
+  responseFormat?: AIResponseFormat
+  structuredOutput?: AIStructuredOutput
   temperature?: number
   maxTokens?: number
   contextManifest?: AIContextManifest
@@ -50,6 +61,8 @@ export type GatewayAIRequest = {
   taskInstruction: string
   userContent: string
   promptCacheKey?: string
+  responseFormat?: AIResponseFormat
+  structuredOutput?: AIStructuredOutput
   contextManifest?: AIContextManifest
 }
 

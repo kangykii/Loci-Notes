@@ -36,7 +36,7 @@ const TYPING_LERP = 0.68
 const TYPING_MAX_LAG = 14
 const TYPING_GLIDE_MS = 110
 const STRUCTURED_CARET_SELECTOR = [
-  '[data-loci-latex]',
+  '.loci-math-inline',
   '.loci-image-frame',
 ].join(',')
 
@@ -67,7 +67,7 @@ function measureCaret({
   const editorFocused = activeElement === editor.view.dom || Boolean(activeElement && editor.view.dom.contains(activeElement))
   const selection = window.getSelection()
   if (editor.isDestroyed || !editorFocused || selection?.isCollapsed === false) return null
-  if (activeElement instanceof HTMLElement && activeElement.closest('.loci-latex-source, textarea, input')) return null
+  if (activeElement instanceof HTMLElement && activeElement.closest('.loci-math-inline, textarea, input')) return null
 
   const anchorElement = selection?.anchorNode instanceof Element
     ? selection.anchorNode
@@ -145,6 +145,8 @@ function useSmoothCaret({
   const composingRef = useRef(false)
   const pointerSelectingRef = useRef(false)
   const typingGlideUntilRef = useRef(0)
+  const measureFrameRef = useRef<number | null>(null)
+  const commitFrameRef = useRef<number | null>(null)
   const [state, setState] = useState<SmoothCaretState>(EMPTY_CARET)
   const [canAnimate, setCanAnimate] = useState(() => (typeof window === 'undefined' ? false : supportsSmoothMotion()))
 
@@ -159,10 +161,12 @@ function useSmoothCaret({
 
   useEffect(() => () => {
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+    if (measureFrameRef.current !== null) cancelAnimationFrame(measureFrameRef.current)
+    if (commitFrameRef.current !== null) cancelAnimationFrame(commitFrameRef.current)
   }, [])
 
   useEffect(() => {
-    if (!editor || !shell || !canAnimate) {
+    if (!editor || !shell || !canAnimate || !focusMode) {
       targetRef.current = null
       visibleRef.current = false
       const frame = requestAnimationFrame(() => {
@@ -228,12 +232,18 @@ function useSmoothCaret({
 
       visualRef.current = closeEnough(next, target) ? targetRect(target) : next
       visibleRef.current = true
-      setState((currentState) => ({
-        ...currentState,
-        ...visualRef.current,
-        mode: target.mode,
-        visible: true,
-      }))
+      if (commitFrameRef.current === null) {
+        commitFrameRef.current = requestAnimationFrame(() => {
+          commitFrameRef.current = null
+          const liveTarget = targetRef.current
+          if (!liveTarget || !visibleRef.current) return
+          setState({
+            ...visualRef.current,
+            mode: liveTarget.mode,
+            visible: true,
+          })
+        })
+      }
 
       if (closeEnough(visualRef.current, target)) {
         frameRef.current = null
@@ -266,14 +276,16 @@ function useSmoothCaret({
     }
 
     const scheduleMeasure = (typing = false) => {
-      requestAnimationFrame(() => measure(typing))
+      if (measureFrameRef.current !== null) return
+      measureFrameRef.current = requestAnimationFrame(() => {
+        measureFrameRef.current = null
+        measure(typing)
+      })
     }
 
     const handleBeforeInput = (event: InputEvent) => {
+      if (isTypingInput(event)) typingGlideUntilRef.current = performance.now() + TYPING_GLIDE_MS
       scheduleMeasure(isTypingInput(event))
-    }
-    const handleInput = () => {
-      measure(true)
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key.length === 1 || event.key === 'Backspace' || event.key === 'Delete') {
@@ -298,11 +310,13 @@ function useSmoothCaret({
       typingGlideUntilRef.current = performance.now() + TYPING_GLIDE_MS
       scheduleMeasure(true)
     }
-    const handleNavigate = () => scheduleMeasure(performance.now() < typingGlideUntilRef.current)
+    const handleNavigate = () => {
+      if (performance.now() < typingGlideUntilRef.current) return
+      scheduleMeasure(false)
+    }
 
     const dom = editor.view.dom
     dom.addEventListener('beforeinput', handleBeforeInput)
-    dom.addEventListener('input', handleInput)
     dom.addEventListener('keydown', handleKeyDown)
     dom.addEventListener('keyup', handleKeyUp)
     dom.addEventListener('click', handleNavigate)
@@ -317,13 +331,11 @@ function useSmoothCaret({
     window.addEventListener('resize', handleNavigate)
     editor.on('focus', handleNavigate)
     editor.on('blur', hideCaret)
-    editor.on('transaction', handleNavigate)
     editor.on('selectionUpdate', handleNavigate)
     measure(true)
 
     return () => {
       dom.removeEventListener('beforeinput', handleBeforeInput)
-      dom.removeEventListener('input', handleInput)
       dom.removeEventListener('keydown', handleKeyDown)
       dom.removeEventListener('keyup', handleKeyUp)
       dom.removeEventListener('click', handleNavigate)
@@ -338,19 +350,26 @@ function useSmoothCaret({
       window.removeEventListener('resize', handleNavigate)
       editor.off('focus', handleNavigate)
       editor.off('blur', hideCaret)
-      editor.off('transaction', handleNavigate)
       editor.off('selectionUpdate', handleNavigate)
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current)
         frameRef.current = null
+      }
+      if (measureFrameRef.current !== null) {
+        cancelAnimationFrame(measureFrameRef.current)
+        measureFrameRef.current = null
+      }
+      if (commitFrameRef.current !== null) {
+        cancelAnimationFrame(commitFrameRef.current)
+        commitFrameRef.current = null
       }
     }
   }, [canAnimate, editor, focusMode, scrollContainer, shell])
 
   return useMemo(() => ({
     ...state,
-    enabled: canAnimate,
-  }), [canAnimate, state])
+    enabled: canAnimate && focusMode,
+  }), [canAnimate, focusMode, state])
 }
 
 type SmoothCaretProps = {

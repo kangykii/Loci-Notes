@@ -1,4 +1,14 @@
 import type { Table } from 'dexie'
+
+import {
+  deleteNoteFromRust,
+  getNoteBodyFromRust,
+  listNoteMetasFromRust,
+  listNotesFromRust,
+  repairSplitNoteStorageFromRust,
+  saveNotesBatchToRust,
+  shouldUseRustNotes,
+} from '../tauri/notesClient'
 import { db, noteBodyStore, noteFromMetaAndBody, noteToBody, noteToMediaAssets, noteToMeta } from '../db'
 import type { Note, NoteBody, NoteMeta } from '../db'
 
@@ -18,6 +28,10 @@ export type LocalNoteStorageRepairResult = {
 }
 
 export async function repairSplitNoteStorage(): Promise<LocalNoteStorageRepairResult> {
+  if (shouldUseRustNotes()) {
+    return repairSplitNoteStorageFromRust()
+  }
+
   const errors: string[] = []
   const noteBodyPrimaryKey = db.noteBodies.schema.primKey.keyPath
   if (noteBodyPrimaryKey !== 'noteId') {
@@ -81,6 +95,10 @@ export async function repairSplitNoteStorage(): Promise<LocalNoteStorageRepairRe
 
 export const notesRepository = {
   async listByUpdated() {
+    if (shouldUseRustNotes()) {
+      return listNotesFromRust()
+    }
+
     await repairSplitNoteStorage()
     const [notes, metas] = await Promise.all([
       db.notes.orderBy('updatedAt').reverse().toArray(),
@@ -100,38 +118,59 @@ export const notesRepository = {
     return [...notes, ...hydrated].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   },
 
-  listMetasByUpdated: () => db.noteMetas.orderBy('updatedAt').reverse().toArray(),
+  listMetasByUpdated: () => {
+    if (shouldUseRustNotes()) return listNoteMetasFromRust()
+    return db.noteMetas.orderBy('updatedAt').reverse().toArray()
+  },
 
-  getBody: (noteId: string) => noteBodyStore.getNoteBody(noteId),
+  getBody: (noteId: string) => {
+    if (shouldUseRustNotes()) return getNoteBodyFromRust(noteId)
+    return noteBodyStore.getNoteBody(noteId)
+  },
 
-  save: (note: Note) =>
-    db.transaction('rw', noteWriteTables, async () => {
+  save: async (note: Note) => {
+    if (shouldUseRustNotes()) {
+      await saveNotesBatchToRust([note])
+      return
+    }
+    await db.transaction('rw', noteWriteTables, async () => {
       await notesTable.put(note)
       await db.noteMetas.put(noteToMeta(note))
       await noteBodyStore.putNoteBody(note)
       await db.mediaAssets.where('noteId').equals(note.id).delete()
       const assets = noteToMediaAssets(note)
       if (assets.length) await db.mediaAssets.bulkPut(assets)
-    }),
+    })
+  },
 
-  saveMany: (notes: Note[]) =>
-    db.transaction('rw', noteWriteTables, async () => {
+  saveMany: async (notes: Note[]) => {
+    if (shouldUseRustNotes()) {
+      await saveNotesBatchToRust(notes)
+      return
+    }
+    await db.transaction('rw', noteWriteTables, async () => {
       await notesTable.bulkPut(notes)
       await db.noteMetas.bulkPut(notes.map(noteToMeta))
       await noteBodyStore.bulkPutNoteBodies(notes)
       await Promise.all(notes.map((note) => db.mediaAssets.where('noteId').equals(note.id).delete()))
       const assets = notes.flatMap(noteToMediaAssets)
       if (assets.length) await db.mediaAssets.bulkPut(assets)
-    }),
+    })
+  },
 
-  deleteWithSnapshots: (noteId: string) =>
-    db.transaction('rw', noteDeleteTables, async () => {
+  deleteWithSnapshots: async (noteId: string) => {
+    if (shouldUseRustNotes()) {
+      await deleteNoteFromRust(noteId)
+      return
+    }
+    await db.transaction('rw', noteDeleteTables, async () => {
       await db.notes.delete(noteId)
       await db.noteMetas.delete(noteId)
       await noteBodyStore.deleteNoteBody(noteId)
       await db.mediaAssets.where('noteId').equals(noteId).delete()
       await db.noteSnapshots.where('noteId').equals(noteId).delete()
-    }),
+    })
+  },
 
   repairLocalStorage: repairSplitNoteStorage,
 }

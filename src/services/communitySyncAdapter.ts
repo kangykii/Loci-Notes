@@ -18,6 +18,7 @@ import type {
   SharedNoteSnapshot,
 } from '../db'
 import { pb } from '../integrations/pocketbase/client'
+import { communitySyncService } from './communitySyncService'
 import { validateRemoteSyncRecord } from './remoteRecordValidation'
 
 export type CommunitySyncPushResult = {
@@ -297,7 +298,7 @@ async function pushRemoteRecord(target: SyncTarget, queueItem: CommunitySyncQueu
 }
 
 async function markQueueSynced(queueItem: CommunitySyncQueueItem) {
-  await db.communitySyncQueue.put({
+  await communitySyncService.saveItem({
     ...queueItem,
     status: 'synced',
     lastError: undefined,
@@ -308,7 +309,7 @@ async function markQueueSynced(queueItem: CommunitySyncQueueItem) {
 
 async function markQueueFailure(queueItem: CommunitySyncQueueItem, error: unknown) {
   const attempts = queueItem.attempts + 1
-  await db.communitySyncQueue.put({
+  await communitySyncService.saveItem({
     ...queueItem,
     status: attempts >= MAX_SYNC_ATTEMPTS ? 'failed' : 'pending',
     attempts,
@@ -339,11 +340,7 @@ async function pushQueueItem(queueItem: CommunitySyncQueueItem): Promise<Communi
 
 export async function flushPendingSyncQueue() {
   assertAuthenticatedForSync()
-  const queue = await db.communitySyncQueue.where('status').equals('pending').toArray()
-  const now = nowIso()
-  const readyQueue = queue
-    .filter((item) => !item.nextAttemptAt || item.nextAttemptAt <= now)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const readyQueue = await communitySyncService.listPending()
   const results: CommunitySyncPushResult[] = []
   for (const item of readyQueue) {
     results.push(await pushQueueItem(item))

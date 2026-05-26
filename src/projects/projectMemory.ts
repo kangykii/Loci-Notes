@@ -9,7 +9,7 @@ export const PROJECT_MEMORY_HEADINGS: Array<{ key: keyof ProjectMemorySections; 
   { key: 'summary', label: 'Summary' },
   { key: 'instructions', label: 'Instructions' },
   { key: 'writingStyle', label: 'Writing style' },
-  { key: 'markingCriteria', label: 'Marking criteria' },
+  { key: 'markingCriteria', label: 'Critique criteria' },
 ]
 
 export const PROJECT_MEMORY_FIELD_META: Record<
@@ -32,9 +32,9 @@ export const PROJECT_MEMORY_FIELD_META: Record<
     ariaLabel: 'Project writing style',
   },
   markingCriteria: {
-    hint: 'Rubric used only by Mark writing.',
+    hint: 'Rubric used only by Critique.',
     placeholder: 'How should writing be assessed?',
-    ariaLabel: 'Project marking criteria',
+    ariaLabel: 'Project critique criteria',
   },
 }
 
@@ -46,6 +46,7 @@ export function parseProjectMemory(description = ''): ProjectMemorySections {
     markingCriteria: '',
   }
   const headingByLabel = new Map(PROJECT_MEMORY_HEADINGS.map((item) => [item.label.toLowerCase(), item.key]))
+  headingByLabel.set('marking criteria', 'markingCriteria')
   let current: keyof ProjectMemorySections | null = null
   const unsectioned: string[] = []
 

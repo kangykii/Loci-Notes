@@ -1,3 +1,5 @@
+import OpenAI from 'openai'
+import { zodTextFormat } from 'openai/helpers/zod'
 import { CLAUDE_REQUIRED_MAX_TOKENS } from './providers'
 import type { AITextRequest, AITextResponse, AIUsage } from './aiTypes'
 
@@ -8,6 +10,12 @@ function extractOpenAIText(data: { output_text?: string; output?: Array<{ conten
     .map((part) => part.text ?? '')
     .join('')
     .trim()
+}
+
+function extractClaudeText(data: { content?: Array<{ type?: string; text?: string; input?: unknown }> }) {
+  const toolInput = (data.content ?? []).find((part) => part.type === 'tool_use' && part.input !== undefined)?.input
+  if (toolInput !== undefined) return JSON.stringify(toolInput)
+  return (data.content ?? []).map((part) => part.text ?? '').join('').trim()
 }
 
 function extractUsage(data: {
@@ -44,6 +52,25 @@ function extractUsage(data: {
   }
 }
 
+function openAISupportsTemperature(model: string) {
+  return !/^gpt-5(?:\.|$|-)/i.test(model.trim())
+}
+
+function openAITextFormat(responseFormat: AITextRequest['responseFormat']) {
+  if (responseFormat !== 'json') return {}
+  return {
+    text: {
+      format: {
+        type: 'json_object',
+      },
+    },
+  }
+}
+
+function jsonTaskInstruction(taskInstruction: string) {
+  return `${taskInstruction}\n\nReturn valid JSON only. Do not wrap it in markdown fences or include explanatory text.`
+}
+
 export async function requestDirectAIText({
   providerId,
   provider,
@@ -51,6 +78,8 @@ export async function requestDirectAIText({
   taskInstruction,
   userContent,
   promptCacheKey,
+  responseFormat,
+  structuredOutput,
   temperature,
   maxTokens,
   signal,
@@ -60,9 +89,11 @@ export async function requestDirectAIText({
   const generationConfig = {
     ...(temperature !== undefined ? { temperature } : {}),
     ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+    ...(responseFormat === 'json' ? { responseMimeType: 'application/json' } : {}),
+    ...(structuredOutput ? { responseSchema: structuredOutput.schema } : {}),
   }
   const openAIOptions = {
-    ...(temperature !== undefined ? { temperature } : {}),
+    ...(temperature !== undefined && openAISupportsTemperature(provider.model) ? { temperature } : {}),
     ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
   }
   const chatOptions = {
@@ -90,25 +121,52 @@ export async function requestDirectAIText({
     usage = extractUsage(data)
   } else if (providerId === 'openai') {
     const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
-    const response = await fetch(`${baseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal,
-      body: JSON.stringify({
+    const openAIInstruction = responseFormat === 'json' ? jsonTaskInstruction(taskInstruction) : taskInstruction
+    const openAIInput = responseFormat === 'json' ? `Return JSON for this request.\n\n${userContent}` : userContent
+    if (structuredOutput) {
+      const client = new OpenAI({
+        apiKey,
+        baseURL: baseUrl,
+        dangerouslyAllowBrowser: true,
+      })
+      const response = await client.responses.parse({
         model: provider.model,
-        instructions: taskInstruction,
-        input: userContent,
+        instructions: openAIInstruction,
+        input: openAIInput,
         prompt_cache_key: promptCacheKey ?? 'loci-notes-local',
+        text: {
+          format: zodTextFormat(structuredOutput.zodSchema, structuredOutput.name),
+        },
         ...openAIOptions,
-      }),
-    })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
-    responseText = extractOpenAIText(data)
-    usage = extractUsage(data)
+      }, { signal })
+      if (response.output_parsed === null || response.output_parsed === undefined) {
+        responseText = response.output_text?.trim()
+      } else {
+        responseText = JSON.stringify(response.output_parsed)
+      }
+      usage = extractUsage(response)
+    } else {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal,
+        body: JSON.stringify({
+          model: provider.model,
+          instructions: openAIInstruction,
+          input: openAIInput,
+          prompt_cache_key: promptCacheKey ?? 'loci-notes-local',
+          ...openAITextFormat(responseFormat),
+          ...openAIOptions,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
+      responseText = extractOpenAIText(data)
+      usage = extractUsage(data)
+    }
   } else {
     const baseUrl = (provider.baseUrl || providerMeta.baseUrl).replace(/\/$/, '')
     const headers: Record<string, string> = {
@@ -119,7 +177,7 @@ export async function requestDirectAIText({
       model: provider.model,
       ...chatOptions,
       messages: [
-        { role: 'system', content: taskInstruction },
+        { role: 'system', content: responseFormat === 'json' ? jsonTaskInstruction(taskInstruction) : taskInstruction },
         { role: 'user', content: userContent },
       ],
     }
@@ -130,8 +188,16 @@ export async function requestDirectAIText({
       headers['anthropic-version'] = '2023-06-01'
       delete headers.Authorization
       body.max_tokens = maxTokens ?? CLAUDE_REQUIRED_MAX_TOKENS
-      body.system = taskInstruction
+      body.system = responseFormat === 'json' ? jsonTaskInstruction(taskInstruction) : taskInstruction
       body.messages = [{ role: 'user', content: userContent }]
+      if (structuredOutput) {
+        body.tools = [{
+          name: structuredOutput.name,
+          description: 'Return the structured JSON result for this Loci Notes task.',
+          input_schema: structuredOutput.schema,
+        }]
+        body.tool_choice = { type: 'tool', name: structuredOutput.name }
+      }
     }
     const response = await fetch(url, {
       method: 'POST',
@@ -143,7 +209,7 @@ export async function requestDirectAIText({
     if (!response.ok) throw new Error(data?.error?.message ?? `${providerMeta.name} request failed`)
     responseText =
       providerId === 'claude'
-        ? data?.content?.map((part: { text?: string }) => part.text ?? '').join('').trim()
+        ? extractClaudeText(data)
         : data?.choices?.[0]?.message?.content?.trim()
     usage = extractUsage(data)
   }

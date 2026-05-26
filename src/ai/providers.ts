@@ -8,14 +8,14 @@ export const aiProviders: ProviderMeta[] = [
     id: 'openai',
     name: 'OpenAI',
     description: 'General writing, reasoning, and editing support.',
-    defaultModel: 'gpt-5.2',
+    defaultModel: 'gpt-5.5',
     baseUrl: 'https://api.openai.com/v1',
   },
   {
     id: 'gemini',
     name: 'Google Gemini',
     description: 'Google hosted Gemini text generation.',
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: 'gemini-3-flash-preview',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     baseUrlLocked: true,
   },
@@ -23,7 +23,7 @@ export const aiProviders: ProviderMeta[] = [
     id: 'claude',
     name: 'Claude',
     description: 'Anthropic Messages API for long-form drafting.',
-    defaultModel: 'claude-sonnet-4-20250514',
+    defaultModel: 'claude-sonnet-4-6',
     baseUrl: 'https://api.anthropic.com/v1',
     baseUrlLocked: true,
   },
@@ -35,3 +35,20 @@ export const aiProviders: ProviderMeta[] = [
     baseUrl: 'https://api.moonshot.ai/v1',
   },
 ]
+
+export const legacyProviderDefaultModels = {
+  openai: ['gpt-4o-mini', 'gpt-5.2'],
+  gemini: ['gemini-1.5-flash', 'gemini-2.5-flash'],
+  claude: ['claude-3-5-haiku-latest', 'claude-sonnet-4-20250514'],
+  kimi: ['kimi-k2-0711-preview'],
+} as const
+
+export function providerDefaultModel(providerId: ProviderMeta['id']) {
+  return aiProviders.find((provider) => provider.id === providerId)?.defaultModel ?? ''
+}
+
+export function migrateProviderDefaultModel(providerId: ProviderMeta['id'], model: string) {
+  const defaultModel = providerDefaultModel(providerId)
+  if (!model.trim()) return defaultModel
+  return (legacyProviderDefaultModels[providerId] as readonly string[]).includes(model) ? defaultModel : model
+}

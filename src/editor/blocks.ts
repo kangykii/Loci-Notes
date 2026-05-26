@@ -1,9 +1,25 @@
 import { createId, nowIso } from '../db'
-import type { Atom, JSONContent, LociBlock, LociBlockType } from '../db'
+import type { JSONContent, LociBlock, LociBlockType } from '../db'
+import { aiBlockPreview, createAIBlockAttrs } from './aiBlocks'
+import { LOCI_BLOCK_ID_ATTR, blockTypeForNode, collectText } from './documentUtils'
+
+export {
+  LOCI_BLOCK_ID_ATTR,
+  atomMarkFor,
+  blockTypeForNode,
+  collectAtomIds,
+  collectText,
+  contentHasAtom,
+  remapAtomIds,
+} from './documentUtils'
+
+type LegacyLociBlock = LociBlock & {
+  children?: LegacyLociBlock[]
+}
 
 export type ImageAlignPreset = 'left' | 'center' | 'right'
 export type ListBlockType = 'checklist' | 'bulletList' | 'numberedList'
-export type FormatBlockType = 'table' | 'quote' | 'image' | 'checklist' | 'bulletList' | 'numberedList' | 'code' | 'latex'
+export type FormatBlockType = 'table' | 'quote' | 'image' | 'checklist' | 'bulletList' | 'numberedList' | 'code' | 'math'
 
 export const emptyDoc: JSONContent = {
   type: 'doc',
@@ -27,25 +43,84 @@ export function cloneTemplateValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-export function blockTypeForNode(node: JSONContent): LociBlockType {
-  if (node.type === 'doc') return blockTypeForNode(node.content?.[0] ?? { type: 'paragraph' })
-  if (node.type === 'heading') return 'heading'
-  if (node.type === 'taskList') return 'checklist'
-  if (node.type === 'table') return 'table'
-  if (node.type === 'lociQuote') return 'quote'
-  if (node.type === 'bulletList') return 'bulletList'
-  if (node.type === 'orderedList') return 'numberedList'
-  if (node.type === 'blockquote') return 'quote'
-  if (node.type === 'image') return 'image'
-  if (node.type === 'codeBlock') return 'code'
-  if (node.type === 'lociLatex') return 'latex'
-  if (node.type === 'horizontalRule') return 'divider'
-  return 'paragraph'
+export function blockIdForNode(node: JSONContent | undefined | null): string | undefined {
+  const id = node?.attrs?.[LOCI_BLOCK_ID_ATTR]
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined
+}
+
+export function withBlockId(node: JSONContent, blockId: string): JSONContent {
+  return {
+    ...node,
+    attrs: { ...node.attrs, [LOCI_BLOCK_ID_ATTR]: blockId },
+  }
+}
+
+function topLevelNodesFromContent(content?: JSONContent): JSONContent[] {
+  if (!content) return []
+  if (content.type === 'doc') return content.content ?? []
+  return [content]
+}
+
+export function ensureDocumentBlockIds(content?: JSONContent, blocks?: LociBlock[]): JSONContent {
+  const base = content?.type === 'doc' ? content : blockDoc(topLevelNodesFromContent(content))
+  const nodes = base.content ?? []
+  const flatBlocks = flattenLegacyLociBlocks(blocks as LegacyLociBlock[] | undefined)
+  const usedIds = new Set<string>()
+  let changed = false
+  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
+  const nextNodes = sourceNodes.map((node, index) => {
+    let blockId = blockIdForNode(node)
+    if (!blockId || usedIds.has(blockId)) {
+      const seeded = flatBlocks[index]?.id
+      blockId = seeded && !usedIds.has(seeded) ? seeded : createId('block')
+      changed = true
+    }
+    usedIds.add(blockId)
+    if (blockIdForNode(node) !== blockId) {
+      return withBlockId(cloneTemplateValue(node), blockId)
+    }
+    return node
+  })
+  if (!changed && content?.type === 'doc' && nodes.length === nextNodes.length) return content
+  return { ...base, content: nextNodes }
+}
+
+export function blocksMatchStoredContent(block: LociBlock, nodeWithId: JSONContent): boolean {
+  const storedTop = contentFromBlocks([block]).content?.[0]
+  return (
+    block.type === blockTypeForNode(nodeWithId) &&
+    !!storedTop &&
+    nodeContentSignature(storedTop) === nodeContentSignature(nodeWithId)
+  )
+}
+
+function nodeContentSignature(node: JSONContent): string {
+  const next = cloneTemplateValue(node)
+  if (next.attrs?.[LOCI_BLOCK_ID_ATTR]) {
+    const { [LOCI_BLOCK_ID_ATTR]: _removed, ...rest } = next.attrs
+    if (Object.keys(rest).length) next.attrs = rest
+    else delete next.attrs
+  }
+  return JSON.stringify(next)
 }
 
 export function blockContentNodes(content?: JSONContent): JSONContent[] {
   if (!content) return []
   return content.type === 'doc' ? content.content ?? [] : [content]
+}
+
+export function displayMathLatexInBlock(block: LociBlock): string | null {
+  for (const node of blockContentNodes(block.content)) {
+    if (node.type !== 'paragraph') continue
+    for (const child of node.content ?? []) {
+      if (child.type !== 'text') continue
+      const mathMark = child.marks?.find((mark) => mark.type === 'lociMathInline')
+      if (!mathMark?.attrs?.display) continue
+      const latex = mathMark.attrs.latex
+      return typeof latex === 'string' && latex.trim() ? latex : (child.text ?? '').trim() || null
+    }
+  }
+  return null
 }
 
 export function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | null {
@@ -59,7 +134,7 @@ export function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | nul
     contentType === 'numberedList' ||
     contentType === 'code' ||
     contentType === 'latex'
-  ) return contentType
+  ) return contentType === 'latex' ? 'math' : contentType
   if (
     block.type === 'table' ||
     block.type === 'quote' ||
@@ -67,9 +142,9 @@ export function formatBlockTypeForBlock(block: LociBlock): FormatBlockType | nul
     block.type === 'checklist' ||
     block.type === 'bulletList' ||
     block.type === 'numberedList' ||
-    block.type === 'code' ||
-    block.type === 'latex'
+    block.type === 'code'
   ) return block.type
+  if (block.type === 'latex' || displayMathLatexInBlock(block)) return 'math'
   return null
 }
 
@@ -79,10 +154,23 @@ export function blockDoc(nodes: JSONContent[]): JSONContent {
 
 export function createLociBlock(content: JSONContent, type = blockTypeForNode(content)): LociBlock {
   const now = nowIso()
+  const id = createId('block')
+  let blockContent: JSONContent
+  if (content.type === 'doc') {
+    const nodes = content.content ?? []
+    blockContent = {
+      type: 'doc',
+      content: nodes.map((node, index) =>
+        index === 0 ? withBlockId(cloneTemplateValue(node), id) : cloneTemplateValue(node),
+      ),
+    }
+  } else {
+    blockContent = blockDoc([withBlockId(cloneTemplateValue(content), id)])
+  }
   return {
-    id: createId('block'),
+    id,
     type,
-    content: content.type === 'doc' ? cloneTemplateValue(content) : blockDoc([cloneTemplateValue(content)]),
+    content: blockContent,
     createdAt: now,
     updatedAt: now,
   }
@@ -94,6 +182,18 @@ export function normalizeLegacyEditorContent(content: JSONContent): JSONContent 
     if (node.type === 'lociFlashcard' || node.type === 'lociCallout') {
       const normalizedChildren = (node.content ?? []).flatMap(normalizeNode)
       return normalizedChildren.length ? normalizedChildren : [paragraphNode(collectText(node))]
+    }
+    if (node.type === 'lociLatex' || node.type === 'lociMathBlock') {
+      const latex = latexDataFromNode(node)
+      if (!latex.trim()) return []
+      return [{
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: latex,
+          marks: [{ type: 'lociMathInline', attrs: { latex, display: true } }],
+        }],
+      }]
     }
     const next: JSONContent = { ...node }
     if (node.content) next.content = node.content.flatMap(normalizeNode)
@@ -108,8 +208,17 @@ export function normalizeLegacyEditorContent(content: JSONContent): JSONContent 
   return normalized.length === 1 ? normalized[0] : blockDoc(normalized)
 }
 
-function createBlockFromNode(node: JSONContent): LociBlock {
-  return createLociBlock(blockDoc([node]), blockTypeForNode(node))
+function createBlockFromNode(node: JSONContent, blockId?: string): LociBlock {
+  const id = blockId ?? blockIdForNode(node) ?? createId('block')
+  const nodeWithId = withBlockId(cloneTemplateValue(node), id)
+  const now = nowIso()
+  return {
+    id,
+    type: blockTypeForNode(nodeWithId),
+    content: blockDoc([nodeWithId]),
+    createdAt: now,
+    updatedAt: now,
+  }
 }
 
 export function paragraphNode(text: string): JSONContent {
@@ -219,10 +328,27 @@ export function codeBlockDoc(): JSONContent {
   }])
 }
 
-export function latexBlockDoc(latex = '\\frac{a}{b} = c'): JSONContent {
+/** Display-mode equation as a normal paragraph with an inline math mark. */
+export function displayMathParagraphDoc(latex = '\\frac{a}{b} = c'): JSONContent {
   return blockDoc([{
-    type: 'lociLatex',
-    attrs: { latex },
+    type: 'paragraph',
+    content: [{
+      type: 'text',
+      text: latex,
+      marks: [{ type: 'lociMathInline', attrs: { latex, display: true } }],
+    }],
+  }])
+}
+
+/** @deprecated Legacy alias — use displayMathParagraphDoc. */
+export function latexBlockDoc(latex = '\\frac{a}{b} = c'): JSONContent {
+  return displayMathParagraphDoc(latex)
+}
+
+export function aiBlockDoc(): JSONContent {
+  return blockDoc([{
+    type: 'lociAIBlock',
+    attrs: createAIBlockAttrs(),
   }])
 }
 
@@ -274,12 +400,6 @@ export function imageBlockDoc(src: string, width = 78, align: ImageAlignPreset =
       zoom: 100,
     },
   }])
-}
-
-export function collectText(content: JSONContent): string {
-  if (!content || typeof content !== 'object') return ''
-  if (content.text) return content.text
-  return (content.content ?? []).map(collectText).join(' ').replace(/\s+/g, ' ').trim()
 }
 
 export function tableDataFromNode(node: JSONContent): { columns: string[]; rows: string[][] } {
@@ -347,21 +467,24 @@ export function quoteDataFromNode(node: JSONContent): { quote: string; author?: 
 }
 
 export function blocksFromContent(content?: JSONContent): LociBlock[] {
-  const nodes = content?.type === 'doc' ? content.content ?? [] : []
+  const seeded = ensureDocumentBlockIds(content)
+  const nodes = seeded.type === 'doc' ? seeded.content ?? [] : []
   const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
-  return sourceNodes.map((node) => createBlockFromNode(cloneTemplateValue(node)))
+  return sourceNodes.map((node) => createBlockFromNode(cloneTemplateValue(node), blockIdForNode(node)))
 }
 
 export function contentFromBlocks(blocks?: LociBlock[]): JSONContent {
   if (!blocks?.length) return blankDoc()
   return {
     type: 'doc',
-    content: blocks.flatMap((block) => cloneTemplateValue(blockContentNodes(block.content))),
+    content: blocks.flatMap((block) => {
+      const nodes = blockContentNodes(block.content)
+      return nodes.map((node, index) => {
+        const cloned = cloneTemplateValue(node)
+        return index === 0 ? withBlockId(cloned, block.id) : cloned
+      })
+    }),
   }
-}
-
-type LegacyLociBlock = LociBlock & {
-  children?: LegacyLociBlock[]
 }
 
 export function flattenLegacyLociBlocks(blocks?: LegacyLociBlock[]): LociBlock[] {
@@ -373,76 +496,47 @@ export function flattenLegacyLociBlocks(blocks?: LegacyLociBlock[]): LociBlock[]
 }
 
 function stripLegacyBlockChildren(block: LegacyLociBlock): LociBlock {
+  if (!block.children?.length) return block
   const flatBlock = { ...block }
   delete flatBlock.children
   return flatBlock
 }
 
-export function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlock[], activeIndex = -1): LociBlock[] {
-  const nodes = content?.type === 'doc' ? content.content ?? [] : []
+export function normalizeBlocksForContent(content: JSONContent, blocks?: LociBlock[], _activeIndex = -1): LociBlock[] {
+  const seeded = ensureDocumentBlockIds(content, blocks)
+  const sourceNodes = seeded.type === 'doc' ? seeded.content ?? [] : []
+  const nodes = sourceNodes.length ? sourceNodes : [{ type: 'paragraph', content: [] }]
   const now = nowIso()
-  const sourceNodes = nodes.length ? nodes : [{ type: 'paragraph', content: [] }]
-  const reusableBlocks = flattenLegacyLociBlocks(blocks as LegacyLociBlock[] | undefined)
-  if (!reusableBlocks.length) return sourceNodes.map((node) => createBlockFromNode(cloneTemplateValue(node)))
+  const reusableById = new Map(
+    flattenLegacyLociBlocks(blocks as LegacyLociBlock[] | undefined).map((block) => [block.id, block]),
+  )
 
-  if (sourceNodes.length === reusableBlocks.length) {
-    return sourceNodes.map((node, index) => {
-      const clonedNode = cloneTemplateValue(node)
-      return {
-        ...reusableBlocks[index],
-        type: blockTypeForNode(clonedNode),
-        content: blockDoc([clonedNode]),
-        updatedAt: now,
-      }
-    })
+  if (!reusableById.size) {
+    return nodes.map((node) => createBlockFromNode(cloneTemplateValue(node), blockIdForNode(node)))
   }
 
-  const isInsertion = sourceNodes.length > reusableBlocks.length
-  const isRemoval = sourceNodes.length < reusableBlocks.length
-  const countDelta = sourceNodes.length - reusableBlocks.length
-  const changedIndex = activeIndex >= 0
-    ? Math.max(0, Math.min(sourceNodes.length - 1, activeIndex))
-    : Math.min(sourceNodes.length - 1, reusableBlocks.length - 1)
-  const insertedBlockStart = isInsertion ? Math.max(0, changedIndex - countDelta + 1) : -1
-  const insertedBlockEnd = isInsertion ? changedIndex : -1
-  if (isInsertion && typeof window !== 'undefined' && (window as typeof window & { __LOCI_EDITOR_DEBUG?: boolean }).__LOCI_EDITOR_DEBUG) {
-    console.debug('[loci-editor] normalize block count changed', {
-      activeIndex,
-      insertedBlockStart,
-      insertedBlockEnd,
-      sourceCount: sourceNodes.length,
-      savedCount: reusableBlocks.length,
-      savedIds: reusableBlocks.map((block) => block.id),
-    })
-  }
-
-  const reusableIndexForNode = (index: number) => {
-    if (isInsertion && index > insertedBlockEnd) return index - countDelta
-    if (isInsertion && index >= insertedBlockStart) return -1
-    if (isRemoval && index > changedIndex) return index + (reusableBlocks.length - sourceNodes.length)
-    return index
-  }
-
-  return sourceNodes.map((node, index) => {
+  return nodes.map((node) => {
     const clonedNode = cloneTemplateValue(node)
-    if (isInsertion && index >= insertedBlockStart && index <= insertedBlockEnd) return createBlockFromNode(clonedNode)
-
-    const reusable = reusableBlocks[reusableIndexForNode(index)]
-    if (reusable) {
-      return {
-        ...reusable,
-        type: blockTypeForNode(clonedNode),
-        content: blockDoc([clonedNode]),
-        updatedAt: now,
-      }
+    const blockId = blockIdForNode(clonedNode) ?? createId('block')
+    const nodeWithId = blockIdForNode(clonedNode) ? clonedNode : withBlockId(clonedNode, blockId)
+    const reusable = reusableById.get(blockId)
+    if (!reusable) return createBlockFromNode(nodeWithId, blockId)
+    if (blocksMatchStoredContent(reusable, nodeWithId)) return reusable
+    return {
+      ...reusable,
+      type: blockTypeForNode(nodeWithId),
+      content: blockDoc([nodeWithId]),
+      updatedAt: now,
     }
-
-    return createBlockFromNode(clonedNode)
   })
 }
 
+export function headingBlockDoc(level: 1 | 2 | 3): JSONContent {
+  return blockDoc([{ type: 'heading', attrs: { level }, content: [{ type: 'text', text: 'Heading' }] }])
+}
+
 export function blankBlockNode(type: LociBlockType): JSONContent {
-  if (type === 'heading') return blockDoc([{ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Heading' }] }])
+  if (type === 'heading') return headingBlockDoc(2)
   if (type === 'checklist') {
     return blockDoc([{
       type: 'taskList',
@@ -454,28 +548,14 @@ export function blankBlockNode(type: LociBlockType): JSONContent {
   if (type === 'numberedList') return listBlockDocFromData('numberedList', ['List item'])
   if (type === 'quote') return quoteBlockDoc()
   if (type === 'code') return codeBlockDoc()
-  if (type === 'latex') return latexBlockDoc()
+  if (type === 'latex') return displayMathParagraphDoc()
+  if (type === 'aiBlock') return aiBlockDoc()
   if (type === 'divider') return blockDoc([{ type: 'horizontalRule' }])
   return blockDoc([{ type: 'paragraph', content: [] }])
 }
 
 export function createTemplateBlocks(content: JSONContent) {
   return blocksFromContent(content)
-}
-
-export function contentHasAtom(content: JSONContent, atomId: string): boolean {
-  if (content.attrs?.atomId === atomId) return true
-  if (content.marks?.some((mark) => mark.type === 'atom' && mark.attrs?.atomId === atomId)) return true
-  return (content.content ?? []).some((child) => contentHasAtom(child, atomId))
-}
-
-export function collectAtomIds(content: JSONContent): string[] {
-  if (!content || typeof content !== 'object') return []
-  const attrAtomId = typeof content.attrs?.atomId === 'string' ? [content.attrs.atomId] : []
-  const own = (content.marks ?? [])
-    .filter((mark) => mark.type === 'atom' && typeof mark.attrs?.atomId === 'string')
-    .map((mark) => mark.attrs?.atomId as string)
-  return [...attrAtomId, ...own, ...(content.content ?? []).flatMap(collectAtomIds)]
 }
 
 export function stripAtomMarks(content: JSONContent, atomIds: Set<string>): JSONContent {
@@ -487,25 +567,6 @@ export function stripAtomMarks(content: JSONContent, atomIds: Set<string>): JSON
   }
   if (content.content) {
     next.content = content.content.map((child) => stripAtomMarks(child, atomIds))
-  }
-  return next
-}
-
-export function remapAtomIds(content: JSONContent, atomIdMap: Map<string, string>): JSONContent {
-  const next: JSONContent = { ...content }
-  if (content.attrs && typeof content.attrs.atomId === 'string') {
-    const mappedAtomId = atomIdMap.get(content.attrs.atomId)
-    if (mappedAtomId) next.attrs = { ...content.attrs, atomId: mappedAtomId }
-  }
-  if (content.marks) {
-    next.marks = content.marks.map((mark) => {
-      if (mark.type !== 'atom' || typeof mark.attrs?.atomId !== 'string') return mark
-      const mappedAtomId = atomIdMap.get(mark.attrs.atomId)
-      return mappedAtomId ? { ...mark, attrs: { ...mark.attrs, atomId: mappedAtomId } } : mark
-    })
-  }
-  if (content.content) {
-    next.content = content.content.map((child) => remapAtomIds(child, atomIdMap))
   }
   return next
 }
@@ -600,6 +661,10 @@ export function collectNotePreviewLines(content: JSONContent | undefined | null,
     if (type === 'codeBlock') {
       const code = normalizePreviewChunk(collectInlinePlain(node))
       if (code) push(code)
+      return
+    }
+    if (type === 'lociAIBlock') {
+      push(aiBlockPreview(node.attrs))
     }
   }
 
@@ -646,9 +711,3 @@ export function segmentDensePreviewLine(line: string): string[] {
   return chunks
 }
 
-export function atomMarkFor(atom: Atom) {
-  return {
-    type: 'atom',
-    attrs: { atomId: atom.id, phrase: atom.phrase, definition: atom.definition },
-  }
-}

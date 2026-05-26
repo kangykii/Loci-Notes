@@ -1,9 +1,10 @@
 import { EditorContent } from '@tiptap/react'
 import type { Editor as TiptapEditor } from '@tiptap/core'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEventHandler, MouseEventHandler, PointerEventHandler, ReactNode, Ref, RefObject } from 'react'
 import { SmoothCaret } from './SmoothCaret'
 import './editor.css'
+import './blockBehavior.css'
 
 type LociEditorProps = {
   editor: TiptapEditor | null
@@ -20,6 +21,7 @@ type LociEditorProps = {
   formatSideControls?: ReactNode
   blockDropOverlay?: ReactNode
   onClick?: MouseEventHandler<HTMLElement>
+  onContextMenu?: MouseEventHandler<HTMLElement>
   onPointerDown?: PointerEventHandler<HTMLElement>
   onPointerMove?: PointerEventHandler<HTMLElement>
   onPointerLeave?: PointerEventHandler<HTMLElement>
@@ -39,7 +41,7 @@ function assignRef(ref: Ref<HTMLElement | HTMLDivElement>, node: HTMLElement | n
   if (ref) (ref as { current: HTMLElement | null }).current = node
 }
 
-export function LociEditor({
+export const LociEditor = memo(function LociEditor({
   editor,
   isFocusMode,
   smoothCaretFocusMode = isFocusMode,
@@ -54,6 +56,7 @@ export function LociEditor({
   formatSideControls,
   blockDropOverlay,
   onClick,
+  onContextMenu,
   onPointerDown,
   onPointerMove,
   onPointerLeave,
@@ -90,6 +93,7 @@ export function LociEditor({
       className={classes}
       data-focus-mode={isFocusMode ? 'true' : undefined}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
@@ -113,4 +117,4 @@ export function LociEditor({
       {blockDropOverlay}
     </section>
   )
-}
+})

@@ -1,22 +1,70 @@
 import { db } from '../db'
 import type { Project } from '../db'
+import { listProjectsFromRust, saveProjectsBatchToRust, shouldUseRustStorage } from '../tauri/workspaceClient'
 
 export const projectsRepository = {
-  listByName: () => db.projects.orderBy('name').toArray(),
+  listByName: () => {
+    if (shouldUseRustStorage()) return listProjectsFromRust()
+    return db.projects.orderBy('name').toArray()
+  },
 
-  save: (project: Project) => db.projects.put(project),
+  save: async (project: Project) => {
+    if (shouldUseRustStorage()) {
+      await saveProjectsBatchToRust([project])
+      return
+    }
+    await db.projects.put(project)
+  },
 
-  saveMany: (projects: Project[]) => db.projects.bulkPut(projects),
+  saveMany: async (projects: Project[]) => {
+    if (shouldUseRustStorage()) {
+      await saveProjectsBatchToRust(projects)
+      return
+    }
+    await db.projects.bulkPut(projects)
+  },
 
-  updateDescription: (projectId: string, description: string) =>
-    db.projects.update(projectId, { description }),
+  updateDescription: async (projectId: string, description: string) => {
+    if (shouldUseRustStorage()) {
+      const projects = await listProjectsFromRust()
+      const project = projects.find((item) => item.id === projectId)
+      if (!project) return
+      await saveProjectsBatchToRust([{ ...project, description }])
+      return
+    }
+    await db.projects.update(projectId, { description })
+  },
 
-  updateColor: (projectId: string, color: string) =>
-    db.projects.update(projectId, { color }),
+  updateColor: async (projectId: string, color: string) => {
+    if (shouldUseRustStorage()) {
+      const projects = await listProjectsFromRust()
+      const project = projects.find((item) => item.id === projectId)
+      if (!project) return
+      await saveProjectsBatchToRust([{ ...project, color }])
+      return
+    }
+    await db.projects.update(projectId, { color })
+  },
 
-  updatePinned: (projectId: string, pinnedAt: string | undefined) =>
-    db.projects.update(projectId, { pinnedAt }),
+  updatePinned: async (projectId: string, pinnedAt: string | undefined) => {
+    if (shouldUseRustStorage()) {
+      const projects = await listProjectsFromRust()
+      const project = projects.find((item) => item.id === projectId)
+      if (!project) return
+      await saveProjectsBatchToRust([{ ...project, pinnedAt }])
+      return
+    }
+    await db.projects.update(projectId, { pinnedAt })
+  },
 
-  rename: (projectId: string, name: string) =>
-    db.projects.update(projectId, { name }),
+  rename: async (projectId: string, name: string) => {
+    if (shouldUseRustStorage()) {
+      const projects = await listProjectsFromRust()
+      const project = projects.find((item) => item.id === projectId)
+      if (!project) return
+      await saveProjectsBatchToRust([{ ...project, name }])
+      return
+    }
+    await db.projects.update(projectId, { name })
+  },
 }

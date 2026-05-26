@@ -1,0 +1,253 @@
+.block-editor-shell {
+  position: relative;
+  --block-control-gutter: clamp(48px, 5vw, 72px);
+  --block-control-size: 24px;
+  --block-control-icon-size: 14px;
+}
+
+.block-drop-overlay {
+  position: absolute;
+  inset: -18px -96px -18px calc(-1 * var(--block-control-gutter));
+  z-index: 14;
+  pointer-events: none;
+}
+
+.block-hover-controls {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+  pointer-events: auto;
+}
+
+.block-control-hotspot.is-hovered .block-hover-controls,
+.block-control-hotspot:hover .block-hover-controls,
+.block-control-hotspot:focus-within .block-hover-controls,
+.block-control-hotspot.is-selected .block-hover-controls,
+.block-hover-controls:hover,
+.block-hover-controls:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.block-controls-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  pointer-events: none;
+}
+
+.block-control-hotspot {
+  position: absolute;
+  left: calc(-1 * var(--block-control-gutter));
+  width: var(--block-control-gutter);
+  display: block;
+  pointer-events: auto;
+}
+
+.block-control-button {
+  width: var(--block-control-size);
+  height: var(--block-control-size);
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(124, 121, 115, 0.72);
+  padding: 0;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.block-control-button svg {
+  width: var(--block-control-icon-size);
+  height: var(--block-control-icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.block-control-button svg circle {
+  fill: currentColor;
+  stroke: none;
+}
+
+.block-control-delete:hover {
+  background: rgba(62, 50, 32, 0.07);
+  color: #3E3220;
+}
+
+.block-control-button:hover {
+  background: var(--hover-wash);
+  color: #1A1A1A;
+  box-shadow: inset 0 0 0 1px rgba(26, 26, 26, 0.035);
+}
+
+.block-control-hotspot.is-selected .block-control-handle {
+  background: rgba(46, 52, 64, 0.1);
+  color: #1A1A1A;
+  box-shadow: inset 0 0 0 1px rgba(46, 52, 64, 0.08);
+}
+
+.block-control-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.block-control-handle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.block-control-handle:active {
+  cursor: grabbing;
+}
+
+.block-drop-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  pointer-events: none;
+  border-radius: 2px;
+  transform-origin: 0 50%;
+  will-change: transform, width, height, opacity;
+  transition:
+    opacity 90ms ease,
+    width 110ms ease,
+    transform 95ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.block-drop-indicator::before,
+.block-drop-indicator::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-50%) scale(0.86);
+  transition:
+    opacity 90ms ease,
+    transform 95ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.block-drop-indicator:not([data-placement='inside']) {
+  height: 2px;
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(62, 50, 32, 0.16) 8%, rgba(62, 50, 32, 0.34) 50%, rgba(62, 50, 32, 0.16) 92%, transparent 100%);
+  box-shadow: none;
+}
+
+.block-drop-indicator:not([data-placement='inside'])::before {
+  left: -2px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(46, 52, 64, 0.24);
+  border-radius: 999px;
+  background: #F4F4F2;
+  box-shadow:
+    inset 0 0 0 1px rgba(244, 244, 242, 0.88),
+    0 3px 8px rgba(26, 26, 26, 0.08);
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.block-drop-indicator:not([data-placement='inside'])::after {
+  right: 0;
+  width: 26px;
+  height: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(244, 244, 242, 0), rgba(244, 244, 242, 0.86));
+  opacity: 0.7;
+  transform: translateY(-50%) scaleX(1);
+}
+
+.block-drop-indicator[data-placement='inside'] {
+  border: 1px solid rgba(62, 50, 32, 0.14);
+  background:
+    linear-gradient(180deg, rgba(244, 244, 242, 0.72), rgba(62, 50, 32, 0.035));
+  box-shadow:
+    inset 0 0 0 1px rgba(244, 244, 242, 0.7),
+    0 10px 26px rgba(26, 26, 26, 0.08);
+  backdrop-filter: blur(2px);
+}
+
+.block-editor-shell.is-dragging-block .note-editor > * {
+  transition: transform 140ms ease, opacity 140ms ease;
+}
+
+.block-editor-shell.is-dragging-block .block-control-hotspot {
+  opacity: 0.45;
+}
+
+.block-editor-shell .note-editor {
+  line-height: 1.68;
+}
+
+.block-editor-shell .note-editor > * {
+  transition: none;
+}
+
+.block-editor-shell[data-focus-mode='true'] .note-editor > * {
+  transition: opacity var(--editor-motion-medium, 220ms) ease;
+}
+
+.block-editor-shell .note-editor > [data-loci-selected-block='true'] {
+  transition:
+    background-color var(--editor-motion-medium, 220ms) ease,
+    box-shadow var(--editor-motion-medium, 220ms) ease;
+}
+
+.block-editor-shell .note-editor > [data-loci-selected-block='true'] {
+  border-radius: 8px;
+  background: rgba(46, 52, 64, 0.055);
+  box-shadow:
+    -10px 0 0 rgba(46, 52, 64, 0.055),
+    10px 0 0 rgba(46, 52, 64, 0.055);
+}
+
+.block-editor-shell[data-focus-mode='true'] .note-editor > * {
+  color: var(--muted);
+  opacity: 0.2;
+}
+
+.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'] {
+  opacity: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.block-editor-shell[data-focus-mode='true'] .note-editor > *:not([data-loci-active-block='true']),
+.block-editor-shell[data-focus-mode='true'] .note-editor > *:not([data-loci-active-block='true']) * {
+  color: var(--muted);
+}
+
+.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'],
+.block-editor-shell[data-focus-mode='true'] .note-editor > [data-loci-active-block='true'] * {
+  color: var(--text);
+}
+
+.block-editor-shell[data-focus-mode='true'] .block-control-button {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block-editor-shell,
+  .block-editor-shell[data-focus-mode='true'] .note-editor,
+  .block-editor-shell[data-focus-mode='true'] .note-editor > * {
+    animation: none;
+    transition: none;
+  }
+}

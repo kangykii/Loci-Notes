@@ -63,6 +63,8 @@ export const AuthorshipMark = Mark.create({
       new Plugin({
         props: {
           handleTextInput: (view, from, to, text) => {
+            const authenticWriterActive = Boolean(view.dom.closest('.is-authentic-writer'))
+            if (!authenticWriterActive) return false
             const authorshipMark = view.state.schema.marks.authorship
             if (!authorshipMark) return false
             const transaction = view.state.tr.insertText(text, from, to)

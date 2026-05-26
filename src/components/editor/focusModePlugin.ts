@@ -93,6 +93,8 @@ export function useFocusModePlugin({
   }, [centerActiveBlock, editor, isFocusMode])
 
   const markActiveEditorBlock = useCallback(() => {
+    if (!isFocusMode) return
+
     const editorDom = mountedEditorDom(editor)
     if (!editorDom) return
 
@@ -108,7 +110,7 @@ export function useFocusModePlugin({
     const topLevelDom = topLevelPos > 0 ? editor.view.nodeDOM(topLevelPos) : null
     const activeBlock = selectedEditorChild(editorDom) ?? markedEditorChild(editorDom) ?? directEditorChild(editorDom, topLevelDom) ?? children[activeIndex] ?? null
     activateEditorBlock(activeBlock)
-  }, [activateEditorBlock, editor])
+  }, [activateEditorBlock, editor, isFocusMode])
 
   useEffect(() => {
     return () => {

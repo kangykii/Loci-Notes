@@ -1,4 +1,5 @@
 import type { Atom, FlashcardSet, JSONContent, Note, Project } from '../db'
+import { collectText } from '../editor/documentUtils'
 
 export type ProfileStats = {
   userNotes: Note[]
@@ -28,14 +29,8 @@ function startOfDayKey(value: Date) {
   return date.toISOString().slice(0, 10)
 }
 
-function collectPlainText(content: JSONContent | undefined): string {
-  if (!content) return ''
-  if (typeof content.text === 'string') return content.text
-  return (content.content ?? []).map(collectPlainText).join(' ').replace(/\s+/g, ' ').trim()
-}
-
 function countWords(content: JSONContent | undefined) {
-  const text = collectPlainText(content)
+  const text = content ? collectText(content) : ''
   if (!text) return 0
   return text.split(/\s+/).filter(Boolean).length
 }

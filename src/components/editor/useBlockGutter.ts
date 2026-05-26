@@ -31,12 +31,12 @@ export function sameBlockControls(a: BlockControlRect[], b: BlockControlRect[]) 
 export function useBlockGutter({
   editor,
   shellRef,
-  blocks,
+  blocksRef,
   draggedBlockIdRef,
 }: {
   editor: TiptapEditor | null
   shellRef: RefObject<HTMLElement | HTMLDivElement | null>
-  blocks: LociBlock[]
+  blocksRef: RefObject<LociBlock[]>
   draggedBlockIdRef: RefObject<string>
 }) {
   const measureBlockControls = useCallback(() => {
@@ -49,7 +49,7 @@ export function useBlockGutter({
 
     let childIndex = 0
     const controls: BlockControlRect[] = []
-    blocks.forEach((block) => {
+    blocksRef.current.forEach((block) => {
       const count = Math.max(1, blockContentNodes(block.content).length)
       const blockChildren = children.slice(childIndex, childIndex + count)
       childIndex += count
@@ -65,7 +65,7 @@ export function useBlockGutter({
     })
 
     return controls
-  }, [blocks, editor, shellRef])
+  }, [blocksRef, editor, shellRef])
 
   const measureBlockDropTargets = useCallback(() => {
     const shell = shellRef.current
@@ -77,7 +77,7 @@ export function useBlockGutter({
     if (!children.length) return []
 
     let childIndex = 0
-    return blocks.flatMap((block): BlockDropTarget[] => {
+    return blocksRef.current.flatMap((block): BlockDropTarget[] => {
       const count = Math.max(1, blockContentNodes(block.content).length)
       const blockChildren = children.slice(childIndex, childIndex + count)
       childIndex += count
@@ -97,7 +97,7 @@ export function useBlockGutter({
         shellLeft: shellRect.left,
       }]
     })
-  }, [blocks, draggedBlockIdRef, editor, shellRef])
+  }, [blocksRef, draggedBlockIdRef, editor, shellRef])
 
   return { measureBlockControls, measureBlockDropTargets }
 }

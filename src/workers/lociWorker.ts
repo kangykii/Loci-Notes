@@ -1,4 +1,5 @@
 import type { JSONContent } from '../db'
+import { collectText } from '../editor/blocks'
 
 type WorkerNote = {
   id: string
@@ -26,12 +27,6 @@ type SearchRecord = {
 
 let indexVersion = 0
 let records: SearchRecord[] = []
-
-function collectText(content: JSONContent | undefined): string {
-  if (!content) return ''
-  if (typeof content.text === 'string') return content.text
-  return (content.content ?? []).map(collectText).join(' ').replace(/\s+/g, ' ').trim()
-}
 
 function previewFor(content: JSONContent) {
   const text = collectText(content)

@@ -60,6 +60,8 @@ export async function requestAITextWithPolicy(request: AITextRequest): Promise<A
       taskInstruction: request.taskInstruction,
       userContent: request.userContent,
       promptCacheKey: request.promptCacheKey,
+      responseFormat: request.responseFormat,
+      structuredOutput: request.structuredOutput,
       contextManifest: request.contextManifest,
       providerMeta: request.providerMeta,
       signal: request.signal,
